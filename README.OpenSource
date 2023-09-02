@@ -1,0 +1,10 @@
+[
+    {
+        "Name": "chromium_third_party_dawn",                   # 上游开源软件名全称
+        "License": "Khronos Group License",         # 上游开源软件中包含的许可证信息
+        "License File": "LICENSE.TXT", "Khronos License1"       # 许可证所在文件路径
+        "Version Number": "f52a227a248eb927a9dea5a3cfb32c72f6f5d53c",
+        "Upstream URL": "https://dawn.googlesource.com/dawn.git@f52a227a248eb927a9dea5a3cfb32c72f6f5d53c",   # 上游软件包发布地址
+        "Description": "第三方软件vulkan-deps/glslang"           # 开源软件功能描述
+    }
+]
