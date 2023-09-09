@@ -3,26 +3,59 @@
     <oatconfig>
         <policylist>
             <policy name="projectPolicy" desc="">
-                <policyitem type="compatibility" name="Khronos License1" path="third_party/khronos/KHR.*" desc="" />
+                <policyitem type="compatibility" name="Khronos License" path="third_party/khronos/KHR/khrplatform.h" desc="" />
             </policy>
         </policylist>
         <filefilterlist>
             <filefilter name="defaultPolicyFilter"
                 desc="Filters for compatibility,license header policies">
-                <filteritem type="filepath" name="README.chromium"
-                    desc="" />
                  <filteritem type="filepath" name="README.OpenSource"
                     desc="" />
             </filefilter>
             <filefilter name="defaultFilter">
                 <filteritem type="filepath" name="README.OpenSource"
                     desc="" />
+                <filteritem type="filepath" name=".*png"
+                    desc="" />
             </filefilter>
         </filefilterlist>
         <licensematcherlist>
-            <licensematcher name="Khronos License1" desc="">
+            <licensematcher name="Khronos License" desc="">
                 <licensetext name="
-                ** Copyright (c) 2008-2018 The Khronos Group Inc.
+                ** Permission is hereby granted, free of charge, to any person obtaining a
+                ** copy of this software and/or associated documentation files (the
+                ** &quot;Materials&quot;), to deal in the Materials without restriction, including
+                ** without limitation the rights to use, copy, modify, merge, publish,
+                ** distribute, sublicense, and/or sell copies of the Materials, and to
+                ** permit persons to whom the Materials are furnished to do so, subject to
+                ** the following conditions:
+                **
+                ** The above copyright notice and this permission notice shall be included
+                ** in all copies or substantial portions of the Materials.
+                **
+                ** THE MATERIALS ARE PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND,
+                ** EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+                ** MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+                ** IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+                ** CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+                ** TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+                ** MATERIALS OR THE USE OR OTHER DEALINGS IN THE MATERIALS.
+            " desc="" />
+            </licensematcher>
+            <licensematcher name="Apache-2.0" desc="">
+                <licensetext name="
+                Name: Dawn
+                Short Name: dawn
+                URL: https://dawn.googlesource.com/dawn
+                License: Apache 2.0
+                License File: LICENSE
+                Security Critical: yes
+
+                Description:
+                Dawn is an implementation of the WebGPU standard exposed through a C/C++
+                interface. It provides implementations on top of native graphics APIs like
+                D3D12, Metal and Vulkan, as well as a client-server implementation to remote
+                WebGPU outside sandboxed context like Chromium's render processes.
             " desc="" />
             </licensematcher>
         </licensematcherlist>
