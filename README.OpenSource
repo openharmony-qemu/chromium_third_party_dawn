@@ -1,6 +1,6 @@
 [
     {
-        "Name": "chromium_third_party_dawn",                   # 上游开源软件名全称
+        "Name": "dawn",                   # 上游开源软件名全称
         "License":"Khronos License",        # 上游开源软件中包含的许可证信息
         "License File": "LICENSE",        # 许可证所在文件路径
         "Version Number": "f52a227a248eb927a9dea5a3cfb32c72f6f5d53c",
