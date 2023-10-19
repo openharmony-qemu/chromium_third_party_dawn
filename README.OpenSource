@@ -7,14 +7,5 @@
         "Owner": "liujixin@huawei.com",
         "Upstream URL": "https://dawn.googlesource.com/dawn.git@f52a227a248eb927a9dea5a3cfb32c72f6f5d53c",
         "Description": "Dawn 是正在发展的WebGPU标准的开源的、跨平台的实现"
-    },
-    {
-        "Name": "dawn",
-        "License":"BSD-3-Clause",
-        "License File": "LICENSE",
-        "Version Number": "f52a227a248eb927a9dea5a3cfb32c72f6f5d53c",
-        "Owner": "liujixin@huawei.com",
-        "Upstream URL": "https://dawn.googlesource.com/dawn.git@f52a227a248eb927a9dea5a3cfb32c72f6f5d53c",
-        "Description": "Dawn 是正在发展的WebGPU标准的开源的、跨平台的实现"
     }
 ]
