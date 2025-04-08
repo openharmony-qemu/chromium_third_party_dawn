@@ -1,16 +1,29 @@
-// Copyright 2019 The Dawn Authors
+// Copyright 2019 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <memory>
 #include <utility>
@@ -20,6 +33,7 @@
 #include "dawn/wire/server/ServerMemoryTransferService_mock.h"
 
 namespace dawn::wire {
+namespace {
 
 using testing::_;
 using testing::Eq;
@@ -29,8 +43,6 @@ using testing::Pointee;
 using testing::Return;
 using testing::StrictMock;
 using testing::WithArg;
-
-namespace {
 
 // Mock class to add expectations on the wire calling callbacks
 class MockBufferMapCallback {
@@ -42,8 +54,6 @@ std::unique_ptr<StrictMock<MockBufferMapCallback>> mockBufferMapCallback;
 void ToMockBufferMapCallback(WGPUBufferMapAsyncStatus status, void* userdata) {
     mockBufferMapCallback->Call(status, userdata);
 }
-
-}  // anonymous namespace
 
 // WireMemoryTransferServiceTests test the MemoryTransferService with buffer mapping.
 // They test the basic success and error cases for buffer mapping, and they test
@@ -115,7 +125,7 @@ class WireMemoryTransferServiceTests : public WireTest {
         descriptor.usage = usage;
 
         WGPUBuffer apiBuffer = api.GetNewBuffer();
-        WGPUBuffer buffer = wgpuDeviceCreateBuffer(device, &descriptor);
+        WGPUBuffer buffer = wgpuDeviceCreateBuffer(cDevice, &descriptor);
 
         EXPECT_CALL(api, DeviceCreateBuffer(apiDevice, _))
             .WillOnce(Return(apiBuffer))
@@ -133,7 +143,7 @@ class WireMemoryTransferServiceTests : public WireTest {
 
         WGPUBuffer apiBuffer = api.GetNewBuffer();
 
-        WGPUBuffer buffer = wgpuDeviceCreateBuffer(device, &descriptor);
+        WGPUBuffer buffer = wgpuDeviceCreateBuffer(cDevice, &descriptor);
 
         EXPECT_CALL(api, DeviceCreateBuffer(apiDevice, _)).WillOnce(Return(apiBuffer));
         EXPECT_CALL(api, BufferGetMappedRange(apiBuffer, 0, sizeof(mBufferContent)))
@@ -147,19 +157,19 @@ class WireMemoryTransferServiceTests : public WireTest {
         ClientReadHandle* handle = clientMemoryTransferService.NewReadHandle();
 
         EXPECT_CALL(clientMemoryTransferService, OnCreateReadHandle(sizeof(mBufferContent)))
-            .WillOnce(InvokeWithoutArgs([=]() { return handle; }));
+            .WillOnce(InvokeWithoutArgs([=] { return handle; }));
 
         return handle;
     }
 
     void MockReadHandleCreationFailure() {
         EXPECT_CALL(clientMemoryTransferService, OnCreateReadHandle(sizeof(mBufferContent)))
-            .WillOnce(InvokeWithoutArgs([=]() { return nullptr; }));
+            .WillOnce(InvokeWithoutArgs([=] { return nullptr; }));
     }
 
     void ExpectReadHandleSerialization(ClientReadHandle* handle) {
         EXPECT_CALL(clientMemoryTransferService, OnReadHandleSerializeCreateSize(handle))
-            .WillOnce(InvokeWithoutArgs([&]() { return sizeof(mSerializeCreateInfo); }));
+            .WillOnce(InvokeWithoutArgs([&] { return sizeof(mSerializeCreateInfo); }));
         EXPECT_CALL(clientMemoryTransferService, OnReadHandleSerializeCreate(handle, _))
             .WillOnce(WithArg<1>([&](void* serializePointer) {
                 memcpy(serializePointer, &mSerializeCreateInfo, sizeof(mSerializeCreateInfo));
@@ -186,13 +196,13 @@ class WireMemoryTransferServiceTests : public WireTest {
         EXPECT_CALL(serverMemoryTransferService,
                     OnDeserializeReadHandle(Pointee(Eq(mSerializeCreateInfo)),
                                             sizeof(mSerializeCreateInfo), _))
-            .WillOnce(InvokeWithoutArgs([&]() { return false; }));
+            .WillOnce(InvokeWithoutArgs([&] { return false; }));
     }
 
     void ExpectServerReadHandleSerializeDataUpdate(ServerReadHandle* handle) {
         EXPECT_CALL(serverMemoryTransferService,
                     OnReadHandleSizeOfSerializeDataUpdate(handle, _, _))
-            .WillOnce(InvokeWithoutArgs([&]() { return sizeof(mReadHandleSerializeDataInfo); }));
+            .WillOnce(InvokeWithoutArgs([&] { return sizeof(mReadHandleSerializeDataInfo); }));
         EXPECT_CALL(serverMemoryTransferService,
                     OnReadHandleSerializeDataUpdate(handle, _, _, _, _))
             .WillOnce(WithArg<4>([&](void* serializePointer) {
@@ -224,7 +234,7 @@ class WireMemoryTransferServiceTests : public WireTest {
         ClientWriteHandle* handle = clientMemoryTransferService.NewWriteHandle();
 
         EXPECT_CALL(clientMemoryTransferService, OnCreateWriteHandle(sizeof(mBufferContent)))
-            .WillOnce(InvokeWithoutArgs([=]() { return handle; }));
+            .WillOnce(InvokeWithoutArgs([=] { return handle; }));
         if (mappedAtCreation) {
             EXPECT_CALL(clientMemoryTransferService, OnWriteHandleGetData(handle))
                 .WillOnce(Return(&mBufferContent));
@@ -235,12 +245,12 @@ class WireMemoryTransferServiceTests : public WireTest {
 
     void MockWriteHandleCreationFailure() {
         EXPECT_CALL(clientMemoryTransferService, OnCreateWriteHandle(sizeof(mBufferContent)))
-            .WillOnce(InvokeWithoutArgs([=]() { return nullptr; }));
+            .WillOnce(InvokeWithoutArgs([=] { return nullptr; }));
     }
 
     void ExpectWriteHandleSerialization(ClientWriteHandle* handle) {
         EXPECT_CALL(clientMemoryTransferService, OnWriteHandleSerializeCreateSize(handle))
-            .WillOnce(InvokeWithoutArgs([&]() { return sizeof(mSerializeCreateInfo); }));
+            .WillOnce(InvokeWithoutArgs([&] { return sizeof(mSerializeCreateInfo); }));
         EXPECT_CALL(clientMemoryTransferService, OnWriteHandleSerializeCreate(handle, _))
             .WillOnce(WithArg<1>([&](void* serializePointer) {
                 memcpy(serializePointer, &mSerializeCreateInfo, sizeof(mSerializeCreateInfo));
@@ -273,7 +283,7 @@ class WireMemoryTransferServiceTests : public WireTest {
     void ExpectClientWriteHandleSerializeDataUpdate(ClientWriteHandle* handle) {
         EXPECT_CALL(clientMemoryTransferService,
                     OnWriteHandleSizeOfSerializeDataUpdate(handle, _, _))
-            .WillOnce(InvokeWithoutArgs([&]() { return sizeof(mWriteHandleSerializeDataInfo); }));
+            .WillOnce(InvokeWithoutArgs([&] { return sizeof(mWriteHandleSerializeDataInfo); }));
         EXPECT_CALL(clientMemoryTransferService, OnWriteHandleSerializeDataUpdate(handle, _, _, _))
             .WillOnce(WithArg<1>([&](void* serializePointer) {
                 memcpy(serializePointer, &mWriteHandleSerializeDataInfo,
@@ -320,8 +330,8 @@ class WireMemoryTransferServiceTests : public WireTest {
     // mUpdatedBufferContent| after all writes are flushed.
     static uint32_t mUpdatedBufferContent;
 
-    StrictMock<dawn::wire::server::MockMemoryTransferService> serverMemoryTransferService;
-    StrictMock<dawn::wire::client::MockMemoryTransferService> clientMemoryTransferService;
+    StrictMock<wire::server::MockMemoryTransferService> serverMemoryTransferService;
+    StrictMock<wire::client::MockMemoryTransferService> clientMemoryTransferService;
 };
 
 uint32_t WireMemoryTransferServiceTests::mBufferContent = 1337;
@@ -353,10 +363,9 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapReadSuccess) {
     ExpectServerReadHandleSerializeDataUpdate(serverHandle);
 
     // Mock a successful callback
-    EXPECT_CALL(api, OnBufferMapAsync(apiBuffer, WGPUMapMode_Read, 0, kBufferSize, _, _))
-        .WillOnce(InvokeWithoutArgs([&]() {
-            api.CallBufferMapAsyncCallback(apiBuffer, WGPUBufferMapAsyncStatus_Success);
-        }));
+    EXPECT_CALL(api, OnBufferMapAsync(apiBuffer, WGPUMapMode_Read, 0, kBufferSize, _))
+        .WillOnce(InvokeWithoutArgs(
+            [&] { api.CallBufferMapAsyncCallback(apiBuffer, WGPUBufferMapAsyncStatus_Success); }));
     EXPECT_CALL(clientMemoryTransferService, OnReadHandleGetData(clientHandle))
         .WillOnce(Return(&mBufferContent));
     EXPECT_CALL(api, BufferGetConstMappedRange(apiBuffer, 0, kBufferSize))
@@ -380,6 +389,10 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapReadSuccess) {
     // The handle is destroyed once the buffer is destroyed.
     EXPECT_CALL(clientMemoryTransferService, OnReadHandleDestroy(clientHandle)).Times(1);
     EXPECT_CALL(serverMemoryTransferService, OnReadHandleDestroy(serverHandle)).Times(1);
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test ReadHandle destroy behavior
@@ -406,6 +419,11 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapReadDestroy) {
     EXPECT_CALL(api, BufferDestroy(apiBuffer)).Times(1);
 
     FlushClient();
+
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test unsuccessful mapping for reading.
@@ -426,14 +444,15 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapReadError) {
     wgpuBufferMapAsync(buffer, WGPUMapMode_Read, 0, kBufferSize, ToMockBufferMapCallback, nullptr);
 
     // Mock a failed callback.
-    EXPECT_CALL(api, OnBufferMapAsync(apiBuffer, WGPUMapMode_Read, 0, kBufferSize, _, _))
-        .WillOnce(InvokeWithoutArgs(
-            [&]() { api.CallBufferMapAsyncCallback(apiBuffer, WGPUBufferMapAsyncStatus_Error); }));
+    EXPECT_CALL(api, OnBufferMapAsync(apiBuffer, WGPUMapMode_Read, 0, kBufferSize, _))
+        .WillOnce(InvokeWithoutArgs([&] {
+            api.CallBufferMapAsyncCallback(apiBuffer, WGPUBufferMapAsyncStatus_ValidationError);
+        }));
 
     FlushClient();
 
     // The client receives an error callback.
-    EXPECT_CALL(*mockBufferMapCallback, Call(WGPUBufferMapAsyncStatus_Error, _)).Times(1);
+    EXPECT_CALL(*mockBufferMapCallback, Call(WGPUBufferMapAsyncStatus_ValidationError, _)).Times(1);
 
     FlushServer();
 
@@ -446,6 +465,10 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapReadError) {
     // The handle is destroyed once the buffer is destroyed.
     EXPECT_CALL(clientMemoryTransferService, OnReadHandleDestroy(clientHandle)).Times(1);
     EXPECT_CALL(serverMemoryTransferService, OnReadHandleDestroy(serverHandle)).Times(1);
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test ReadHandle creation failure.
@@ -457,7 +480,8 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapReadHandleCreationFailure) {
     descriptor.size = kBufferSize;
     descriptor.usage = WGPUBufferUsage_MapRead;
 
-    wgpuDeviceCreateBuffer(device, &descriptor);
+    WGPUBuffer buffer = wgpuDeviceCreateBuffer(cDevice, &descriptor);
+    wgpuBufferRelease(buffer);
 }
 
 // Test MapRead DeserializeReadHandle failure.
@@ -478,6 +502,10 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapReadDeserializeReadHandleFailure
 
     // The handle is destroyed once the buffer is destroyed.
     EXPECT_CALL(clientMemoryTransferService, OnReadHandleDestroy(clientHandle)).Times(1);
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test read handle DeserializeDataUpdate failure.
@@ -502,10 +530,9 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapReadDeserializeDataUpdateFailure
     ExpectServerReadHandleSerializeDataUpdate(serverHandle);
 
     // Mock a successful callback
-    EXPECT_CALL(api, OnBufferMapAsync(apiBuffer, WGPUMapMode_Read, 0, kBufferSize, _, _))
-        .WillOnce(InvokeWithoutArgs([&]() {
-            api.CallBufferMapAsyncCallback(apiBuffer, WGPUBufferMapAsyncStatus_Success);
-        }));
+    EXPECT_CALL(api, OnBufferMapAsync(apiBuffer, WGPUMapMode_Read, 0, kBufferSize, _))
+        .WillOnce(InvokeWithoutArgs(
+            [&] { api.CallBufferMapAsyncCallback(apiBuffer, WGPUBufferMapAsyncStatus_Success); }));
     EXPECT_CALL(api, BufferGetConstMappedRange(apiBuffer, 0, kBufferSize))
         .WillOnce(Return(&mBufferContent));
 
@@ -517,13 +544,17 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapReadDeserializeDataUpdateFailure
 
     // Failed deserialization is a fatal failure and the client synchronously receives a
     // DEVICE_LOST callback.
-    EXPECT_CALL(*mockBufferMapCallback, Call(WGPUBufferMapAsyncStatus_DeviceLost, _)).Times(1);
+    EXPECT_CALL(*mockBufferMapCallback, Call(WGPUBufferMapAsyncStatus_Unknown, _)).Times(1);
 
     FlushServer(false);
 
     // The handle is destroyed once the buffer is destroyed.
     EXPECT_CALL(clientMemoryTransferService, OnReadHandleDestroy(clientHandle)).Times(1);
     EXPECT_CALL(serverMemoryTransferService, OnReadHandleDestroy(serverHandle)).Times(1);
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test mapping for reading destroying the buffer before unmapping on the client side.
@@ -548,10 +579,9 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapReadDestroyBeforeUnmap) {
     ExpectServerReadHandleSerializeDataUpdate(serverHandle);
 
     // Mock a successful callback
-    EXPECT_CALL(api, OnBufferMapAsync(apiBuffer, WGPUMapMode_Read, 0, kBufferSize, _, _))
-        .WillOnce(InvokeWithoutArgs([&]() {
-            api.CallBufferMapAsyncCallback(apiBuffer, WGPUBufferMapAsyncStatus_Success);
-        }));
+    EXPECT_CALL(api, OnBufferMapAsync(apiBuffer, WGPUMapMode_Read, 0, kBufferSize, _))
+        .WillOnce(InvokeWithoutArgs(
+            [&] { api.CallBufferMapAsyncCallback(apiBuffer, WGPUBufferMapAsyncStatus_Success); }));
     EXPECT_CALL(clientMemoryTransferService, OnReadHandleGetData(clientHandle))
         .WillOnce(Return(&mBufferContent));
     EXPECT_CALL(api, BufferGetConstMappedRange(apiBuffer, 0, kBufferSize))
@@ -583,6 +613,11 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapReadDestroyBeforeUnmap) {
         EXPECT_CALL(api, BufferUnmap(apiBuffer)).Times(1);
         FlushClient();
     }
+
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test successful mapping for writing.
@@ -603,10 +638,9 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapWriteSuccess) {
     wgpuBufferMapAsync(buffer, WGPUMapMode_Write, 0, kBufferSize, ToMockBufferMapCallback, nullptr);
 
     // Mock a successful callback.
-    EXPECT_CALL(api, OnBufferMapAsync(apiBuffer, WGPUMapMode_Write, 0, kBufferSize, _, _))
-        .WillOnce(InvokeWithoutArgs([&]() {
-            api.CallBufferMapAsyncCallback(apiBuffer, WGPUBufferMapAsyncStatus_Success);
-        }));
+    EXPECT_CALL(api, OnBufferMapAsync(apiBuffer, WGPUMapMode_Write, 0, kBufferSize, _))
+        .WillOnce(InvokeWithoutArgs(
+            [&] { api.CallBufferMapAsyncCallback(apiBuffer, WGPUBufferMapAsyncStatus_Success); }));
     EXPECT_CALL(clientMemoryTransferService, OnWriteHandleGetData(clientHandle))
         .WillOnce(Return(&mBufferContent));
     EXPECT_CALL(api, BufferGetMappedRange(apiBuffer, 0, kBufferSize))
@@ -637,6 +671,10 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapWriteSuccess) {
     // The handle is destroyed once the buffer is destroyed.
     EXPECT_CALL(clientMemoryTransferService, OnWriteHandleDestroy(clientHandle)).Times(1);
     EXPECT_CALL(serverMemoryTransferService, OnWriteHandleDestroy(serverHandle)).Times(1);
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test WriteHandle destroy behavior
@@ -661,6 +699,11 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapWriteDestroy) {
     EXPECT_CALL(api, BufferDestroy(apiBuffer)).Times(1);
 
     FlushClient();
+
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test unsuccessful MapWrite.
@@ -683,14 +726,15 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapWriteError) {
     wgpuBufferMapAsync(buffer, WGPUMapMode_Write, 0, kBufferSize, ToMockBufferMapCallback, nullptr);
 
     // Mock an error callback.
-    EXPECT_CALL(api, OnBufferMapAsync(apiBuffer, WGPUMapMode_Write, 0, kBufferSize, _, _))
-        .WillOnce(InvokeWithoutArgs(
-            [&]() { api.CallBufferMapAsyncCallback(apiBuffer, WGPUBufferMapAsyncStatus_Error); }));
+    EXPECT_CALL(api, OnBufferMapAsync(apiBuffer, WGPUMapMode_Write, 0, kBufferSize, _))
+        .WillOnce(InvokeWithoutArgs([&] {
+            api.CallBufferMapAsyncCallback(apiBuffer, WGPUBufferMapAsyncStatus_ValidationError);
+        }));
 
     FlushClient();
 
     // The client receives an error callback.
-    EXPECT_CALL(*mockBufferMapCallback, Call(WGPUBufferMapAsyncStatus_Error, _)).Times(1);
+    EXPECT_CALL(*mockBufferMapCallback, Call(WGPUBufferMapAsyncStatus_ValidationError, _)).Times(1);
 
     FlushServer();
 
@@ -703,6 +747,10 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapWriteError) {
     // The handle is destroyed once the buffer is destroyed.
     EXPECT_CALL(clientMemoryTransferService, OnWriteHandleDestroy(clientHandle)).Times(1);
     EXPECT_CALL(serverMemoryTransferService, OnWriteHandleDestroy(serverHandle)).Times(1);
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test WriteHandle creation failure.
@@ -714,7 +762,8 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapWriteHandleCreationFailure) {
     descriptor.size = kBufferSize;
     descriptor.usage = WGPUBufferUsage_MapWrite;
 
-    wgpuDeviceCreateBuffer(device, &descriptor);
+    WGPUBuffer buffer = wgpuDeviceCreateBuffer(cDevice, &descriptor);
+    wgpuBufferRelease(buffer);
 }
 
 // Test MapWrite DeserializeWriteHandle failure.
@@ -736,6 +785,10 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapWriteDeserializeWriteHandleFailu
 
     // The handle is destroyed once the buffer is destroyed.
     EXPECT_CALL(clientMemoryTransferService, OnWriteHandleDestroy(clientHandle)).Times(1);
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test MapWrite DeserializeDataUpdate failure.
@@ -756,10 +809,9 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapWriteDeserializeDataUpdateFailur
     wgpuBufferMapAsync(buffer, WGPUMapMode_Write, 0, kBufferSize, ToMockBufferMapCallback, nullptr);
 
     // Mock a successful callback.
-    EXPECT_CALL(api, OnBufferMapAsync(apiBuffer, WGPUMapMode_Write, 0, kBufferSize, _, _))
-        .WillOnce(InvokeWithoutArgs([&]() {
-            api.CallBufferMapAsyncCallback(apiBuffer, WGPUBufferMapAsyncStatus_Success);
-        }));
+    EXPECT_CALL(api, OnBufferMapAsync(apiBuffer, WGPUMapMode_Write, 0, kBufferSize, _))
+        .WillOnce(InvokeWithoutArgs(
+            [&] { api.CallBufferMapAsyncCallback(apiBuffer, WGPUBufferMapAsyncStatus_Success); }));
     EXPECT_CALL(clientMemoryTransferService, OnWriteHandleGetData(clientHandle))
         .WillOnce(Return(&mBufferContent));
     EXPECT_CALL(api, BufferGetMappedRange(apiBuffer, 0, kBufferSize))
@@ -788,6 +840,10 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapWriteDeserializeDataUpdateFailur
     // The handle is destroyed once the buffer is destroyed.
     EXPECT_CALL(clientMemoryTransferService, OnWriteHandleDestroy(clientHandle)).Times(1);
     EXPECT_CALL(serverMemoryTransferService, OnWriteHandleDestroy(serverHandle)).Times(1);
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test MapWrite destroying the buffer before unmapping on the client side.
@@ -808,10 +864,9 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapWriteDestroyBeforeUnmap) {
     wgpuBufferMapAsync(buffer, WGPUMapMode_Write, 0, kBufferSize, ToMockBufferMapCallback, nullptr);
 
     // Mock a successful callback.
-    EXPECT_CALL(api, OnBufferMapAsync(apiBuffer, WGPUMapMode_Write, 0, kBufferSize, _, _))
-        .WillOnce(InvokeWithoutArgs([&]() {
-            api.CallBufferMapAsyncCallback(apiBuffer, WGPUBufferMapAsyncStatus_Success);
-        }));
+    EXPECT_CALL(api, OnBufferMapAsync(apiBuffer, WGPUMapMode_Write, 0, kBufferSize, _))
+        .WillOnce(InvokeWithoutArgs(
+            [&] { api.CallBufferMapAsyncCallback(apiBuffer, WGPUBufferMapAsyncStatus_Success); }));
     EXPECT_CALL(clientMemoryTransferService, OnWriteHandleGetData(clientHandle))
         .WillOnce(Return(&mBufferContent));
     EXPECT_CALL(api, BufferGetMappedRange(apiBuffer, 0, kBufferSize))
@@ -845,6 +900,11 @@ TEST_F(WireMemoryTransferServiceTests, BufferMapWriteDestroyBeforeUnmap) {
         EXPECT_CALL(api, BufferUnmap(apiBuffer)).Times(1);
         FlushClient();
     }
+
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test successful buffer creation with mappedAtCreation = true.
@@ -879,6 +939,11 @@ TEST_F(WireMemoryTransferServiceTests, MappedAtCreationSuccess) {
     EXPECT_CALL(api, BufferUnmap(apiBuffer)).Times(1);
 
     FlushClient();
+
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test buffer creation with mappedAtCreation WriteHandle creation failure.
@@ -890,7 +955,7 @@ TEST_F(WireMemoryTransferServiceTests, MappedAtCreationWriteHandleCreationFailur
     descriptor.size = sizeof(mBufferContent);
     descriptor.mappedAtCreation = true;
 
-    WGPUBuffer buffer = wgpuDeviceCreateBuffer(device, &descriptor);
+    WGPUBuffer buffer = wgpuDeviceCreateBuffer(cDevice, &descriptor);
     EXPECT_EQ(nullptr, buffer);
 }
 
@@ -909,7 +974,7 @@ TEST_F(WireMemoryTransferServiceTests, MappedAtCreationDeserializeWriteHandleFai
 
     WGPUBuffer apiBuffer = api.GetNewBuffer();
 
-    wgpuDeviceCreateBuffer(device, &descriptor);
+    WGPUBuffer buffer = wgpuDeviceCreateBuffer(cDevice, &descriptor);
 
     EXPECT_CALL(api, DeviceCreateBuffer(apiDevice, _)).WillOnce(Return(apiBuffer));
     // Now bufferGetMappedRange won't be called if deserialize writeHandle fails
@@ -917,6 +982,10 @@ TEST_F(WireMemoryTransferServiceTests, MappedAtCreationDeserializeWriteHandleFai
     FlushClient(false);
 
     EXPECT_CALL(clientMemoryTransferService, OnWriteHandleDestroy(clientHandle)).Times(1);
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test buffer creation with mappedAtCreation = true DeserializeDataUpdate failure.
@@ -951,6 +1020,10 @@ TEST_F(WireMemoryTransferServiceTests, MappedAtCreationDeserializeDataUpdateFail
     // Failed BufferUpdateMappedData cmd will early return so BufferUnmap is not processed.
     // The server side writeHandle is destructed at buffer destruction.
     EXPECT_CALL(serverMemoryTransferService, OnWriteHandleDestroy(serverHandle)).Times(1);
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test mappedAtCreation=true destroying the buffer before unmapping on the client side.
@@ -986,6 +1059,11 @@ TEST_F(WireMemoryTransferServiceTests, MappedAtCreationDestroyBeforeUnmap) {
         EXPECT_CALL(api, BufferUnmap(apiBuffer)).Times(1);
         FlushClient();
     }
+
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test a buffer with mappedAtCreation and MapRead usage destroy WriteHandle on unmap and switch
@@ -1024,9 +1102,13 @@ TEST_F(WireMemoryTransferServiceTests, MappedAtCreationAndMapReadSuccess) {
     EXPECT_CALL(serverMemoryTransferService, OnWriteHandleDestroy(serverWriteHandle)).Times(1);
     FlushClient();
 
-    // The ReadHandle will be destoryed on buffer destroy.
+    // The ReadHandle will be destroyed on buffer destroy.
     EXPECT_CALL(clientMemoryTransferService, OnReadHandleDestroy(clientReadHandle)).Times(1);
     EXPECT_CALL(serverMemoryTransferService, OnReadHandleDestroy(serverReadHandle)).Times(1);
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
 // Test WriteHandle preserves after unmap for a buffer with mappedAtCreation and MapWrite usage
@@ -1061,6 +1143,11 @@ TEST_F(WireMemoryTransferServiceTests, MappedAtCreationAndMapWriteSuccess) {
     // The writeHandle is preserved after unmap and is destroyed once the buffer is destroyed.
     EXPECT_CALL(clientMemoryTransferService, OnWriteHandleDestroy(clientHandle)).Times(1);
     EXPECT_CALL(serverMemoryTransferService, OnWriteHandleDestroy(serverHandle)).Times(1);
+    EXPECT_CALL(api, BufferRelease(apiBuffer));
+    wgpuBufferRelease(buffer);
+
+    FlushClient();
 }
 
+}  // anonymous namespace
 }  // namespace dawn::wire

@@ -1,16 +1,29 @@
-// Copyright 2019 The Dawn Authors
+// Copyright 2019 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <cmath>
 #include <limits>
@@ -25,6 +38,15 @@
 #include "dawn/utils/TextureUtils.h"
 #include "dawn/utils/WGPUHelpers.h"
 
+namespace dawn {
+namespace {
+
+enum class TextureComponentType {
+    Float,
+    Sint,
+    Uint,
+};
+
 // An expectation for float buffer content that can correctly compare different NaN values and
 // supports a basic tolerance for comparison of finite values.
 class ExpectFloatWithTolerance : public detail::Expectation {
@@ -33,7 +55,7 @@ class ExpectFloatWithTolerance : public detail::Expectation {
         : mExpected(std::move(expected)), mTolerance(tolerance) {}
 
     testing::AssertionResult Check(const void* data, size_t size) override {
-        ASSERT(size == sizeof(float) * mExpected.size());
+        DAWN_ASSERT(size == sizeof(float) * mExpected.size());
 
         const float* actual = static_cast<const float*>(data);
 
@@ -45,7 +67,7 @@ class ExpectFloatWithTolerance : public detail::Expectation {
                 testing::AssertionResult result = testing::AssertionFailure()
                                                   << "Expected data[" << i << "] to be close to "
                                                   << expectedValue << ", actual " << actualValue
-                                                  << std::endl;
+                                                  << "\n";
                 return result;
             }
         }
@@ -80,7 +102,7 @@ class ExpectFloat16 : public detail::Expectation {
     explicit ExpectFloat16(std::vector<uint16_t> expected) : mExpected(std::move(expected)) {}
 
     testing::AssertionResult Check(const void* data, size_t size) override {
-        ASSERT(size == sizeof(uint16_t) * mExpected.size());
+        DAWN_ASSERT(size == sizeof(uint16_t) * mExpected.size());
 
         const uint16_t* actual = static_cast<const uint16_t*>(data);
 
@@ -92,7 +114,7 @@ class ExpectFloat16 : public detail::Expectation {
                 testing::AssertionResult result = testing::AssertionFailure()
                                                   << "Expected data[" << i << "] to be "
                                                   << expectedValue << ", actual " << actualValue
-                                                  << std::endl;
+                                                  << "\n";
                 return result;
             }
         }
@@ -117,7 +139,7 @@ class ExpectRG11B10Ufloat : public detail::Expectation {
     explicit ExpectRG11B10Ufloat(std::vector<uint32_t> expected) : mExpected(std::move(expected)) {}
 
     testing::AssertionResult Check(const void* data, size_t size) override {
-        ASSERT(size == sizeof(uint32_t) * mExpected.size());
+        DAWN_ASSERT(size == sizeof(uint32_t) * mExpected.size());
 
         const uint32_t* actual = static_cast<const uint32_t*>(data);
 
@@ -129,7 +151,7 @@ class ExpectRG11B10Ufloat : public detail::Expectation {
                 testing::AssertionResult result = testing::AssertionFailure()
                                                   << "Expected data[" << i << "] to be "
                                                   << expectedValue << ", actual " << actualValue
-                                                  << std::endl;
+                                                  << "\n";
                 return result;
             }
         }
@@ -151,8 +173,8 @@ class ExpectRG11B10Ufloat : public detail::Expectation {
     }
 
     bool Float11Match(uint32_t expected, uint32_t actual) {
-        ASSERT((expected & ~0x7FF) == 0);
-        ASSERT((actual & ~0x7FF) == 0);
+        DAWN_ASSERT((expected & ~0x7FF) == 0);
+        DAWN_ASSERT((actual & ~0x7FF) == 0);
 
         if (IsFloat11NaN(expected)) {
             return IsFloat11NaN(actual);
@@ -162,8 +184,8 @@ class ExpectRG11B10Ufloat : public detail::Expectation {
     }
 
     bool Float10Match(uint32_t expected, uint32_t actual) {
-        ASSERT((expected & ~0x3FF) == 0);
-        ASSERT((actual & ~0x3FF) == 0);
+        DAWN_ASSERT((expected & ~0x3FF) == 0);
+        DAWN_ASSERT((actual & ~0x3FF) == 0);
 
         if (IsFloat10NaN(expected)) {
             return IsFloat10NaN(actual);
@@ -174,13 +196,13 @@ class ExpectRG11B10Ufloat : public detail::Expectation {
 
     // The number is NaN if exponent bits are all 1 and mantissa is non-zero
     bool IsFloat11NaN(uint32_t value) {
-        ASSERT((value & ~0x7FF) == 0);
+        DAWN_ASSERT((value & ~0x7FF) == 0);
 
         return ((value & 0x7C0) == 0x7C0) && ((value & 0x3F) != 0);
     }
 
     bool IsFloat10NaN(uint32_t value) {
-        ASSERT((value & ~0x3FF) == 0);
+        DAWN_ASSERT((value & ~0x3FF) == 0);
 
         return ((value & 0x3E0) == 0x3E0) && ((value & 0x1F) != 0);
     }
@@ -194,7 +216,7 @@ class TextureFormatTest : public DawnTest {
     struct FormatTestInfo {
         wgpu::TextureFormat format;
         uint32_t texelByteSize;
-        wgpu::TextureComponentType type;
+        TextureComponentType type;
         uint32_t componentCount;
     };
 
@@ -202,14 +224,14 @@ class TextureFormatTest : public DawnTest {
     // of the format. That the equivalent format with all channels 32bit-sized.
     FormatTestInfo GetUncompressedFormatInfo(FormatTestInfo formatInfo) {
         switch (formatInfo.type) {
-            case wgpu::TextureComponentType::Float:
+            case TextureComponentType::Float:
                 return {wgpu::TextureFormat::RGBA32Float, 16, formatInfo.type, 4};
-            case wgpu::TextureComponentType::Sint:
+            case TextureComponentType::Sint:
                 return {wgpu::TextureFormat::RGBA32Sint, 16, formatInfo.type, 4};
-            case wgpu::TextureComponentType::Uint:
+            case TextureComponentType::Uint:
                 return {wgpu::TextureFormat::RGBA32Uint, 16, formatInfo.type, 4};
             default:
-                UNREACHABLE();
+                DAWN_UNREACHABLE();
         }
     }
 
@@ -266,12 +288,12 @@ class TextureFormatTest : public DawnTest {
                       size_t expectedRenderDataSize,
                       detail::Expectation* customExpectation) {
         // The input data should contain an exact number of texels
-        ASSERT(sampleDataSize % sampleFormatInfo.texelByteSize == 0);
+        DAWN_ASSERT(sampleDataSize % sampleFormatInfo.texelByteSize == 0);
         uint32_t width = sampleDataSize / sampleFormatInfo.texelByteSize;
 
         // The input data must be a multiple of 4 byte in length for WriteBuffer
-        ASSERT(sampleDataSize % 4 == 0);
-        ASSERT(expectedRenderDataSize % 4 == 0);
+        DAWN_ASSERT(sampleDataSize % 4 == 0);
+        DAWN_ASSERT(expectedRenderDataSize % 4 == 0);
 
         // Create the texture we will sample from
         wgpu::TextureDescriptor sampleTextureDesc;
@@ -284,7 +306,7 @@ class TextureFormatTest : public DawnTest {
                                                                 wgpu::BufferUsage::CopySrc);
 
         // Create the texture that we will render results to
-        ASSERT(expectedRenderDataSize == width * renderFormatInfo.texelByteSize);
+        DAWN_ASSERT(expectedRenderDataSize == width * renderFormatInfo.texelByteSize);
 
         wgpu::TextureDescriptor renderTargetDesc;
         renderTargetDesc.usage = wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::RenderAttachment;
@@ -428,8 +450,11 @@ class TextureFormatTest : public DawnTest {
     template <typename T>
     void DoUnormTest(FormatTestInfo formatInfo) {
         static_assert(!std::is_signed<T>::value && std::is_integral<T>::value);
-        ASSERT(sizeof(T) * formatInfo.componentCount == formatInfo.texelByteSize);
-        ASSERT(formatInfo.type == wgpu::TextureComponentType::Float);
+        DAWN_ASSERT(sizeof(T) * formatInfo.componentCount == formatInfo.texelByteSize);
+        DAWN_ASSERT(formatInfo.type == TextureComponentType::Float);
+
+        DAWN_TEST_UNSUPPORTED_IF((utils::IsUnorm16TextureFormat(formatInfo.format)) &&
+                                 !IsUnorm16TextureFormatsSupported());
 
         T maxValue = std::numeric_limits<T>::max();
         std::vector<T> textureData = {0, 1, maxValue, maxValue};
@@ -442,8 +467,11 @@ class TextureFormatTest : public DawnTest {
     template <typename T>
     void DoSnormTest(FormatTestInfo formatInfo) {
         static_assert(std::is_signed<T>::value && std::is_integral<T>::value);
-        ASSERT(sizeof(T) * formatInfo.componentCount == formatInfo.texelByteSize);
-        ASSERT(formatInfo.type == wgpu::TextureComponentType::Float);
+        DAWN_ASSERT(sizeof(T) * formatInfo.componentCount == formatInfo.texelByteSize);
+        DAWN_ASSERT(formatInfo.type == TextureComponentType::Float);
+
+        DAWN_TEST_UNSUPPORTED_IF((utils::IsSnorm16TextureFormat(formatInfo.format)) &&
+                                 !IsSnorm16TextureFormatsSupported());
 
         T maxValue = std::numeric_limits<T>::max();
         T minValue = std::numeric_limits<T>::min();
@@ -458,8 +486,8 @@ class TextureFormatTest : public DawnTest {
     template <typename T>
     void DoUintTest(FormatTestInfo formatInfo) {
         static_assert(!std::is_signed<T>::value && std::is_integral<T>::value);
-        ASSERT(sizeof(T) * formatInfo.componentCount == formatInfo.texelByteSize);
-        ASSERT(formatInfo.type == wgpu::TextureComponentType::Uint);
+        DAWN_ASSERT(sizeof(T) * formatInfo.componentCount == formatInfo.texelByteSize);
+        DAWN_ASSERT(formatInfo.type == TextureComponentType::Uint);
 
         T maxValue = std::numeric_limits<T>::max();
         std::vector<T> textureData = {0, 1, maxValue, maxValue};
@@ -472,8 +500,8 @@ class TextureFormatTest : public DawnTest {
     template <typename T>
     void DoSintTest(FormatTestInfo formatInfo) {
         static_assert(std::is_signed<T>::value && std::is_integral<T>::value);
-        ASSERT(sizeof(T) * formatInfo.componentCount == formatInfo.texelByteSize);
-        ASSERT(formatInfo.type == wgpu::TextureComponentType::Sint);
+        DAWN_ASSERT(sizeof(T) * formatInfo.componentCount == formatInfo.texelByteSize);
+        DAWN_ASSERT(formatInfo.type == TextureComponentType::Sint);
 
         T maxValue = std::numeric_limits<T>::max();
         T minValue = std::numeric_limits<T>::min();
@@ -485,8 +513,8 @@ class TextureFormatTest : public DawnTest {
     }
 
     void DoFloat32Test(FormatTestInfo formatInfo) {
-        ASSERT(sizeof(float) * formatInfo.componentCount == formatInfo.texelByteSize);
-        ASSERT(formatInfo.type == wgpu::TextureComponentType::Float);
+        DAWN_ASSERT(sizeof(float) * formatInfo.componentCount == formatInfo.texelByteSize);
+        DAWN_ASSERT(formatInfo.type == TextureComponentType::Float);
 
         std::vector<float> textureData = {+0.0f,   -0.0f, 1.0f,     1.0e-29f,
                                           1.0e29f, NAN,   INFINITY, -INFINITY};
@@ -497,8 +525,8 @@ class TextureFormatTest : public DawnTest {
     }
 
     void DoFloat16Test(FormatTestInfo formatInfo) {
-        ASSERT(sizeof(int16_t) * formatInfo.componentCount == formatInfo.texelByteSize);
-        ASSERT(formatInfo.type == wgpu::TextureComponentType::Float);
+        DAWN_ASSERT(sizeof(int16_t) * formatInfo.componentCount == formatInfo.texelByteSize);
+        DAWN_ASSERT(formatInfo.type == TextureComponentType::Float);
 
         std::vector<float> uncompressedData = {+0.0f,  -0.0f, 1.0f,     1.01e-4f,
                                                1.0e4f, NAN,   INFINITY, -INFINITY};
@@ -514,176 +542,232 @@ class TextureFormatTest : public DawnTest {
                               new ExpectFloat16(textureData));
     }
 
-    // For "rg11b10ufloat-renderable" feature test
     std::vector<wgpu::FeatureName> GetRequiredFeatures() override {
+        std::vector<wgpu::FeatureName> requiredFeatures = {};
         if (SupportsFeatures({wgpu::FeatureName::RG11B10UfloatRenderable})) {
             mIsRG11B10UfloatRenderableSupported = true;
-            return {wgpu::FeatureName::RG11B10UfloatRenderable};
-        } else {
-            mIsRG11B10UfloatRenderableSupported = false;
-            return {};
+            requiredFeatures.push_back(wgpu::FeatureName::RG11B10UfloatRenderable);
         }
+        if (SupportsFeatures({wgpu::FeatureName::Unorm16TextureFormats})) {
+            mIsUnorm16TextureFormatsSupported = true;
+            requiredFeatures.push_back(wgpu::FeatureName::Unorm16TextureFormats);
+        }
+        if (SupportsFeatures({wgpu::FeatureName::Snorm16TextureFormats})) {
+            mIsSnorm16TextureFormatsSupported = true;
+            requiredFeatures.push_back(wgpu::FeatureName::Snorm16TextureFormats);
+        }
+        return requiredFeatures;
     }
 
     bool IsRG11B10UfloatRenderableSupported() { return mIsRG11B10UfloatRenderableSupported; }
+    bool IsUnorm16TextureFormatsSupported() { return mIsUnorm16TextureFormatsSupported; }
+    bool IsSnorm16TextureFormatsSupported() { return mIsSnorm16TextureFormatsSupported; }
 
   private:
     bool mIsRG11B10UfloatRenderableSupported = false;
+    bool mIsUnorm16TextureFormatsSupported = false;
+    bool mIsSnorm16TextureFormatsSupported = false;
 };
 
 // Test the R8Unorm format
 TEST_P(TextureFormatTest, R8Unorm) {
-    DoUnormTest<uint8_t>({wgpu::TextureFormat::R8Unorm, 1, wgpu::TextureComponentType::Float, 1});
+    DoUnormTest<uint8_t>({wgpu::TextureFormat::R8Unorm, 1, TextureComponentType::Float, 1});
 }
 
 // Test the RG8Unorm format
 TEST_P(TextureFormatTest, RG8Unorm) {
-    DoUnormTest<uint8_t>({wgpu::TextureFormat::RG8Unorm, 2, wgpu::TextureComponentType::Float, 2});
+    DoUnormTest<uint8_t>({wgpu::TextureFormat::RG8Unorm, 2, TextureComponentType::Float, 2});
+}
+
+// Test the R16Unorm format
+TEST_P(TextureFormatTest, R16Unorm) {
+    DoUnormTest<uint16_t>({wgpu::TextureFormat::R16Unorm, 2, TextureComponentType::Float, 1});
+}
+
+// Test the RG16Unorm format
+TEST_P(TextureFormatTest, RG16Unorm) {
+    DoUnormTest<uint16_t>({wgpu::TextureFormat::RG16Unorm, 4, TextureComponentType::Float, 2});
+}
+
+// Test the RGBA16Unorm format
+TEST_P(TextureFormatTest, RGBA16Unorm) {
+    DoUnormTest<uint16_t>({wgpu::TextureFormat::RGBA16Unorm, 8, TextureComponentType::Float, 4});
 }
 
 // Test the RGBA8Unorm format
 TEST_P(TextureFormatTest, RGBA8Unorm) {
-    DoUnormTest<uint8_t>(
-        {wgpu::TextureFormat::RGBA8Unorm, 4, wgpu::TextureComponentType::Float, 4});
+    DoUnormTest<uint8_t>({wgpu::TextureFormat::RGBA8Unorm, 4, TextureComponentType::Float, 4});
 }
 
 // Test the BGRA8Unorm format
 TEST_P(TextureFormatTest, BGRA8Unorm) {
-    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("disable_bgra_read"));
-
     // Intel's implementation of BGRA on ES is broken: it claims to support
     // GL_EXT_texture_format_BGRA8888, but won't accept GL_BGRA or GL_BGRA8_EXT as internalFormat.
     DAWN_SUPPRESS_TEST_IF(IsIntel() && IsOpenGLES() && IsLinux());
 
+    // TODO(crbug.com/dawn/2295): diagnose this failure on Pixel 4 OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsQualcomm());
+
     uint8_t maxValue = std::numeric_limits<uint8_t>::max();
     std::vector<uint8_t> textureData = {maxValue, 1, 0, maxValue};
     std::vector<float> uncompressedData = {0.0f, 1.0f / maxValue, 1.0f, 1.0f};
-    DoFormatSamplingTest({wgpu::TextureFormat::BGRA8Unorm, 4, wgpu::TextureComponentType::Float, 4},
+    DoFormatSamplingTest({wgpu::TextureFormat::BGRA8Unorm, 4, TextureComponentType::Float, 4},
                          textureData, uncompressedData);
-    DoFormatRenderingTest(
-        {wgpu::TextureFormat::BGRA8Unorm, 4, wgpu::TextureComponentType::Float, 4},
-        uncompressedData, textureData);
+    DoFormatRenderingTest({wgpu::TextureFormat::BGRA8Unorm, 4, TextureComponentType::Float, 4},
+                          uncompressedData, textureData);
 }
 
 // Test the R8Snorm format
 TEST_P(TextureFormatTest, R8Snorm) {
-    DoSnormTest<int8_t>({wgpu::TextureFormat::R8Snorm, 1, wgpu::TextureComponentType::Float, 1});
+    DoSnormTest<int8_t>({wgpu::TextureFormat::R8Snorm, 1, TextureComponentType::Float, 1});
 }
 
 // Test the RG8Snorm format
 TEST_P(TextureFormatTest, RG8Snorm) {
-    DoSnormTest<int8_t>({wgpu::TextureFormat::RG8Snorm, 2, wgpu::TextureComponentType::Float, 2});
+    DoSnormTest<int8_t>({wgpu::TextureFormat::RG8Snorm, 2, TextureComponentType::Float, 2});
 }
 
 // Test the RGBA8Snorm format
 TEST_P(TextureFormatTest, RGBA8Snorm) {
-    DoSnormTest<int8_t>({wgpu::TextureFormat::RGBA8Snorm, 4, wgpu::TextureComponentType::Float, 4});
+    DoSnormTest<int8_t>({wgpu::TextureFormat::RGBA8Snorm, 4, TextureComponentType::Float, 4});
+}
+
+// Test the R16Snorm format
+TEST_P(TextureFormatTest, R16Snorm) {
+    DoSnormTest<int16_t>({wgpu::TextureFormat::R16Snorm, 2, TextureComponentType::Float, 1});
+}
+
+// Test the RG16Snorm format
+TEST_P(TextureFormatTest, RG16Snorm) {
+    DoSnormTest<int16_t>({wgpu::TextureFormat::RG16Snorm, 4, TextureComponentType::Float, 2});
+}
+
+// Test the RGBA16Snorm format
+TEST_P(TextureFormatTest, RGBA16Snorm) {
+    DoSnormTest<int16_t>({wgpu::TextureFormat::RGBA16Snorm, 8, TextureComponentType::Float, 4});
 }
 
 // Test the R8Uint format
 TEST_P(TextureFormatTest, R8Uint) {
-    DoUintTest<uint8_t>({wgpu::TextureFormat::R8Uint, 1, wgpu::TextureComponentType::Uint, 1});
+    DoUintTest<uint8_t>({wgpu::TextureFormat::R8Uint, 1, TextureComponentType::Uint, 1});
 }
 
 // Test the RG8Uint format
 TEST_P(TextureFormatTest, RG8Uint) {
-    DoUintTest<uint8_t>({wgpu::TextureFormat::RG8Uint, 2, wgpu::TextureComponentType::Uint, 2});
+    DoUintTest<uint8_t>({wgpu::TextureFormat::RG8Uint, 2, TextureComponentType::Uint, 2});
 }
 
 // Test the RGBA8Uint format
 TEST_P(TextureFormatTest, RGBA8Uint) {
-    DoUintTest<uint8_t>({wgpu::TextureFormat::RGBA8Uint, 4, wgpu::TextureComponentType::Uint, 4});
+    DoUintTest<uint8_t>({wgpu::TextureFormat::RGBA8Uint, 4, TextureComponentType::Uint, 4});
 }
 
 // Test the R16Uint format
 TEST_P(TextureFormatTest, R16Uint) {
-    DoUintTest<uint16_t>({wgpu::TextureFormat::R16Uint, 2, wgpu::TextureComponentType::Uint, 1});
+    DoUintTest<uint16_t>({wgpu::TextureFormat::R16Uint, 2, TextureComponentType::Uint, 1});
 }
 
 // Test the RG16Uint format
 TEST_P(TextureFormatTest, RG16Uint) {
-    DoUintTest<uint16_t>({wgpu::TextureFormat::RG16Uint, 4, wgpu::TextureComponentType::Uint, 2});
+    DoUintTest<uint16_t>({wgpu::TextureFormat::RG16Uint, 4, TextureComponentType::Uint, 2});
 }
 
 // Test the RGBA16Uint format
 TEST_P(TextureFormatTest, RGBA16Uint) {
-    DoUintTest<uint16_t>({wgpu::TextureFormat::RGBA16Uint, 8, wgpu::TextureComponentType::Uint, 4});
+    DoUintTest<uint16_t>({wgpu::TextureFormat::RGBA16Uint, 8, TextureComponentType::Uint, 4});
 }
 
 // Test the R32Uint format
 TEST_P(TextureFormatTest, R32Uint) {
-    DoUintTest<uint32_t>({wgpu::TextureFormat::R32Uint, 4, wgpu::TextureComponentType::Uint, 1});
+    // TODO(crbug.com/dawn/2295): diagnose this failure on Pixel 4 OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsQualcomm());
+
+    DoUintTest<uint32_t>({wgpu::TextureFormat::R32Uint, 4, TextureComponentType::Uint, 1});
 }
 
 // Test the RG32Uint format
 TEST_P(TextureFormatTest, RG32Uint) {
-    DoUintTest<uint32_t>({wgpu::TextureFormat::RG32Uint, 8, wgpu::TextureComponentType::Uint, 2});
+    // TODO(crbug.com/dawn/2295): diagnose this failure on Pixel 4 OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsQualcomm());
+
+    DoUintTest<uint32_t>({wgpu::TextureFormat::RG32Uint, 8, TextureComponentType::Uint, 2});
 }
 
 // Test the RGBA32Uint format
 TEST_P(TextureFormatTest, RGBA32Uint) {
-    DoUintTest<uint32_t>(
-        {wgpu::TextureFormat::RGBA32Uint, 16, wgpu::TextureComponentType::Uint, 4});
+    // TODO(crbug.com/dawn/2295): diagnose this failure on Pixel 4 OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsQualcomm());
+
+    DoUintTest<uint32_t>({wgpu::TextureFormat::RGBA32Uint, 16, TextureComponentType::Uint, 4});
 }
 
 // Test the R8Sint format
 TEST_P(TextureFormatTest, R8Sint) {
-    DoSintTest<int8_t>({wgpu::TextureFormat::R8Sint, 1, wgpu::TextureComponentType::Sint, 1});
+    DoSintTest<int8_t>({wgpu::TextureFormat::R8Sint, 1, TextureComponentType::Sint, 1});
 }
 
 // Test the RG8Sint format
 TEST_P(TextureFormatTest, RG8Sint) {
-    DoSintTest<int8_t>({wgpu::TextureFormat::RG8Sint, 2, wgpu::TextureComponentType::Sint, 2});
+    DoSintTest<int8_t>({wgpu::TextureFormat::RG8Sint, 2, TextureComponentType::Sint, 2});
 }
 
 // Test the RGBA8Sint format
 TEST_P(TextureFormatTest, RGBA8Sint) {
-    DoSintTest<int8_t>({wgpu::TextureFormat::RGBA8Sint, 4, wgpu::TextureComponentType::Sint, 4});
+    DoSintTest<int8_t>({wgpu::TextureFormat::RGBA8Sint, 4, TextureComponentType::Sint, 4});
 }
 
 // Test the R16Sint format
 TEST_P(TextureFormatTest, R16Sint) {
-    DoSintTest<int16_t>({wgpu::TextureFormat::R16Sint, 2, wgpu::TextureComponentType::Sint, 1});
+    DoSintTest<int16_t>({wgpu::TextureFormat::R16Sint, 2, TextureComponentType::Sint, 1});
 }
 
 // Test the RG16Sint format
 TEST_P(TextureFormatTest, RG16Sint) {
-    DoSintTest<int16_t>({wgpu::TextureFormat::RG16Sint, 4, wgpu::TextureComponentType::Sint, 2});
+    DoSintTest<int16_t>({wgpu::TextureFormat::RG16Sint, 4, TextureComponentType::Sint, 2});
 }
 
 // Test the RGBA16Sint format
 TEST_P(TextureFormatTest, RGBA16Sint) {
-    DoSintTest<int16_t>({wgpu::TextureFormat::RGBA16Sint, 8, wgpu::TextureComponentType::Sint, 4});
+    DoSintTest<int16_t>({wgpu::TextureFormat::RGBA16Sint, 8, TextureComponentType::Sint, 4});
 }
 
 // Test the R32Sint format
 TEST_P(TextureFormatTest, R32Sint) {
-    DoSintTest<int32_t>({wgpu::TextureFormat::R32Sint, 4, wgpu::TextureComponentType::Sint, 1});
+    // TODO(crbug.com/dawn/2295): diagnose this failure on Pixel 4 OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsQualcomm());
+
+    DoSintTest<int32_t>({wgpu::TextureFormat::R32Sint, 4, TextureComponentType::Sint, 1});
 }
 
 // Test the RG32Sint format
 TEST_P(TextureFormatTest, RG32Sint) {
-    DoSintTest<int32_t>({wgpu::TextureFormat::RG32Sint, 8, wgpu::TextureComponentType::Sint, 2});
+    // TODO(crbug.com/dawn/2295): diagnose this failure on Pixel 4 OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsQualcomm());
+
+    DoSintTest<int32_t>({wgpu::TextureFormat::RG32Sint, 8, TextureComponentType::Sint, 2});
 }
 
 // Test the RGBA32Sint format
 TEST_P(TextureFormatTest, RGBA32Sint) {
-    DoSintTest<int32_t>({wgpu::TextureFormat::RGBA32Sint, 16, wgpu::TextureComponentType::Sint, 4});
+    // TODO(crbug.com/dawn/2295): diagnose this failure on Pixel 4 OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsQualcomm());
+
+    DoSintTest<int32_t>({wgpu::TextureFormat::RGBA32Sint, 16, TextureComponentType::Sint, 4});
 }
 
 // Test the R32Float format
 TEST_P(TextureFormatTest, R32Float) {
-    DoFloat32Test({wgpu::TextureFormat::R32Float, 4, wgpu::TextureComponentType::Float, 1});
+    DoFloat32Test({wgpu::TextureFormat::R32Float, 4, TextureComponentType::Float, 1});
 }
 
 // Test the RG32Float format
 TEST_P(TextureFormatTest, RG32Float) {
-    DoFloat32Test({wgpu::TextureFormat::RG32Float, 8, wgpu::TextureComponentType::Float, 2});
+    DoFloat32Test({wgpu::TextureFormat::RG32Float, 8, TextureComponentType::Float, 2});
 }
 
 // Test the RGBA32Float format
 TEST_P(TextureFormatTest, RGBA32Float) {
-    DoFloat32Test({wgpu::TextureFormat::RGBA32Float, 16, wgpu::TextureComponentType::Float, 4});
+    DoFloat32Test({wgpu::TextureFormat::RGBA32Float, 16, TextureComponentType::Float, 4});
 }
 
 // Test the R16Float format
@@ -692,7 +776,7 @@ TEST_P(TextureFormatTest, R16Float) {
     // swiftshader
     DAWN_SUPPRESS_TEST_IF(IsVulkan() && IsSwiftshader() || IsANGLE());
 
-    DoFloat16Test({wgpu::TextureFormat::R16Float, 2, wgpu::TextureComponentType::Float, 1});
+    DoFloat16Test({wgpu::TextureFormat::R16Float, 2, TextureComponentType::Float, 1});
 }
 
 // Test the RG16Float format
@@ -701,7 +785,7 @@ TEST_P(TextureFormatTest, RG16Float) {
     // swiftshader
     DAWN_SUPPRESS_TEST_IF(IsVulkan() && IsSwiftshader() || IsANGLE());
 
-    DoFloat16Test({wgpu::TextureFormat::RG16Float, 4, wgpu::TextureComponentType::Float, 2});
+    DoFloat16Test({wgpu::TextureFormat::RG16Float, 4, TextureComponentType::Float, 2});
 }
 
 // Test the RGBA16Float format
@@ -710,7 +794,7 @@ TEST_P(TextureFormatTest, RGBA16Float) {
     // swiftshader
     DAWN_SUPPRESS_TEST_IF(IsVulkan() && IsSwiftshader() || IsANGLE());
 
-    DoFloat16Test({wgpu::TextureFormat::RGBA16Float, 8, wgpu::TextureComponentType::Float, 4});
+    DoFloat16Test({wgpu::TextureFormat::RGBA16Float, 8, TextureComponentType::Float, 4});
 }
 
 // Test the RGBA8Unorm format
@@ -728,18 +812,16 @@ TEST_P(TextureFormatTest, RGBA8UnormSrgb) {
     }
 
     DoFloatFormatSamplingTest(
-        {wgpu::TextureFormat::RGBA8UnormSrgb, 4, wgpu::TextureComponentType::Float, 4}, textureData,
+        {wgpu::TextureFormat::RGBA8UnormSrgb, 4, TextureComponentType::Float, 4}, textureData,
         uncompressedData, 1.0e-3);
-    DoFormatRenderingTest(
-        {wgpu::TextureFormat::RGBA8UnormSrgb, 4, wgpu::TextureComponentType::Float, 4},
-        uncompressedData, textureData);
+    DoFormatRenderingTest({wgpu::TextureFormat::RGBA8UnormSrgb, 4, TextureComponentType::Float, 4},
+                          uncompressedData, textureData);
 }
 
 // Test the BGRA8UnormSrgb format
 TEST_P(TextureFormatTest, BGRA8UnormSrgb) {
-    // TODO(cwallez@chromium.org): This format doesn't exist in OpenGL, emulate it using
-    // RGBA8UnormSrgb and swizzling / shader twiddling
-    DAWN_SUPPRESS_TEST_IF(IsOpenGL() || IsOpenGLES());
+    // BGRA8UnormSrgb is unsupported in Compatibility mode
+    DAWN_SUPPRESS_TEST_IF(IsCompatibilityMode());
 
     uint8_t maxValue = std::numeric_limits<uint8_t>::max();
     std::vector<uint8_t> textureData = {0, 1, maxValue, 64, 35, 68, 152, 168};
@@ -755,20 +837,46 @@ TEST_P(TextureFormatTest, BGRA8UnormSrgb) {
     }
 
     DoFloatFormatSamplingTest(
-        {wgpu::TextureFormat::BGRA8UnormSrgb, 4, wgpu::TextureComponentType::Float, 4}, textureData,
+        {wgpu::TextureFormat::BGRA8UnormSrgb, 4, TextureComponentType::Float, 4}, textureData,
         uncompressedData, 1.0e-3);
-    DoFormatRenderingTest(
-        {wgpu::TextureFormat::BGRA8UnormSrgb, 4, wgpu::TextureComponentType::Float, 4},
-        uncompressedData, textureData);
+    DoFormatRenderingTest({wgpu::TextureFormat::BGRA8UnormSrgb, 4, TextureComponentType::Float, 4},
+                          uncompressedData, textureData);
+}
+
+// Test the RGB10A2Unorm format
+TEST_P(TextureFormatTest, RGB10A2Uint) {
+    auto MakeRGB10A2 = [](uint32_t r, uint32_t g, uint32_t b, uint32_t a) -> uint32_t {
+        DAWN_ASSERT((r & 0x3FF) == r);
+        DAWN_ASSERT((g & 0x3FF) == g);
+        DAWN_ASSERT((b & 0x3FF) == b);
+        DAWN_ASSERT((a & 0x3) == a);
+        return r | g << 10 | b << 20 | a << 30;
+    };
+
+    std::vector<uint32_t> textureData = {MakeRGB10A2(0, 0, 0, 0), MakeRGB10A2(1023, 1023, 1023, 1),
+                                         MakeRGB10A2(243, 576, 765, 2), MakeRGB10A2(0, 0, 0, 3)};
+    // clang-format off
+    std::vector<uint32_t> uncompressedData = {
+       0, 0, 0, 0,
+       1023, 1023, 1023, 1,
+       243, 576, 765, 2,
+       0, 0, 0, 3
+    };
+    // clang-format on
+
+    DoFormatSamplingTest({wgpu::TextureFormat::RGB10A2Uint, 4, TextureComponentType::Uint, 4},
+                         textureData, uncompressedData);
+    DoFormatRenderingTest({wgpu::TextureFormat::RGB10A2Uint, 4, TextureComponentType::Uint, 4},
+                          uncompressedData, textureData);
 }
 
 // Test the RGB10A2Unorm format
 TEST_P(TextureFormatTest, RGB10A2Unorm) {
     auto MakeRGB10A2 = [](uint32_t r, uint32_t g, uint32_t b, uint32_t a) -> uint32_t {
-        ASSERT((r & 0x3FF) == r);
-        ASSERT((g & 0x3FF) == g);
-        ASSERT((b & 0x3FF) == b);
-        ASSERT((a & 0x3) == a);
+        DAWN_ASSERT((r & 0x3FF) == r);
+        DAWN_ASSERT((g & 0x3FF) == g);
+        DAWN_ASSERT((b & 0x3FF) == b);
+        DAWN_ASSERT((a & 0x3) == a);
         return r | g << 10 | b << 20 | a << 30;
     };
 
@@ -784,11 +892,10 @@ TEST_P(TextureFormatTest, RGB10A2Unorm) {
     // clang-format on
 
     DoFloatFormatSamplingTest(
-        {wgpu::TextureFormat::RGB10A2Unorm, 4, wgpu::TextureComponentType::Float, 4}, textureData,
+        {wgpu::TextureFormat::RGB10A2Unorm, 4, TextureComponentType::Float, 4}, textureData,
         uncompressedData, 1.0e-5);
-    DoFormatRenderingTest(
-        {wgpu::TextureFormat::RGB10A2Unorm, 4, wgpu::TextureComponentType::Float, 4},
-        uncompressedData, textureData);
+    DoFormatRenderingTest({wgpu::TextureFormat::RGB10A2Unorm, 4, TextureComponentType::Float, 4},
+                          uncompressedData, textureData);
 }
 
 // Test the RG11B10Ufloat format
@@ -804,9 +911,9 @@ TEST_P(TextureFormatTest, RG11B10Ufloat) {
     constexpr uint32_t kFloat10One = 0x1E0;
 
     auto MakeRG11B10 = [](uint32_t r, uint32_t g, uint32_t b) {
-        ASSERT((r & 0x7FF) == r);
-        ASSERT((g & 0x7FF) == g);
-        ASSERT((b & 0x3FF) == b);
+        DAWN_ASSERT((r & 0x7FF) == r);
+        DAWN_ASSERT((g & 0x7FF) == g);
+        DAWN_ASSERT((b & 0x3FF) == b);
         return r | g << 11 | b << 22;
     };
 
@@ -831,7 +938,7 @@ TEST_P(TextureFormatTest, RG11B10Ufloat) {
     // clang-format on
 
     DoFloatFormatSamplingTest(
-        {wgpu::TextureFormat::RG11B10Ufloat, 4, wgpu::TextureComponentType::Float, 4}, textureData,
+        {wgpu::TextureFormat::RG11B10Ufloat, 4, TextureComponentType::Float, 4}, textureData,
         uncompressedData);
 
     // This format is renderable if "rg11b10ufloat-renderable" feature is enabled
@@ -839,11 +946,11 @@ TEST_P(TextureFormatTest, RG11B10Ufloat) {
         // TODO(https://crbug.com/swiftshader/147) Rendering INFINITY and NaN isn't handled
         // correctly by swiftshader
         if ((IsVulkan() && IsSwiftshader()) || IsANGLE()) {
-            dawn::WarningLog() << "Skip Rendering test because Swiftshader doesn't render INFINITY "
-                                  "and NaN correctly for RG11B10Ufloat texture format.";
+            WarningLog() << "Skip Rendering test because Swiftshader doesn't render INFINITY "
+                            "and NaN correctly for RG11B10Ufloat texture format.";
         } else {
             DoFormatRenderingTest(
-                {wgpu::TextureFormat::RG11B10Ufloat, 4, wgpu::TextureComponentType::Float, 4},
+                {wgpu::TextureFormat::RG11B10Ufloat, 4, TextureComponentType::Float, 4},
                 uncompressedData, textureData, new ExpectRG11B10Ufloat(textureData));
         }
     }
@@ -866,10 +973,10 @@ TEST_P(TextureFormatTest, RGB9E5Ufloat) {
     float largestExponent = std::pow(2.0f, float{31 - 24});
 
     auto MakeRGB9E5 = [](uint32_t r, uint32_t g, uint32_t b, uint32_t e) {
-        ASSERT((r & 0x1FF) == r);
-        ASSERT((g & 0x1FF) == g);
-        ASSERT((b & 0x1FF) == b);
-        ASSERT((e & 0x1F) == e);
+        DAWN_ASSERT((r & 0x1FF) == r);
+        DAWN_ASSERT((g & 0x1FF) == g);
+        DAWN_ASSERT((b & 0x1FF) == b);
+        DAWN_ASSERT((e & 0x1F) == e);
         return r | g << 9 | b << 18 | e << 27;
     };
 
@@ -891,7 +998,7 @@ TEST_P(TextureFormatTest, RGB9E5Ufloat) {
     // clang-format on
 
     DoFloatFormatSamplingTest(
-        {wgpu::TextureFormat::RGB9E5Ufloat, 4, wgpu::TextureComponentType::Float, 4}, textureData,
+        {wgpu::TextureFormat::RGB9E5Ufloat, 4, TextureComponentType::Float, 4}, textureData,
         uncompressedData);
     // This format is not renderable.
 }
@@ -903,3 +1010,6 @@ DAWN_INSTANTIATE_TEST(TextureFormatTest,
                       OpenGLBackend(),
                       OpenGLESBackend(),
                       VulkanBackend());
+
+}  // anonymous namespace
+}  // namespace dawn

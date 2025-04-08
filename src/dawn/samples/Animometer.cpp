@@ -1,16 +1,29 @@
-// Copyright 2017 The Dawn Authors
+// Copyright 2017 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <cstdio>
 #include <cstdlib>
@@ -19,25 +32,16 @@
 #include "dawn/samples/SampleUtils.h"
 
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
-#include "dawn/utils/ScopedAutoreleasePool.h"
-#include "dawn/utils/SystemUtils.h"
 #include "dawn/utils/Timer.h"
 #include "dawn/utils/WGPUHelpers.h"
 
-wgpu::Device device;
-wgpu::Queue queue;
-wgpu::SwapChain swapchain;
-wgpu::RenderPipeline pipeline;
-wgpu::BindGroup bindGroup;
-wgpu::Buffer ubo;
+constexpr size_t kNumTriangles = 10000;
 
 float RandomFloat(float min, float max) {
     // NOLINTNEXTLINE(runtime/threadsafe_fn)
     float zeroOne = rand() / static_cast<float>(RAND_MAX);
     return zeroOne * (max - min) + min;
 }
-
-constexpr size_t kNumTriangles = 10000;
 
 // Aligned as minUniformBufferOffsetAlignment
 struct alignas(256) ShaderData {
@@ -51,13 +55,13 @@ struct alignas(256) ShaderData {
 
 static std::vector<ShaderData> shaderData;
 
-void init() {
-    device = CreateCppDawnDevice();
+class AnimometerSample : public SampleBase {
+  public:
+    using SampleBase::SampleBase;
 
-    queue = device.GetQueue();
-    swapchain = GetSwapChain();
-
-    wgpu::ShaderModule vsModule = utils::CreateShaderModule(device, R"(
+  private:
+    bool SetupImpl() override {
+        wgpu::ShaderModule vsModule = dawn::utils::CreateShaderModule(device, R"(
         struct Constants {
             scale : f32,
             time : f32,
@@ -112,85 +116,89 @@ void init() {
             return output;
         })");
 
-    wgpu::ShaderModule fsModule = utils::CreateShaderModule(device, R"(
+        wgpu::ShaderModule fsModule = dawn::utils::CreateShaderModule(device, R"(
         @fragment fn main(@location(0) v_color : vec4f) -> @location(0) vec4f {
             return v_color;
         })");
 
-    wgpu::BindGroupLayout bgl = utils::MakeBindGroupLayout(
-        device, {{0, wgpu::ShaderStage::Vertex, wgpu::BufferBindingType::Uniform, true}});
+        wgpu::BindGroupLayout bgl = dawn::utils::MakeBindGroupLayout(
+            device, {{0, wgpu::ShaderStage::Vertex, wgpu::BufferBindingType::Uniform, true}});
 
-    utils::ComboRenderPipelineDescriptor descriptor;
-    descriptor.layout = utils::MakeBasicPipelineLayout(device, &bgl);
-    descriptor.vertex.module = vsModule;
-    descriptor.cFragment.module = fsModule;
-    descriptor.cTargets[0].format = GetPreferredSwapChainTextureFormat();
+        dawn::utils::ComboRenderPipelineDescriptor descriptor;
+        descriptor.layout = dawn::utils::MakeBasicPipelineLayout(device, &bgl);
+        descriptor.vertex.module = vsModule;
+        descriptor.cFragment.module = fsModule;
+        descriptor.cTargets[0].format = GetPreferredSurfaceTextureFormat();
 
-    pipeline = device.CreateRenderPipeline(&descriptor);
+        pipeline = device.CreateRenderPipeline(&descriptor);
 
-    shaderData.resize(kNumTriangles);
-    for (auto& data : shaderData) {
-        data.scale = RandomFloat(0.2f, 0.4f);
-        data.time = 0.0;
-        data.offsetX = RandomFloat(-0.9f, 0.9f);
-        data.offsetY = RandomFloat(-0.9f, 0.9f);
-        data.scalar = RandomFloat(0.5f, 2.0f);
-        data.scalarOffset = RandomFloat(0.0f, 10.0f);
-    }
-
-    wgpu::BufferDescriptor bufferDesc;
-    bufferDesc.size = kNumTriangles * sizeof(ShaderData);
-    bufferDesc.usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::Uniform;
-    ubo = device.CreateBuffer(&bufferDesc);
-
-    bindGroup = utils::MakeBindGroup(device, bgl, {{0, ubo, 0, sizeof(ShaderData)}});
-}
-
-int frameCount = 0;
-void frame() {
-    wgpu::TextureView backbufferView = swapchain.GetCurrentTextureView();
-
-    for (auto& data : shaderData) {
-        data.time = frameCount / 60.0f;
-    }
-    queue.WriteBuffer(ubo, 0, shaderData.data(), kNumTriangles * sizeof(ShaderData));
-
-    utils::ComboRenderPassDescriptor renderPass({backbufferView});
-    wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
-    {
-        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&renderPass);
-        pass.SetPipeline(pipeline);
-
-        for (size_t i = 0; i < kNumTriangles; i++) {
-            uint32_t offset = i * sizeof(ShaderData);
-            pass.SetBindGroup(0, bindGroup, 1, &offset);
-            pass.Draw(3);
+        shaderData.resize(kNumTriangles);
+        for (auto& data : shaderData) {
+            data.scale = RandomFloat(0.2f, 0.4f);
+            data.time = 0.0;
+            data.offsetX = RandomFloat(-0.9f, 0.9f);
+            data.offsetY = RandomFloat(-0.9f, 0.9f);
+            data.scalar = RandomFloat(0.5f, 2.0f);
+            data.scalarOffset = RandomFloat(0.0f, 10.0f);
         }
 
-        pass.End();
+        wgpu::BufferDescriptor bufferDesc;
+        bufferDesc.size = kNumTriangles * sizeof(ShaderData);
+        bufferDesc.usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::Uniform;
+        ubo = device.CreateBuffer(&bufferDesc);
+
+        bindGroup = dawn::utils::MakeBindGroup(device, bgl, {{0, ubo, 0, sizeof(ShaderData)}});
+
+        timer->Start();
+        return true;
     }
 
-    wgpu::CommandBuffer commands = encoder.Finish();
-    queue.Submit(1, &commands);
-    swapchain.Present();
-    DoFlush();
-}
+    void FrameImpl() override {
+        frameCount++;
+        for (auto& data : shaderData) {
+            data.time = frameCount / 60.0f;
+        }
+        queue.WriteBuffer(ubo, 0, shaderData.data(), kNumTriangles * sizeof(ShaderData));
+
+        wgpu::SurfaceTexture surfaceTexture;
+        surface.GetCurrentTexture(&surfaceTexture);
+        dawn::utils::ComboRenderPassDescriptor renderPass({surfaceTexture.texture.CreateView()});
+        wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
+        {
+            wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&renderPass);
+            pass.SetPipeline(pipeline);
+
+            for (size_t i = 0; i < kNumTriangles; i++) {
+                uint32_t offset = i * sizeof(ShaderData);
+                pass.SetBindGroup(0, bindGroup, 1, &offset);
+                pass.Draw(3);
+            }
+
+            pass.End();
+        }
+
+        wgpu::CommandBuffer commands = encoder.Finish();
+        queue.Submit(1, &commands);
+
+        if (frameCount % 60 == 0) {
+            printf("FPS: %lf\n", 60.0 / timer->GetElapsedTime());
+            timer->Start();
+        }
+    }
+
+    std::vector<ShaderData> shaderData;
+    wgpu::RenderPipeline pipeline;
+    wgpu::BindGroup bindGroup;
+    wgpu::Buffer ubo;
+    int frameCount = 0;
+    dawn::utils::Timer* timer = dawn::utils::CreateTimer();
+};
 
 int main(int argc, const char* argv[]) {
     if (!InitSample(argc, argv)) {
         return 1;
     }
-    init();
 
-    utils::Timer* timer = utils::CreateTimer();
-    timer->Start();
-    while (!ShouldQuit()) {
-        utils::ScopedAutoreleasePool pool;
-        ProcessEvents();
-        frameCount++;
-        frame();
-        if (frameCount % 60 == 0) {
-            printf("FPS: %lf\n", static_cast<double>(frameCount) / timer->GetElapsedTime());
-        }
-    }
+    AnimometerSample* sample = new AnimometerSample();
+    sample->Run(0);
 }

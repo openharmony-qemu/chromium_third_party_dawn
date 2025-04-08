@@ -1,109 +1,109 @@
-// Copyright 2019 The Dawn Authors
+// Copyright 2019 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/native/opengl/BackendGL.h"
 
-#include <EGL/egl.h>
-
 #include <memory>
+#include <string>
 #include <utility>
 
-#include "dawn/common/SystemUtils.h"
+#include "dawn/native/ChainUtils.h"
 #include "dawn/native/Instance.h"
 #include "dawn/native/OpenGLBackend.h"
-#include "dawn/native/opengl/AdapterGL.h"
-#include "dawn/native/opengl/ContextEGL.h"
-#include "dawn/native/opengl/EGLFunctions.h"
+#include "dawn/native/opengl/DisplayEGL.h"
+#include "dawn/native/opengl/PhysicalDeviceGL.h"
 
 namespace dawn::native::opengl {
 
-// Implementation of the OpenGL backend's BackendConnection
+namespace {
+#if DAWN_PLATFORM_IS(WINDOWS)
+const char* kEGLLib = "libEGL.dll";
+#elif DAWN_PLATFORM_IS(MACOS)
+const char* kEGLLib = "libEGL.dylib";
+#else
+const char* kEGLLib = "libEGL.so";
+#endif
+
+}  // anonymous namespace
 
 Backend::Backend(InstanceBase* instance, wgpu::BackendType backendType)
     : BackendConnection(instance, backendType) {}
 
-std::vector<Ref<AdapterBase>> Backend::DiscoverDefaultAdapters(const TogglesState& adapterToggles) {
-    std::vector<Ref<AdapterBase>> adapters;
-#if DAWN_PLATFORM_IS(WINDOWS)
-    const char* eglLib = "libEGL.dll";
-#elif DAWN_PLATFORM_IS(MACOS)
-    const char* eglLib = "libEGL.dylib";
-#else
-    const char* eglLib = "libEGL.so";
-#endif
-    if (!mLibEGL.Valid() && !mLibEGL.Open(eglLib)) {
+std::vector<Ref<PhysicalDeviceBase>> Backend::DiscoverPhysicalDevices(
+    const UnpackedPtr<RequestAdapterOptions>& options) {
+    if (options->forceFallbackAdapter) {
+        return {};
+    }
+    if (!options->compatibilityMode) {
+        // Return an empty vector since GL physical devices can only support compatibility mode.
         return {};
     }
 
-    AdapterDiscoveryOptions options(ToAPI(GetType()));
-    options.getProc =
-        reinterpret_cast<void* (*)(const char*)>(mLibEGL.GetProc("eglGetProcAddress"));
-    if (!options.getProc) {
+    std::vector<Ref<PhysicalDeviceBase>> devices;
+
+    // A helper function performing checks on the display we're trying to use, and adding the
+    // physical device from it to the list returned by the discovery.
+    auto AppendNewDeviceFrom = [&](ResultOrError<Ref<DisplayEGL>> maybeDisplay) -> MaybeError {
+        Ref<DisplayEGL> display;
+        DAWN_TRY_ASSIGN(display, std::move(maybeDisplay));
+
+        if (!display->egl.HasExt(EGLExt::CreateContextRobustness)) {
+            return DAWN_VALIDATION_ERROR("EGL_EXT_create_context_robustness is required.");
+        }
+        if (!display->egl.HasExt(EGLExt::FenceSync) && !display->egl.HasExt(EGLExt::ReusableSync)) {
+            return DAWN_INTERNAL_ERROR(
+                "EGL_KHR_fence_sync or EGL_KHR_reusable_sync must be supported");
+        }
+
+        Ref<PhysicalDevice> device;
+        DAWN_TRY_ASSIGN(device, PhysicalDevice::Create(GetType(), std::move(display)));
+        devices.push_back(device);
+
         return {};
-    }
+    };
 
-    EGLFunctions egl;
-    egl.Init(options.getProc);
+    // A helper function used to give more context before printing the EGL loading error.
+    auto SwallowDiscoveryError = [&](MaybeError maybeError) {
+        if (maybeError.IsError()) {
+            std::unique_ptr<ErrorData> error = maybeError.AcquireError();
+            error->AppendContext("trying to discover a %s adapter.", GetType());
+            GetInstance()->ConsumedErrorAndWarnOnce(std::move(error));
+        }
+    };
 
-    EGLenum api = GetType() == wgpu::BackendType::OpenGLES ? EGL_OPENGL_ES_API : EGL_OPENGL_API;
-    std::unique_ptr<ContextEGL> context;
-    if (GetInstance()->ConsumedError(ContextEGL::Create(egl, api), &context)) {
-        return {};
-    }
-
-    EGLDisplay prevDisplay = egl.GetCurrentDisplay();
-    EGLContext prevDrawSurface = egl.GetCurrentSurface(EGL_DRAW);
-    EGLContext prevReadSurface = egl.GetCurrentSurface(EGL_READ);
-    EGLContext prevContext = egl.GetCurrentContext();
-
-    context->MakeCurrent();
-
-    auto result = DiscoverAdapters(&options, adapterToggles);
-
-    if (result.IsError()) {
-        GetInstance()->ConsumedError(result.AcquireError());
+    if (auto* glGetProcOptions = options.Get<RequestAdapterOptionsGetGLProc>()) {
+        SwallowDiscoveryError(AppendNewDeviceFrom(DisplayEGL::CreateFromProcAndDisplay(
+            GetType(), glGetProcOptions->getProc, glGetProcOptions->display)));
     } else {
-        auto value = result.AcquireSuccess();
-        adapters.insert(adapters.end(), value.begin(), value.end());
+        SwallowDiscoveryError(
+            AppendNewDeviceFrom(DisplayEGL::CreateFromDynamicLoading(GetType(), kEGLLib)));
     }
 
-    egl.MakeCurrent(prevDisplay, prevDrawSurface, prevReadSurface, prevContext);
-
-    return adapters;
-}
-
-ResultOrError<std::vector<Ref<AdapterBase>>> Backend::DiscoverAdapters(
-    const AdapterDiscoveryOptionsBase* optionsBase,
-    const TogglesState& adapterToggles) {
-    // TODO(cwallez@chromium.org): For now only create a single OpenGL adapter because don't
-    // know how to handle MakeCurrent.
-    DAWN_INVALID_IF(mCreatedAdapter, "The OpenGL backend can only create a single adapter.");
-
-    ASSERT(static_cast<wgpu::BackendType>(optionsBase->backendType) == GetType());
-    const AdapterDiscoveryOptions* options =
-        static_cast<const AdapterDiscoveryOptions*>(optionsBase);
-
-    DAWN_INVALID_IF(options->getProc == nullptr, "AdapterDiscoveryOptions::getProc must be set");
-
-    Ref<Adapter> adapter = AcquireRef(new Adapter(
-        GetInstance(), static_cast<wgpu::BackendType>(optionsBase->backendType), adapterToggles));
-    DAWN_TRY(adapter->InitializeGLFunctions(options->getProc));
-    DAWN_TRY(adapter->Initialize());
-
-    mCreatedAdapter = true;
-    std::vector<Ref<AdapterBase>> adapters{std::move(adapter)};
-    return std::move(adapters);
+    return devices;
 }
 
 BackendConnection* Connect(InstanceBase* instance, wgpu::BackendType backendType) {

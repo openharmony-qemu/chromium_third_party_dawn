@@ -1,22 +1,38 @@
-// Copyright 2021 The Dawn Authors
+// Copyright 2021 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <string>
 #include "dawn/tests/unittests/validation/ValidationTest.h"
 #include "dawn/utils/ComboRenderBundleEncoderDescriptor.h"
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
+
+namespace dawn {
+namespace {
 
 class LabelTest : public ValidationTest {
     void SetUp() override {
@@ -37,7 +53,7 @@ TEST_F(LabelTest, BindGroup) {
     // The label should be empty if one was not set.
     {
         wgpu::BindGroup bindGroup = device.CreateBindGroup(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(bindGroup.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(bindGroup.Get());
         ASSERT_TRUE(readbackLabel.empty());
     }
 
@@ -45,7 +61,7 @@ TEST_F(LabelTest, BindGroup) {
     {
         wgpu::BindGroup bindGroup = device.CreateBindGroup(&descriptor);
         bindGroup.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(bindGroup.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(bindGroup.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 
@@ -53,7 +69,7 @@ TEST_F(LabelTest, BindGroup) {
     {
         descriptor.label = label.c_str();
         wgpu::BindGroup bindGroup = device.CreateBindGroup(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(bindGroup.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(bindGroup.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 }
@@ -68,7 +84,7 @@ TEST_F(LabelTest, BindGroupLayout) {
     // The label should be empty if one was not set.
     {
         wgpu::BindGroupLayout bindGroupLayout = device.CreateBindGroupLayout(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(bindGroupLayout.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(bindGroupLayout.Get());
         ASSERT_TRUE(readbackLabel.empty());
     }
 
@@ -76,7 +92,7 @@ TEST_F(LabelTest, BindGroupLayout) {
     {
         wgpu::BindGroupLayout bindGroupLayout = device.CreateBindGroupLayout(&descriptor);
         bindGroupLayout.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(bindGroupLayout.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(bindGroupLayout.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 
@@ -84,7 +100,7 @@ TEST_F(LabelTest, BindGroupLayout) {
     {
         descriptor.label = label.c_str();
         wgpu::BindGroupLayout bindGroupLayout = device.CreateBindGroupLayout(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(bindGroupLayout.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(bindGroupLayout.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 }
@@ -98,7 +114,7 @@ TEST_F(LabelTest, Buffer) {
     // The label should be empty if one was not set.
     {
         wgpu::Buffer buffer = device.CreateBuffer(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(buffer.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(buffer.Get());
         ASSERT_TRUE(readbackLabel.empty());
     }
 
@@ -106,7 +122,7 @@ TEST_F(LabelTest, Buffer) {
     {
         wgpu::Buffer buffer = device.CreateBuffer(&descriptor);
         buffer.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(buffer.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(buffer.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 
@@ -114,7 +130,7 @@ TEST_F(LabelTest, Buffer) {
     {
         descriptor.label = label.c_str();
         wgpu::Buffer buffer = device.CreateBuffer(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(buffer.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(buffer.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 }
@@ -127,7 +143,7 @@ TEST_F(LabelTest, CommandBuffer) {
     {
         wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
         wgpu::CommandBuffer commandBuffer = encoder.Finish(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(commandBuffer.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(commandBuffer.Get());
         ASSERT_TRUE(readbackLabel.empty());
     }
 
@@ -136,7 +152,7 @@ TEST_F(LabelTest, CommandBuffer) {
         wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
         wgpu::CommandBuffer commandBuffer = encoder.Finish(&descriptor);
         commandBuffer.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(commandBuffer.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(commandBuffer.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 
@@ -145,7 +161,7 @@ TEST_F(LabelTest, CommandBuffer) {
         descriptor.label = label.c_str();
         wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
         wgpu::CommandBuffer commandBuffer = encoder.Finish(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(commandBuffer.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(commandBuffer.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 }
@@ -157,7 +173,7 @@ TEST_F(LabelTest, CommandEncoder) {
     // The label should be empty if one was not set.
     {
         wgpu::CommandEncoder encoder = device.CreateCommandEncoder(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(encoder.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(encoder.Get());
         ASSERT_TRUE(readbackLabel.empty());
     }
 
@@ -165,7 +181,7 @@ TEST_F(LabelTest, CommandEncoder) {
     {
         wgpu::CommandEncoder encoder = device.CreateCommandEncoder(&descriptor);
         encoder.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(encoder.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(encoder.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 
@@ -173,7 +189,7 @@ TEST_F(LabelTest, CommandEncoder) {
     {
         descriptor.label = label.c_str();
         wgpu::CommandEncoder encoder = device.CreateCommandEncoder(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(encoder.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(encoder.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 }
@@ -187,7 +203,7 @@ TEST_F(LabelTest, ComputePassEncoder) {
     // The label should be empty if one was not set.
     {
         wgpu::ComputePassEncoder encoder = commandEncoder.BeginComputePass(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(encoder.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(encoder.Get());
         ASSERT_TRUE(readbackLabel.empty());
         encoder.End();
     }
@@ -196,7 +212,7 @@ TEST_F(LabelTest, ComputePassEncoder) {
     {
         wgpu::ComputePassEncoder encoder = commandEncoder.BeginComputePass(&descriptor);
         encoder.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(encoder.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(encoder.Get());
         ASSERT_EQ(label, readbackLabel);
         encoder.End();
     }
@@ -205,7 +221,7 @@ TEST_F(LabelTest, ComputePassEncoder) {
     {
         descriptor.label = label.c_str();
         wgpu::ComputePassEncoder encoder = commandEncoder.BeginComputePass(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(encoder.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(encoder.Get());
         ASSERT_EQ(label, readbackLabel);
         encoder.End();
     }
@@ -237,7 +253,7 @@ TEST_F(LabelTest, ExternalTexture) {
     // The label should be empty if one was not set.
     {
         wgpu::ExternalTexture externalTexture = device.CreateExternalTexture(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(externalTexture.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(externalTexture.Get());
         ASSERT_TRUE(readbackLabel.empty());
     }
 
@@ -245,7 +261,7 @@ TEST_F(LabelTest, ExternalTexture) {
     {
         wgpu::ExternalTexture externalTexture = device.CreateExternalTexture(&descriptor);
         externalTexture.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(externalTexture.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(externalTexture.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 
@@ -253,7 +269,7 @@ TEST_F(LabelTest, ExternalTexture) {
     {
         descriptor.label = label.c_str();
         wgpu::ExternalTexture externalTexture = device.CreateExternalTexture(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(externalTexture.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(externalTexture.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 }
@@ -269,7 +285,7 @@ TEST_F(LabelTest, PipelineLayout) {
     // The label should be empty if one was not set.
     {
         wgpu::PipelineLayout pipelineLayout = device.CreatePipelineLayout(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(pipelineLayout.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(pipelineLayout.Get());
         ASSERT_TRUE(readbackLabel.empty());
     }
 
@@ -277,7 +293,7 @@ TEST_F(LabelTest, PipelineLayout) {
     {
         wgpu::PipelineLayout pipelineLayout = device.CreatePipelineLayout(&descriptor);
         pipelineLayout.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(pipelineLayout.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(pipelineLayout.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 
@@ -285,7 +301,7 @@ TEST_F(LabelTest, PipelineLayout) {
     {
         descriptor.label = label.c_str();
         wgpu::PipelineLayout pipelineLayout = device.CreatePipelineLayout(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(pipelineLayout.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(pipelineLayout.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 }
@@ -300,7 +316,7 @@ TEST_F(LabelTest, QuerySet) {
     // The label should be empty if one was not set.
     {
         wgpu::QuerySet querySet = device.CreateQuerySet(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(querySet.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(querySet.Get());
         ASSERT_TRUE(readbackLabel.empty());
     }
 
@@ -308,7 +324,7 @@ TEST_F(LabelTest, QuerySet) {
     {
         wgpu::QuerySet querySet = device.CreateQuerySet(&descriptor);
         querySet.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(querySet.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(querySet.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 
@@ -316,7 +332,7 @@ TEST_F(LabelTest, QuerySet) {
     {
         descriptor.label = label.c_str();
         wgpu::QuerySet querySet = device.CreateQuerySet(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(querySet.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(querySet.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 }
@@ -329,8 +345,7 @@ TEST_F(LabelTest, Queue) {
         wgpu::DeviceDescriptor descriptor;
         wgpu::Device labelDevice =
             wgpu::Device::Acquire(GetBackendAdapter().CreateDevice(&descriptor));
-        std::string readbackLabel =
-            dawn::native::GetObjectLabelForTesting(labelDevice.GetQueue().Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(labelDevice.GetQueue().Get());
         ASSERT_TRUE(readbackLabel.empty());
     }
 
@@ -340,8 +355,7 @@ TEST_F(LabelTest, Queue) {
         wgpu::Device labelDevice =
             wgpu::Device::Acquire(GetBackendAdapter().CreateDevice(&descriptor));
         labelDevice.GetQueue().SetLabel(label.c_str());
-        std::string readbackLabel =
-            dawn::native::GetObjectLabelForTesting(labelDevice.GetQueue().Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(labelDevice.GetQueue().Get());
         ASSERT_EQ(label, readbackLabel);
     }
 
@@ -351,8 +365,7 @@ TEST_F(LabelTest, Queue) {
         descriptor.defaultQueue.label = label.c_str();
         wgpu::Device labelDevice =
             wgpu::Device::Acquire(GetBackendAdapter().CreateDevice(&descriptor));
-        std::string readbackLabel =
-            dawn::native::GetObjectLabelForTesting(labelDevice.GetQueue().Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(labelDevice.GetQueue().Get());
         ASSERT_EQ(label, readbackLabel);
     }
 }
@@ -361,13 +374,13 @@ TEST_F(LabelTest, RenderBundleEncoder) {
     std::string label = "test";
 
     utils::ComboRenderBundleEncoderDescriptor descriptor = {};
-    descriptor.colorFormatsCount = 1;
+    descriptor.colorFormatCount = 1;
     descriptor.cColorFormats[0] = wgpu::TextureFormat::RGBA8Unorm;
 
     // The label should be empty if one was not set.
     {
         wgpu::RenderBundleEncoder encoder = device.CreateRenderBundleEncoder(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(encoder.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(encoder.Get());
         ASSERT_TRUE(readbackLabel.empty());
     }
 
@@ -375,7 +388,7 @@ TEST_F(LabelTest, RenderBundleEncoder) {
     {
         wgpu::RenderBundleEncoder encoder = device.CreateRenderBundleEncoder(&descriptor);
         encoder.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(encoder.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(encoder.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 
@@ -383,7 +396,7 @@ TEST_F(LabelTest, RenderBundleEncoder) {
     {
         descriptor.label = label.c_str();
         wgpu::RenderBundleEncoder encoder = device.CreateRenderBundleEncoder(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(encoder.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(encoder.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 }
@@ -403,7 +416,7 @@ TEST_F(LabelTest, RenderPassEncoder) {
     // The label should be empty if one was not set.
     {
         wgpu::RenderPassEncoder encoder = commandEncoder.BeginRenderPass(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(encoder.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(encoder.Get());
         ASSERT_TRUE(readbackLabel.empty());
         encoder.End();
     }
@@ -412,7 +425,7 @@ TEST_F(LabelTest, RenderPassEncoder) {
     {
         wgpu::RenderPassEncoder encoder = commandEncoder.BeginRenderPass(&descriptor);
         encoder.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(encoder.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(encoder.Get());
         ASSERT_EQ(label, readbackLabel);
         encoder.End();
     }
@@ -421,7 +434,7 @@ TEST_F(LabelTest, RenderPassEncoder) {
     {
         descriptor.label = label.c_str();
         wgpu::RenderPassEncoder encoder = commandEncoder.BeginRenderPass(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(encoder.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(encoder.Get());
         ASSERT_EQ(label, readbackLabel);
         encoder.End();
     }
@@ -434,7 +447,7 @@ TEST_F(LabelTest, Sampler) {
     // The label should be empty if one was not set.
     {
         wgpu::Sampler sampler = device.CreateSampler(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(sampler.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(sampler.Get());
         ASSERT_TRUE(readbackLabel.empty());
     }
 
@@ -442,7 +455,7 @@ TEST_F(LabelTest, Sampler) {
     {
         wgpu::Sampler sampler = device.CreateSampler(&descriptor);
         sampler.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(sampler.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(sampler.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 
@@ -450,7 +463,7 @@ TEST_F(LabelTest, Sampler) {
     {
         descriptor.label = label.c_str();
         wgpu::Sampler sampler = device.CreateSampler(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(sampler.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(sampler.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 }
@@ -470,7 +483,7 @@ TEST_F(LabelTest, Texture) {
     // The label should be empty if one was not set.
     {
         wgpu::Texture texture = device.CreateTexture(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(texture.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(texture.Get());
         ASSERT_TRUE(readbackLabel.empty());
     }
 
@@ -478,7 +491,7 @@ TEST_F(LabelTest, Texture) {
     {
         wgpu::Texture texture = device.CreateTexture(&descriptor);
         texture.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(texture.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(texture.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 
@@ -486,7 +499,7 @@ TEST_F(LabelTest, Texture) {
     {
         descriptor.label = label.c_str();
         wgpu::Texture texture = device.CreateTexture(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(texture.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(texture.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 }
@@ -508,7 +521,7 @@ TEST_F(LabelTest, TextureView) {
     // The label should be empty if one was not set.
     {
         wgpu::TextureView textureView = texture.CreateView();
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(textureView.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(textureView.Get());
         ASSERT_TRUE(readbackLabel.empty());
     }
 
@@ -516,7 +529,7 @@ TEST_F(LabelTest, TextureView) {
     {
         wgpu::TextureView textureView = texture.CreateView();
         textureView.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(textureView.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(textureView.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 
@@ -525,7 +538,7 @@ TEST_F(LabelTest, TextureView) {
         wgpu::TextureViewDescriptor viewDescriptor;
         viewDescriptor.label = label.c_str();
         wgpu::TextureView textureView = texture.CreateView(&viewDescriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(textureView.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(textureView.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 }
@@ -550,7 +563,7 @@ TEST_F(LabelTest, RenderPipeline) {
     // The label should be empty if one was not set.
     {
         wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(pipeline.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(pipeline.Get());
         ASSERT_TRUE(readbackLabel.empty());
     }
 
@@ -558,7 +571,7 @@ TEST_F(LabelTest, RenderPipeline) {
     {
         wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&descriptor);
         pipeline.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(pipeline.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(pipeline.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 
@@ -566,7 +579,7 @@ TEST_F(LabelTest, RenderPipeline) {
     {
         descriptor.label = label.c_str();
         wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(pipeline.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(pipeline.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 }
@@ -581,12 +594,11 @@ TEST_F(LabelTest, ComputePipeline) {
     wgpu::ComputePipelineDescriptor descriptor;
     descriptor.layout = pl;
     descriptor.compute.module = computeModule;
-    descriptor.compute.entryPoint = "main";
 
     // The label should be empty if one was not set.
     {
         wgpu::ComputePipeline pipeline = device.CreateComputePipeline(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(pipeline.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(pipeline.Get());
         ASSERT_TRUE(readbackLabel.empty());
     }
 
@@ -594,7 +606,7 @@ TEST_F(LabelTest, ComputePipeline) {
     {
         wgpu::ComputePipeline pipeline = device.CreateComputePipeline(&descriptor);
         pipeline.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(pipeline.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(pipeline.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 
@@ -602,7 +614,7 @@ TEST_F(LabelTest, ComputePipeline) {
     {
         descriptor.label = label.c_str();
         wgpu::ComputePipeline pipeline = device.CreateComputePipeline(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(pipeline.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(pipeline.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 }
@@ -614,15 +626,15 @@ TEST_F(LabelTest, ShaderModule) {
     @compute @workgroup_size(1) fn main() {
     })";
 
-    wgpu::ShaderModuleWGSLDescriptor wgslDesc;
-    wgslDesc.source = source;
+    wgpu::ShaderSourceWGSL wgslDesc;
+    wgslDesc.code = source;
     wgpu::ShaderModuleDescriptor descriptor;
     descriptor.nextInChain = &wgslDesc;
 
     // The label should be empty if one was not set.
     {
         wgpu::ShaderModule shaderModule = device.CreateShaderModule(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(shaderModule.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(shaderModule.Get());
         ASSERT_TRUE(readbackLabel.empty());
     }
 
@@ -630,7 +642,7 @@ TEST_F(LabelTest, ShaderModule) {
     {
         wgpu::ShaderModule shaderModule = device.CreateShaderModule(&descriptor);
         shaderModule.SetLabel(label.c_str());
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(shaderModule.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(shaderModule.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 
@@ -638,7 +650,10 @@ TEST_F(LabelTest, ShaderModule) {
     {
         descriptor.label = label.c_str();
         wgpu::ShaderModule shaderModule = device.CreateShaderModule(&descriptor);
-        std::string readbackLabel = dawn::native::GetObjectLabelForTesting(shaderModule.Get());
+        std::string readbackLabel = native::GetObjectLabelForTesting(shaderModule.Get());
         ASSERT_EQ(label, readbackLabel);
     }
 }
+
+}  // anonymous namespace
+}  // namespace dawn

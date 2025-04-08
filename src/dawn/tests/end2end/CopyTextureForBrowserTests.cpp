@@ -1,17 +1,31 @@
-// Copyright 2020 The Dawn Authors
+// Copyright 2020 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#include <string>
 #include <vector>
 
 #include "dawn/common/Constants.h"
@@ -22,7 +36,22 @@
 #include "dawn/utils/TextureUtils.h"
 #include "dawn/utils/WGPUHelpers.h"
 
+// TODO(dawn:2205) Remove these stream operators if we move them to a standard location.
+namespace wgpu {
+std::ostream& operator<<(std::ostream& o, Origin3D origin) {
+    o << origin.x << ", " << origin.y << ", " << origin.z;
+    return o;
+}
+
+std::ostream& operator<<(std::ostream& o, Extent3D copySize) {
+    o << copySize.width << ", " << copySize.height << ", " << copySize.depthOrArrayLayers;
+    return o;
+}
+}  // namespace wgpu
+
+namespace dawn {
 namespace {
+
 static constexpr wgpu::TextureFormat kTextureFormat = wgpu::TextureFormat::RGBA8Unorm;
 
 // Set default texture size to single line texture for color conversion tests.
@@ -44,16 +73,6 @@ using SrcColorSpace = ColorSpace;
 using DstColorSpace = ColorSpace;
 using SrcAlphaMode = wgpu::AlphaMode;
 using DstAlphaMode = wgpu::AlphaMode;
-
-std::ostream& operator<<(std::ostream& o, wgpu::Origin3D origin) {
-    o << origin.x << ", " << origin.y << ", " << origin.z;
-    return o;
-}
-
-std::ostream& operator<<(std::ostream& o, wgpu::Extent3D copySize) {
-    o << copySize.width << ", " << copySize.height << ", " << copySize.depthOrArrayLayers;
-    return o;
-}
 
 std::ostream& operator<<(std::ostream& o, ColorSpace space) {
     o << static_cast<uint32_t>(space);
@@ -148,7 +167,6 @@ static constexpr std::array<ColorSpaceInfo, kSupportedColorSpaceCount> ColorSpac
     }
     //
 }};
-}  // anonymous namespace
 
 template <typename Parent>
 class CopyTextureForBrowserTests : public Parent {
@@ -228,9 +246,9 @@ class CopyTextureForBrowserTests : public Parent {
             0,
             0,  // uvec2, subrect copy dst origin
             0,
-            0,  // uvec2, subrect copy size
-            0,  // srcAlphaMode, wgpu::AlphaMode::Premultiplied
-            0   // dstAlphaMode, wgpu::AlphaMode::Premultiplied
+            0,                                                      // uvec2, subrect copy size
+            static_cast<uint32_t>(wgpu::AlphaMode::Premultiplied),  // srcAlphaMode
+            static_cast<uint32_t>(wgpu::AlphaMode::Premultiplied),  // dstAlphaMode
         };
 
         wgpu::BufferDescriptor uniformBufferDesc = {};
@@ -243,7 +261,8 @@ class CopyTextureForBrowserTests : public Parent {
     // shader) instead of CPU after executing CopyTextureForBrowser() to avoid the errors caused by
     // comparing a value generated on CPU to the one generated on GPU.
     wgpu::ComputePipeline MakeTestPipeline() {
-        wgpu::ShaderModule csModule = utils::CreateShaderModule(this->device, R"(
+        std::string shader =
+            R"(
             struct Uniforms {
                 dstTextureFlipY : u32,
                 channelCount    : u32,
@@ -294,9 +313,12 @@ class CopyTextureForBrowserTests : public Parent {
 
                     // Expect the dst texture channels should be all equal to alpha value
                     // after premultiply.
-                    let premultiplied = 0u;
-                    let unpremultiplied = 1u;
-                    let opaque = 2u;
+                    let premultiplied = )" +
+            std::to_string(static_cast<uint32_t>(wgpu::AlphaMode::Premultiplied)) + R"(u;
+                    let unpremultiplied = )" +
+            std::to_string(static_cast<uint32_t>(wgpu::AlphaMode::Unpremultiplied)) + R"(u;
+                    let opaque = )" +
+            std::to_string(static_cast<uint32_t>(wgpu::AlphaMode::Opaque)) + R"(u;
                     if (uniforms.srcAlphaMode == opaque) {
                         srcColor.a = 1.0;
                     }
@@ -344,11 +366,11 @@ class CopyTextureForBrowserTests : public Parent {
                     output.result[outputIndex] = 0u;
                 }
             }
-         )");
+         )";
+        wgpu::ShaderModule csModule = utils::CreateShaderModule(this->device, shader.c_str());
 
         wgpu::ComputePipelineDescriptor csDesc;
         csDesc.compute.module = csModule;
-        csDesc.compute.entryPoint = "main";
 
         return this->device.CreateComputePipeline(&csDesc);
     }
@@ -371,7 +393,7 @@ class CopyTextureForBrowserTests : public Parent {
             case wgpu::TextureFormat::R32Float:
                 return 1;
             default:
-                UNREACHABLE();
+                DAWN_UNREACHABLE();
         }
     }
 
@@ -406,16 +428,18 @@ class CopyTextureForBrowserTests : public Parent {
         return texture;
     }
 
-    void RunCopyExternalImageToTexture(const TextureSpec& srcSpec,
-                                       wgpu::Texture srcTexture,
-                                       const TextureSpec& dstSpec,
-                                       wgpu::Texture dstTexture,
-                                       const wgpu::Extent3D& copySize,
-                                       const wgpu::CopyTextureForBrowserOptions options) {
+    void RunCopyExternalImageToTexture(
+        const TextureSpec& srcSpec,
+        wgpu::Texture srcTexture,
+        const TextureSpec& dstSpec,
+        wgpu::Texture dstTexture,
+        const wgpu::Extent3D& copySize,
+        const wgpu::CopyTextureForBrowserOptions options,
+        const wgpu::TextureAspect aspect = wgpu::TextureAspect::All) {
         wgpu::ImageCopyTexture srcImageCopyTexture =
-            utils::CreateImageCopyTexture(srcTexture, srcSpec.level, srcSpec.copyOrigin);
+            utils::CreateImageCopyTexture(srcTexture, srcSpec.level, srcSpec.copyOrigin, aspect);
         wgpu::ImageCopyTexture dstImageCopyTexture =
-            utils::CreateImageCopyTexture(dstTexture, dstSpec.level, dstSpec.copyOrigin);
+            utils::CreateImageCopyTexture(dstTexture, dstSpec.level, dstSpec.copyOrigin, aspect);
         this->device.GetQueue().CopyTextureForBrowser(&srcImageCopyTexture, &dstImageCopyTexture,
                                                       &copySize, &options);
     }
@@ -664,7 +688,7 @@ class CopyTextureForBrowser_Formats
                     srcSpec, srcUsage, srcCopyLayout, srcRGBA16FloatTextureArrayCopyData.data(),
                     srcRGBA16FloatTextureArrayCopyData.size() * sizeof(uint16_t));
             default:
-                UNREACHABLE();
+                DAWN_UNREACHABLE();
         }
     }
 
@@ -695,9 +719,11 @@ class CopyTextureForBrowser_Formats
             dstTextureSpec, wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::TextureBinding |
                                 wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc);
 
+        // (Off-topic) spot-test the defaulting of ImageCopyTexture.aspect.
+        wgpu::TextureAspect aspect = wgpu::TextureAspect::Undefined;
         // Perform the texture to texture copy
         RunCopyExternalImageToTexture(srcTextureSpec, srcTexture, dstTextureSpec, dstTexture,
-                                      copySize, options);
+                                      copySize, options, aspect);
 
         wgpu::Texture result;
         TextureSpec resultSpec = dstTextureSpec;
@@ -780,8 +806,8 @@ class CopyTextureForBrowser_ColorSpace
   protected:
     const ColorSpaceInfo& GetColorSpaceInfo(ColorSpace colorSpace) {
         uint32_t index = static_cast<uint32_t>(colorSpace);
-        ASSERT(index < ColorSpaceTable.size());
-        ASSERT(ColorSpaceTable[index].index == colorSpace);
+        DAWN_ASSERT(index < ColorSpaceTable.size());
+        DAWN_ASSERT(ColorSpaceTable[index].index == colorSpace);
         return ColorSpaceTable[index];
     }
 
@@ -932,13 +958,13 @@ class CopyTextureForBrowser_ColorSpace
                                    : expected;
                     }
                     default:
-                        UNREACHABLE();
+                        DAWN_UNREACHABLE();
                 }
             }
             default:
                 break;
         }
-        UNREACHABLE();
+        DAWN_UNREACHABLE();
     }
 
     std::vector<float> GetExpectedDataForSeperateSource(ColorSpace srcColorSpace,
@@ -984,13 +1010,13 @@ class CopyTextureForBrowser_ColorSpace
                         };
                     }
                     default:
-                        UNREACHABLE();
+                        DAWN_UNREACHABLE();
                 }
             }
             default:
                 break;
         }
-        UNREACHABLE();
+        DAWN_UNREACHABLE();
     }
 
     void DoColorSpaceConversionTest() {
@@ -1062,40 +1088,30 @@ class CopyTextureForBrowser_ColorSpace
 // Verify CopyTextureForBrowserTests works with internal pipeline.
 // The case do copy without any transform.
 TEST_P(CopyTextureForBrowser_Basic, PassthroughCopy) {
-    // TODO(crbug.com/dawn/1232): Program link error on OpenGLES backend
-    DAWN_SUPPRESS_TEST_IF(IsOpenGLES());
     DAWN_SUPPRESS_TEST_IF(IsOpenGL() && IsLinux());
 
     DoBasicCopyTest({10, 1});
 }
 
 TEST_P(CopyTextureForBrowser_Basic, VerifyCopyOnXDirection) {
-    // TODO(crbug.com/dawn/1232): Program link error on OpenGLES backend
-    DAWN_SUPPRESS_TEST_IF(IsOpenGLES());
     DAWN_SUPPRESS_TEST_IF(IsOpenGL() && IsLinux());
 
     DoBasicCopyTest({1000, 1});
 }
 
 TEST_P(CopyTextureForBrowser_Basic, VerifyCopyOnYDirection) {
-    // TODO(crbug.com/dawn/1232): Program link error on OpenGLES backend
-    DAWN_SUPPRESS_TEST_IF(IsOpenGLES());
     DAWN_SUPPRESS_TEST_IF(IsOpenGL() && IsLinux());
 
     DoBasicCopyTest({1, 1000});
 }
 
 TEST_P(CopyTextureForBrowser_Basic, VerifyCopyFromLargeTexture) {
-    // TODO(crbug.com/dawn/1232): Program link error on OpenGLES backend
-    DAWN_SUPPRESS_TEST_IF(IsOpenGLES());
     DAWN_SUPPRESS_TEST_IF(IsOpenGL() && IsLinux());
 
     DoBasicCopyTest({899, 999});
 }
 
 TEST_P(CopyTextureForBrowser_Basic, VerifyFlipY) {
-    // TODO(crbug.com/dawn/1232): Program link error on OpenGLES backend
-    DAWN_SUPPRESS_TEST_IF(IsOpenGLES());
     DAWN_SUPPRESS_TEST_IF(IsOpenGL() && IsLinux());
 
     wgpu::CopyTextureForBrowserOptions options = {};
@@ -1105,8 +1121,6 @@ TEST_P(CopyTextureForBrowser_Basic, VerifyFlipY) {
 }
 
 TEST_P(CopyTextureForBrowser_Basic, VerifyFlipYInSlimTexture) {
-    // TODO(crbug.com/dawn/1232): Program link error on OpenGLES backend
-    DAWN_SUPPRESS_TEST_IF(IsOpenGLES());
     DAWN_SUPPRESS_TEST_IF(IsOpenGL() && IsLinux());
 
     wgpu::CopyTextureForBrowserOptions options = {};
@@ -1116,6 +1130,7 @@ TEST_P(CopyTextureForBrowser_Basic, VerifyFlipYInSlimTexture) {
 }
 
 DAWN_INSTANTIATE_TEST(CopyTextureForBrowser_Basic,
+                      D3D11Backend(),
                       D3D12Backend(),
                       MetalBackend(),
                       OpenGLBackend(),
@@ -1125,9 +1140,14 @@ DAWN_INSTANTIATE_TEST(CopyTextureForBrowser_Basic,
 // Verify |CopyTextureForBrowser| doing color conversion correctly when
 // the source texture is RGBA8Unorm format.
 TEST_P(CopyTextureForBrowser_Formats, ColorConversion) {
-    // Skip OpenGLES backend because it fails on using RGBA8Unorm as
-    // source texture format.
-    DAWN_SUPPRESS_TEST_IF(IsOpenGLES());
+    // BGRA8UnormSrgb is unsupported in Compatibility mode.
+    DAWN_SUPPRESS_TEST_IF(IsCompatibilityMode() &&
+                          GetParam().mDstFormat == wgpu::TextureFormat::BGRA8UnormSrgb);
+
+    // TODO(crbug.com/346356622): BGRA8unorm copy is failing on Qualcomm OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsQualcomm() &&
+                          GetParam().mDstFormat == wgpu::TextureFormat::BGRA8Unorm);
+
     DAWN_SUPPRESS_TEST_IF(IsOpenGL() && IsLinux());
 
     // Skip OpenGL backend on linux because it fails on using *-srgb format as
@@ -1156,8 +1176,6 @@ DAWN_INSTANTIATE_TEST_P(
 // green texture originally. After the subrect copy, affected part
 // in dst texture should be red and other part should remain green.
 TEST_P(CopyTextureForBrowser_SubRects, CopySubRect) {
-    // TODO(crbug.com/dawn/1232): Program link error on OpenGLES backend
-    DAWN_SUPPRESS_TEST_IF(IsOpenGLES());
     DAWN_SUPPRESS_TEST_IF(IsOpenGL() && IsLinux());
 
     // Tests skip due to crbug.com/dawn/592.
@@ -1170,8 +1188,8 @@ TEST_P(CopyTextureForBrowser_SubRects, CopySubRect) {
 }
 
 DAWN_INSTANTIATE_TEST_P(CopyTextureForBrowser_SubRects,
-                        {D3D12Backend(), MetalBackend(), OpenGLBackend(), OpenGLESBackend(),
-                         VulkanBackend()},
+                        {D3D11Backend(), D3D12Backend(), MetalBackend(), OpenGLBackend(),
+                         OpenGLESBackend(), VulkanBackend()},
                         std::vector<wgpu::Origin3D>({{1, 1}, {1, 2}, {2, 1}}),
                         std::vector<wgpu::Origin3D>({{1, 1}, {1, 2}, {2, 1}}),
                         std::vector<wgpu::Extent3D>({{1, 1}, {2, 1}, {1, 2}, {2, 2}}),
@@ -1180,10 +1198,6 @@ DAWN_INSTANTIATE_TEST_P(CopyTextureForBrowser_SubRects,
 // Verify |CopyTextureForBrowser| doing alpha changes.
 // Test srcAlphaMode and dstAlphaMode: Premultiplied, Unpremultiplied.
 TEST_P(CopyTextureForBrowser_AlphaMode, alphaMode) {
-    // Skip OpenGLES backend because it fails on using RGBA8Unorm as
-    // source texture format.
-    // TODO(crbug.com/dawn/1232): Program link error on OpenGLES backend
-    DAWN_SUPPRESS_TEST_IF(IsOpenGLES());
     DAWN_SUPPRESS_TEST_IF(IsOpenGL() && IsLinux());
 
     // Tests skip due to crbug.com/dawn/1104.
@@ -1194,7 +1208,8 @@ TEST_P(CopyTextureForBrowser_AlphaMode, alphaMode) {
 
 DAWN_INSTANTIATE_TEST_P(
     CopyTextureForBrowser_AlphaMode,
-    {D3D12Backend(), MetalBackend(), OpenGLBackend(), OpenGLESBackend(), VulkanBackend()},
+    {D3D11Backend(), D3D12Backend(), MetalBackend(), OpenGLBackend(), OpenGLESBackend(),
+     VulkanBackend()},
     std::vector<wgpu::AlphaMode>({wgpu::AlphaMode::Premultiplied, wgpu::AlphaMode::Unpremultiplied,
                                   wgpu::AlphaMode::Opaque}),
     std::vector<wgpu::AlphaMode>({wgpu::AlphaMode::Premultiplied, wgpu::AlphaMode::Unpremultiplied,
@@ -1202,8 +1217,6 @@ DAWN_INSTANTIATE_TEST_P(
 
 // Verify |CopyTextureForBrowser| doing color space conversion.
 TEST_P(CopyTextureForBrowser_ColorSpace, colorSpaceConversion) {
-    // TODO(crbug.com/dawn/1232): Program link error on OpenGLES backend
-    DAWN_SUPPRESS_TEST_IF(IsOpenGLES());
     DAWN_SUPPRESS_TEST_IF(IsOpenGL() && IsLinux());
 
     // Tests skip due to crbug.com/dawn/1104.
@@ -1213,8 +1226,8 @@ TEST_P(CopyTextureForBrowser_ColorSpace, colorSpaceConversion) {
 }
 
 DAWN_INSTANTIATE_TEST_P(CopyTextureForBrowser_ColorSpace,
-                        {D3D12Backend(), MetalBackend(), OpenGLBackend(), OpenGLESBackend(),
-                         VulkanBackend()},
+                        {D3D11Backend(), D3D12Backend(), MetalBackend(), OpenGLBackend(),
+                         OpenGLESBackend(), VulkanBackend()},
                         std::vector<wgpu::TextureFormat>({wgpu::TextureFormat::RGBA16Float,
                                                           wgpu::TextureFormat::RGBA32Float}),
                         std::vector<ColorSpace>({ColorSpace::SRGB, ColorSpace::DisplayP3}),
@@ -1223,3 +1236,6 @@ DAWN_INSTANTIATE_TEST_P(CopyTextureForBrowser_ColorSpace,
                                                       wgpu::AlphaMode::Unpremultiplied}),
                         std::vector<wgpu::AlphaMode>({wgpu::AlphaMode::Premultiplied,
                                                       wgpu::AlphaMode::Unpremultiplied}));
+
+}  // anonymous namespace
+}  // namespace dawn

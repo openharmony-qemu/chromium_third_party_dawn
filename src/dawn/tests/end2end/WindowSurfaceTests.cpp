@@ -1,16 +1,29 @@
-// Copyright 2020 The Dawn Authors
+// Copyright 2020 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <cstdlib>
 #include <memory>
@@ -40,51 +53,53 @@
 
 #include "GLFW/glfw3native.h"
 
+namespace dawn {
+namespace {
+
+struct GLFWindowDestroyer {
+    void operator()(GLFWwindow* ptr) { glfwDestroyWindow(ptr); }
+};
+
 // Test for wgpu::Surface creation that only need an instance (no devices) and don't need all the
 // complexity of DawnTest.
 class WindowSurfaceInstanceTests : public testing::Test {
   public:
     void SetUp() override {
         glfwSetErrorCallback([](int code, const char* message) {
-            dawn::ErrorLog() << "GLFW error " << code << " " << message;
+            ErrorLog() << "GLFW error " << code << " " << message;
         });
         DAWN_TEST_UNSUPPORTED_IF(!glfwInit());
 
-        dawnProcSetProcs(&dawn::native::GetProcs());
+        dawnProcSetProcs(&native::GetProcs());
 
         mInstance = wgpu::CreateInstance();
     }
 
-    void TearDown() override {
-        if (mWindow != nullptr) {
-            glfwDestroyWindow(mWindow);
-            mWindow = nullptr;
-        }
-    }
+    void TearDown() override { mWindow.reset(); }
 
     void AssertSurfaceCreation(const wgpu::SurfaceDescriptor* descriptor, bool succeeds) {
         wgpu::Surface surface = mInstance.CreateSurface(descriptor);
-        ASSERT_EQ(dawn::native::CheckIsErrorForTesting(surface.Get()), !succeeds);
+        ASSERT_EQ(native::CheckIsErrorForTesting(surface.Get()), !succeeds);
     }
 
     GLFWwindow* CreateWindow() {
         // Set GLFW_NO_API to avoid GLFW bringing up a GL context that we won't use.
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        mWindow = glfwCreateWindow(400, 400, "WindowSurfaceInstanceTests window", nullptr, nullptr);
-        return mWindow;
+        mWindow.reset(
+            glfwCreateWindow(400, 400, "WindowSurfaceInstanceTests window", nullptr, nullptr));
+        return mWindow.get();
     }
 
   private:
     wgpu::Instance mInstance;
-    GLFWwindow* mWindow = nullptr;
+    std::unique_ptr<GLFWwindow, GLFWindowDestroyer> mWindow = nullptr;
 };
 
 // Test that a valid chained descriptor works (and that GLFWUtils creates a valid chained
 // descriptor).
 TEST_F(WindowSurfaceInstanceTests, ControlCase) {
     GLFWwindow* window = CreateWindow();
-    std::unique_ptr<wgpu::ChainedStruct> chainedDescriptor =
-        wgpu::glfw::SetupWindowAndGetSurfaceDescriptor(window);
+    auto chainedDescriptor = wgpu::glfw::SetupWindowAndGetSurfaceDescriptor(window);
 
     wgpu::SurfaceDescriptor descriptor;
     descriptor.nextInChain = chainedDescriptor.get();
@@ -103,7 +118,7 @@ TEST_F(WindowSurfaceInstanceTests, NoChainedDescriptors) {
 // Test that a chained descriptor with a garbage sType produces an error.
 TEST_F(WindowSurfaceInstanceTests, BadChainedDescriptors) {
     wgpu::ChainedStruct chainedDescriptor;
-    chainedDescriptor.sType = wgpu::SType::Invalid;  // The default but we set it for clarity.
+    chainedDescriptor.sType = wgpu::SType(0u);  // The default but we set it for clarity.
 
     wgpu::SurfaceDescriptor descriptor;
     descriptor.nextInChain = &chainedDescriptor;
@@ -113,7 +128,7 @@ TEST_F(WindowSurfaceInstanceTests, BadChainedDescriptors) {
 
 // Test that a chained descriptor with HTMLCanvas produces an error.
 TEST_F(WindowSurfaceInstanceTests, HTMLCanvasDescriptor) {
-    wgpu::SurfaceDescriptorFromCanvasHTMLSelector chainedDescriptor;
+    wgpu::SurfaceSourceCanvasHTMLSelector_Emscripten chainedDescriptor;
     chainedDescriptor.selector = "#myCanvas";
 
     wgpu::SurfaceDescriptor descriptor;
@@ -125,10 +140,8 @@ TEST_F(WindowSurfaceInstanceTests, HTMLCanvasDescriptor) {
 // Test that it is invalid to give two valid chained descriptors
 TEST_F(WindowSurfaceInstanceTests, TwoChainedDescriptors) {
     GLFWwindow* window = CreateWindow();
-    std::unique_ptr<wgpu::ChainedStruct> chainedDescriptor1 =
-        wgpu::glfw::SetupWindowAndGetSurfaceDescriptor(window);
-    std::unique_ptr<wgpu::ChainedStruct> chainedDescriptor2 =
-        wgpu::glfw::SetupWindowAndGetSurfaceDescriptor(window);
+    auto chainedDescriptor1 = wgpu::glfw::SetupWindowAndGetSurfaceDescriptor(window);
+    auto chainedDescriptor2 = wgpu::glfw::SetupWindowAndGetSurfaceDescriptor(window);
 
     wgpu::SurfaceDescriptor descriptor;
     descriptor.nextInChain = chainedDescriptor1.get();
@@ -142,14 +155,13 @@ TEST_F(WindowSurfaceInstanceTests, TwoChainedDescriptors) {
 // Tests that GLFWUtils returns a descriptor of HWND type
 TEST_F(WindowSurfaceInstanceTests, CorrectSTypeHWND) {
     GLFWwindow* window = CreateWindow();
-    std::unique_ptr<wgpu::ChainedStruct> chainedDescriptor =
-        wgpu::glfw::SetupWindowAndGetSurfaceDescriptor(window);
-    ASSERT_EQ(chainedDescriptor->sType, wgpu::SType::SurfaceDescriptorFromWindowsHWND);
+    auto chainedDescriptor = wgpu::glfw::SetupWindowAndGetSurfaceDescriptor(window);
+    ASSERT_EQ(chainedDescriptor->sType, wgpu::SType::SurfaceSourceWindowsHWND);
 }
 
 // Test with setting an invalid hwnd
 TEST_F(WindowSurfaceInstanceTests, InvalidHWND) {
-    wgpu::SurfaceDescriptorFromWindowsHWND chainedDescriptor;
+    wgpu::SurfaceSourceWindowsHWND chainedDescriptor;
     chainedDescriptor.hinstance = GetModuleHandle(nullptr);
     chainedDescriptor.hwnd = 0;  // This always is an invalid HWND value.
 
@@ -162,7 +174,7 @@ TEST_F(WindowSurfaceInstanceTests, InvalidHWND) {
 
 // Test using HWND when it is not supported
 TEST_F(WindowSurfaceInstanceTests, HWNDSurfacesAreInvalid) {
-    wgpu::SurfaceDescriptorFromWindowsHWND chainedDescriptor;
+    wgpu::SurfaceSourceWindowsHWND chainedDescriptor;
     chainedDescriptor.hinstance = nullptr;
     chainedDescriptor.hwnd = 0;
 
@@ -178,14 +190,13 @@ TEST_F(WindowSurfaceInstanceTests, HWNDSurfacesAreInvalid) {
 // Tests that GLFWUtils returns a descriptor of Xlib type
 TEST_F(WindowSurfaceInstanceTests, CorrectSTypeXlib) {
     GLFWwindow* window = CreateWindow();
-    std::unique_ptr<wgpu::ChainedStruct> chainedDescriptor =
-        wgpu::glfw::SetupWindowAndGetSurfaceDescriptor(window);
-    ASSERT_EQ(chainedDescriptor->sType, wgpu::SType::SurfaceDescriptorFromXlibWindow);
+    auto chainedDescriptor = wgpu::glfw::SetupWindowAndGetSurfaceDescriptor(window);
+    ASSERT_EQ(chainedDescriptor->sType, wgpu::SType::SurfaceSourceXlibWindow);
 }
 
 // Test with setting an invalid window
 TEST_F(WindowSurfaceInstanceTests, InvalidXWindow) {
-    wgpu::SurfaceDescriptorFromXlibWindow chainedDescriptor;
+    wgpu::SurfaceSourceXlibWindow chainedDescriptor;
     chainedDescriptor.display = XOpenDisplay(nullptr);
     // From the "X Window System Protocol" "X Version 11, Release 6.8" page 2 at
     // https://www.x.org/releases/X11R7.5/doc/x11proto/proto.pdf
@@ -202,7 +213,7 @@ TEST_F(WindowSurfaceInstanceTests, InvalidXWindow) {
 
 // Test using Xlib when it is not supported
 TEST_F(WindowSurfaceInstanceTests, XlibSurfacesAreInvalid) {
-    wgpu::SurfaceDescriptorFromXlibWindow chainedDescriptor;
+    wgpu::SurfaceSourceXlibWindow chainedDescriptor;
     chainedDescriptor.display = nullptr;
     chainedDescriptor.window = 0;
 
@@ -218,17 +229,16 @@ TEST_F(WindowSurfaceInstanceTests, XlibSurfacesAreInvalid) {
 // Tests that GLFWUtils returns a descriptor of Metal type
 TEST_F(WindowSurfaceInstanceTests, CorrectSTypeMetal) {
     GLFWwindow* window = CreateWindow();
-    std::unique_ptr<wgpu::ChainedStruct> chainedDescriptor =
-        wgpu::glfw::SetupWindowAndGetSurfaceDescriptor(window);
-    ASSERT_EQ(chainedDescriptor->sType, wgpu::SType::SurfaceDescriptorFromMetalLayer);
+    auto chainedDescriptor = wgpu::glfw::SetupWindowAndGetSurfaceDescriptor(window);
+    ASSERT_EQ(chainedDescriptor->sType, wgpu::SType::SurfaceSourceMetalLayer);
 }
 
 // Test with setting an invalid layer
 TEST_F(WindowSurfaceInstanceTests, InvalidMetalLayer) {
-    wgpu::SurfaceDescriptorFromMetalLayer chainedDescriptor;
-    // The CALayer is autoreleased. Releasing it causes a test failure when the Chromium GTest
-    // autoreleasepool is emptied.
-    chainedDescriptor.layer = utils::CreatePlaceholderCALayer();
+    auto caLayer = utils::CreatePlaceholderCALayer();
+
+    wgpu::SurfaceSourceMetalLayer chainedDescriptor;
+    chainedDescriptor.layer = caLayer.layer;
 
     wgpu::SurfaceDescriptor descriptor;
     descriptor.nextInChain = &chainedDescriptor;
@@ -239,7 +249,7 @@ TEST_F(WindowSurfaceInstanceTests, InvalidMetalLayer) {
 
 // Test using Metal when it is not supported
 TEST_F(WindowSurfaceInstanceTests, MetalSurfacesAreInvalid) {
-    wgpu::SurfaceDescriptorFromMetalLayer chainedDescriptor;
+    wgpu::SurfaceSourceMetalLayer chainedDescriptor;
     chainedDescriptor.layer = nullptr;
 
     wgpu::SurfaceDescriptor descriptor;
@@ -248,3 +258,6 @@ TEST_F(WindowSurfaceInstanceTests, MetalSurfacesAreInvalid) {
 }
 
 #endif  // defined(DAWN_ENABLE_BACKEND_METAL)
+
+}  // anonymous namespace
+}  // namespace dawn

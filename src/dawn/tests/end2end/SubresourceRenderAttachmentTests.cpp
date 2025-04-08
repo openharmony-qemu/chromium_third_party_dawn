@@ -1,16 +1,29 @@
-// Copyright 2020 The Dawn Authors
+// Copyright 2020 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <vector>
 
@@ -18,6 +31,9 @@
 #include "dawn/tests/DawnTest.h"
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
+
+namespace dawn {
+namespace {
 
 // Test that rendering to a subresource of a texture works.
 class SubresourceRenderAttachmentTest : public DawnTest {
@@ -43,7 +59,7 @@ class SubresourceRenderAttachmentTest : public DawnTest {
         float expectedDepth = 0.3f;
         uint8_t expectedStencil = 7;
 
-        utils::ComboRenderPassDescriptor renderPass = [&]() {
+        utils::ComboRenderPassDescriptor renderPass = [&] {
             switch (type) {
                 case Type::Color: {
                     utils::ComboRenderPassDescriptor renderPass({renderTargetView});
@@ -68,7 +84,7 @@ class SubresourceRenderAttachmentTest : public DawnTest {
                     return renderPass;
                 }
                 default:
-                    UNREACHABLE();
+                    DAWN_UNREACHABLE();
             }
         }();
 
@@ -119,7 +135,7 @@ class SubresourceRenderAttachmentTest : public DawnTest {
                 format = wgpu::TextureFormat::Depth24PlusStencil8;
                 break;
             default:
-                UNREACHABLE();
+                DAWN_UNREACHABLE();
         }
 
         constexpr uint32_t kTextureSize = kRTSize << (kMipLevelCount - 1);
@@ -152,29 +168,25 @@ TEST_P(SubresourceRenderAttachmentTest, ColorTexture) {
 
 // Test rendering into a subresource of a depth texture
 TEST_P(SubresourceRenderAttachmentTest, DepthTexture) {
-    // TODO(crbug.com/dawn/667): Work around the fact that some platforms do not support reading
-    // depth.
-    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("disable_depth_read"));
-
     DoTest(Type::Depth);
 }
 
 // Test rendering into a subresource of a stencil texture
 TEST_P(SubresourceRenderAttachmentTest, StencilTexture) {
-    // TODO(crbug.com/dawn/667): Work around the fact that some platforms are unable to read
-    // stencil.
-    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("disable_depth_stencil_read"));
-
-    // TODO(crbug.com/dawn/1497): glReadPixels: GL error: HIGH: Invalid format and type combination.
-    DAWN_SUPPRESS_TEST_IF(IsANGLE());
-
+    // TODO(crbug.com/352360580): Investigate failures.
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsARM());
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsANGLED3D11());
     DoTest(Type::Stencil);
 }
 
 DAWN_INSTANTIATE_TEST(SubresourceRenderAttachmentTest,
+                      D3D11Backend(),
                       D3D12Backend(),
                       D3D12Backend({}, {"use_d3d12_render_pass"}),
                       MetalBackend(),
                       OpenGLBackend(),
                       OpenGLESBackend(),
                       VulkanBackend());
+
+}  // anonymous namespace
+}  // namespace dawn

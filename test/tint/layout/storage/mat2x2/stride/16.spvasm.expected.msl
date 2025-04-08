@@ -14,6 +14,9 @@ struct tint_array {
     T elements[N];
 };
 
+#define TINT_ISOLATE_UB(VOLATILE_NAME) \
+  {volatile bool VOLATILE_NAME = false; if (VOLATILE_NAME) break;}
+
 struct strided_arr {
   /* 0x0000 */ float2 el;
   /* 0x0008 */ tint_array<int8_t, 8> tint_pad;
@@ -23,15 +26,15 @@ struct SSBO {
   /* 0x0000 */ tint_array<strided_arr, 2> m;
 };
 
-float2x2 arr_to_mat2x2_stride_16(tint_array<strided_arr, 2> arr) {
-  return float2x2(arr[0u].el, arr[1u].el);
+tint_array<strided_arr, 2> mat2x2_stride_16_to_arr(float2x2 m) {
+  strided_arr const tint_symbol_2 = {.el=m[0u]};
+  strided_arr const tint_symbol_3 = {.el=m[1u]};
+  tint_array<strided_arr, 2> const tint_symbol_4 = tint_array<strided_arr, 2>{tint_symbol_2, tint_symbol_3};
+  return tint_symbol_4;
 }
 
-tint_array<strided_arr, 2> mat2x2_stride_16_to_arr(float2x2 m) {
-  strided_arr const tint_symbol_1 = {.el=m[0u]};
-  strided_arr const tint_symbol_2 = {.el=m[1u]};
-  tint_array<strided_arr, 2> const tint_symbol_3 = tint_array<strided_arr, 2>{tint_symbol_1, tint_symbol_2};
-  return tint_symbol_3;
+float2x2 arr_to_mat2x2_stride_16(tint_array<strided_arr, 2> arr) {
+  return float2x2(arr[0u].el, arr[1u].el);
 }
 
 void assign_and_preserve_padding_1(device strided_arr* const dest, strided_arr value) {
@@ -40,19 +43,20 @@ void assign_and_preserve_padding_1(device strided_arr* const dest, strided_arr v
 
 void assign_and_preserve_padding(device tint_array<strided_arr, 2>* const dest, tint_array<strided_arr, 2> value) {
   for(uint i = 0u; (i < 2u); i = (i + 1u)) {
+    TINT_ISOLATE_UB(tint_volatile_false);
     assign_and_preserve_padding_1(&((*(dest))[i]), value[i]);
   }
 }
 
-void f_1(device SSBO* const tint_symbol_4) {
-  float2x2 const x_15 = arr_to_mat2x2_stride_16((*(tint_symbol_4)).m);
-  tint_array<strided_arr, 2> const tint_symbol = mat2x2_stride_16_to_arr(x_15);
-  assign_and_preserve_padding(&((*(tint_symbol_4)).m), tint_symbol);
+void f_1(device SSBO* const tint_symbol_5) {
+  float2x2 const tint_symbol = arr_to_mat2x2_stride_16((*(tint_symbol_5)).m);
+  tint_array<strided_arr, 2> const tint_symbol_1 = mat2x2_stride_16_to_arr(tint_symbol);
+  assign_and_preserve_padding(&((*(tint_symbol_5)).m), tint_symbol_1);
   return;
 }
 
-kernel void f(device SSBO* tint_symbol_5 [[buffer(0)]]) {
-  f_1(tint_symbol_5);
+kernel void f(device SSBO* tint_symbol_6 [[buffer(0)]]) {
+  f_1(tint_symbol_6);
   return;
 }
 

@@ -1,16 +1,29 @@
-// Copyright 2019 The Dawn Authors
+// Copyright 2019 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <algorithm>
 #include <vector>
@@ -22,6 +35,7 @@
 #include "dawn/utils/TestUtils.h"
 #include "dawn/utils/WGPUHelpers.h"
 
+namespace dawn {
 namespace {
 
 using Format = wgpu::TextureFormat;
@@ -49,18 +63,18 @@ class ExpectNonZero : public detail::CustomTextureExpectation {
     uint32_t DataSize() override { return sizeof(T); }
 
     testing::AssertionResult Check(const void* data, size_t size) override {
-        ASSERT(size % DataSize() == 0 && size > 0);
+        DAWN_ASSERT(size % DataSize() == 0 && size > 0);
         const T* actual = static_cast<const T*>(data);
         T value = *actual;
         if (value == T(0)) {
             return testing::AssertionFailure()
-                   << "Expected data to be non-zero, was " << value << std::endl;
+                   << "Expected data to be non-zero, was " << value << "\n";
         }
         for (size_t i = 0; i < size / DataSize(); ++i) {
             if (actual[i] != value) {
                 return testing::AssertionFailure()
                        << "Expected data[" << i << "] to match non-zero value " << value
-                       << ", actual " << actual[i] << std::endl;
+                       << ", actual " << actual[i] << "\n";
             }
         }
 
@@ -84,35 +98,26 @@ class NonzeroTextureCreationTests : public DawnTestWithParams<Params> {
         DAWN_TEST_UNSUPPORTED_IF(GetParam().mFormat == wgpu::TextureFormat::BC1RGBAUnorm &&
                                  !SupportsFeatures({wgpu::FeatureName::TextureCompressionBC}));
 
-        // TODO(crbug.com/dawn/667): Work around the fact that some platforms do not support
-        // reading from Snorm textures.
+        // TODO(dawn:1877): Snorm copy failing ANGLE Swiftshader, need further investigation.
         DAWN_TEST_UNSUPPORTED_IF(GetParam().mFormat == wgpu::TextureFormat::RGBA8Snorm &&
-                                 HasToggleEnabled("disable_snorm_read"));
+                                 IsANGLESwiftShader());
 
-        // TODO(crbug.com/dawn/667): ANGLE claims to support NV_read_stencil, but won't read
-        // correctly from a DEPTH32F_STENCIL8 texture.
-        DAWN_SUPPRESS_TEST_IF(GetParam().mFormat == wgpu::TextureFormat::Depth24PlusStencil8 &&
-                              GetParam().mAspect == wgpu::TextureAspect::StencilOnly && IsANGLE());
+        // You can't read compressed textures in compat mode.
+        DAWN_TEST_UNSUPPORTED_IF(utils::IsCompressedTextureFormat(GetParam().mFormat) &&
+                                 IsCompatibilityMode());
 
-        // TODO(crbug.com/dawn/667): Work around the fact that some platforms do not support
-        // reading depth.
-        DAWN_TEST_UNSUPPORTED_IF(GetParam().mAspect == wgpu::TextureAspect::DepthOnly &&
-                                 HasToggleEnabled("disable_depth_read"));
-
-        // TODO(crbug.com/dawn/667): Work around the fact that some platforms do not support
-        // reading stencil.
-        DAWN_TEST_UNSUPPORTED_IF(GetParam().mAspect == wgpu::TextureAspect::StencilOnly &&
-                                 HasToggleEnabled("disable_stencil_read"));
-
-        // GL may support the feature, but reading data back is not implemented.
-        DAWN_TEST_UNSUPPORTED_IF(GetParam().mFormat == wgpu::TextureFormat::BC1RGBAUnorm &&
-                                 (IsOpenGL() || IsOpenGLES()));
+        // textureLoad() of depth textures is forbidden in Compat mode.
+        DAWN_TEST_UNSUPPORTED_IF(utils::IsDepthOrStencilFormat(GetParam().mFormat) &&
+                                 IsCompatibilityMode());
 
         // TODO(crbug.com/dawn/1637): Failures with ANGLE only with some format/aspect
         DAWN_SUPPRESS_TEST_IF(IsWindows() && IsANGLE() &&
                               GetParam().mAspect == wgpu::TextureAspect::All &&
                               (GetParam().mFormat == wgpu::TextureFormat::Stencil8 ||
                                GetParam().mFormat == wgpu::TextureFormat::Depth32Float));
+
+        // TODO(dawn:1844): Work around this by clearing layers one by one on Intel.
+        DAWN_SUPPRESS_TEST_IF(IsD3D11() && IsIntel() && GetParam().mDepthOrArrayLayers > 6);
 
         wgpu::TextureDescriptor descriptor;
         descriptor.dimension = GetParam().mDimension;
@@ -123,6 +128,19 @@ class NonzeroTextureCreationTests : public DawnTestWithParams<Params> {
         descriptor.format = GetParam().mFormat;
         descriptor.usage = GetParam().mUsage;
         descriptor.mipLevelCount = GetParam().mMipCount;
+
+        // Only set the textureBindingViewDimension in compat mode. It's not needed
+        // nor used in non-compat.
+        wgpu::TextureBindingViewDimensionDescriptor textureBindingViewDimensionDesc;
+        if (IsCompatibilityMode()) {
+            if (descriptor.dimension == wgpu::TextureDimension::e2D &&
+                descriptor.size.depthOrArrayLayers == 6) {
+                // Testing cube texture copy for compat.
+                textureBindingViewDimensionDesc.textureBindingViewDimension =
+                    wgpu::TextureViewDimension::Cube;
+            }
+            descriptor.nextInChain = &textureBindingViewDimensionDesc;
+        }
 
         wgpu::Texture texture = device.CreateTexture(&descriptor);
 
@@ -192,7 +210,7 @@ class NonzeroTextureCreationTests : public DawnTestWithParams<Params> {
                         break;
                     }
                     default:
-                        UNREACHABLE();
+                        DAWN_UNREACHABLE();
                 }
                 break;
             }
@@ -246,7 +264,7 @@ class NonzeroTextureCreationTests : public DawnTestWithParams<Params> {
                 break;
             }
             default:
-                UNREACHABLE();
+                DAWN_UNREACHABLE();
         }
     }
 };
@@ -257,8 +275,6 @@ class NonzeroDepthTextureCreationTests : public NonzeroTextureCreationTests {};
 class NonzeroDepthStencilTextureCreationTests : public NonzeroTextureCreationTests {};
 class NonzeroStencilTextureCreationTests : public NonzeroTextureCreationTests {};
 class NonzeroMultisampledTextureCreationTests : public NonzeroTextureCreationTests {};
-
-}  // anonymous namespace
 
 // Test that texture clears to a non-zero value because toggle is enabled.
 TEST_P(NonzeroTextureCreationTests, TextureCreationClears) {
@@ -277,6 +293,9 @@ TEST_P(NonzeroCompressedTextureCreationTests, TextureCreationClears) {
 
 // Test that texture clears to a non-zero value because toggle is enabled.
 TEST_P(NonzeroDepthTextureCreationTests, TextureCreationClears) {
+    // TODO(crbug.com/dawn/2295): diagnose this failure on Pixel 4 OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsQualcomm());
+
     Run();
 }
 
@@ -287,6 +306,9 @@ TEST_P(NonzeroDepthStencilTextureCreationTests, TextureCreationClears) {
 
 // Test that texture clears to a non-zero value because toggle is enabled.
 TEST_P(NonzeroStencilTextureCreationTests, TextureCreationClears) {
+    // TODO(crbug.com/dawn/2295): diagnose this failure on Pixel 4 OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsQualcomm());
+
     Run();
 }
 
@@ -297,7 +319,9 @@ TEST_P(NonzeroMultisampledTextureCreationTests, TextureCreationClears) {
 
 DAWN_INSTANTIATE_TEST_P(
     NonzeroTextureCreationTests,
-    {D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"},
+    {D3D11Backend({"nonzero_clear_resources_on_creation_for_testing"},
+                  {"lazy_clear_resource_on_first_use"}),
+     D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"},
                   {"lazy_clear_resource_on_first_use"}),
      MetalBackend({"nonzero_clear_resources_on_creation_for_testing"},
                   {"lazy_clear_resource_on_first_use"}),
@@ -312,14 +336,16 @@ DAWN_INSTANTIATE_TEST_P(
     {wgpu::TextureUsage(wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc),
      wgpu::TextureUsage::CopySrc},
     {wgpu::TextureDimension::e2D},
-    {1u, 7u},          // depth or array layers
-    {4u},              // mip count
-    {0u, 1u, 2u, 3u},  // mip
-    {1u}               // sample count
+    {1u, 7u, 6u /* test for compat cube */},  // depth or array layers
+    {4u},                                     // mip count
+    {0u, 1u, 2u, 3u},                         // mip
+    {1u}                                      // sample count
 );
 
 DAWN_INSTANTIATE_TEST_P(NonzeroNonrenderableTextureCreationTests,
-                        {D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"},
+                        {D3D11Backend({"nonzero_clear_resources_on_creation_for_testing"},
+                                      {"lazy_clear_resource_on_first_use"}),
+                         D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"},
                                       {"lazy_clear_resource_on_first_use"}),
                          MetalBackend({"nonzero_clear_resources_on_creation_for_testing"},
                                       {"lazy_clear_resource_on_first_use"}),
@@ -333,14 +359,16 @@ DAWN_INSTANTIATE_TEST_P(NonzeroNonrenderableTextureCreationTests,
                         {wgpu::TextureAspect::All},
                         {wgpu::TextureUsage::CopySrc},
                         {wgpu::TextureDimension::e2D, wgpu::TextureDimension::e3D},
-                        {1u, 7u},          // depth or array layers
-                        {4u},              // mip count
-                        {0u, 1u, 2u, 3u},  // mip
-                        {1u}               // sample count
+                        {1u, 7u, 6u /* test for compat cube */},  // depth or array layers
+                        {4u},                                     // mip count
+                        {0u, 1u, 2u, 3u},                         // mip
+                        {1u}                                      // sample count
 );
 
 DAWN_INSTANTIATE_TEST_P(NonzeroCompressedTextureCreationTests,
-                        {D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"},
+                        {D3D11Backend({"nonzero_clear_resources_on_creation_for_testing"},
+                                      {"lazy_clear_resource_on_first_use"}),
+                         D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"},
                                       {"lazy_clear_resource_on_first_use"}),
                          MetalBackend({"nonzero_clear_resources_on_creation_for_testing"},
                                       {"lazy_clear_resource_on_first_use"}),
@@ -354,14 +382,16 @@ DAWN_INSTANTIATE_TEST_P(NonzeroCompressedTextureCreationTests,
                         {wgpu::TextureAspect::All},
                         {wgpu::TextureUsage::CopySrc},
                         {wgpu::TextureDimension::e2D},
-                        {1u, 7u},          // depth or array layers
-                        {4u},              // mip count
-                        {0u, 1u, 2u, 3u},  // mip
-                        {1u}               // sample count
+                        {1u, 7u, 6u /* test for compat cube */},  // depth or array layers
+                        {4u},                                     // mip count
+                        {0u, 1u, 2u, 3u},                         // mip
+                        {1u}                                      // sample count
 );
 
 DAWN_INSTANTIATE_TEST_P(NonzeroDepthTextureCreationTests,
-                        {D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"},
+                        {D3D11Backend({"nonzero_clear_resources_on_creation_for_testing"},
+                                      {"lazy_clear_resource_on_first_use"}),
+                         D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"},
                                       {"lazy_clear_resource_on_first_use"}),
                          MetalBackend({"nonzero_clear_resources_on_creation_for_testing"},
                                       {"lazy_clear_resource_on_first_use"}),
@@ -377,15 +407,17 @@ DAWN_INSTANTIATE_TEST_P(NonzeroDepthTextureCreationTests,
                                             wgpu::TextureUsage::CopySrc),
                          wgpu::TextureUsage::CopySrc},
                         {wgpu::TextureDimension::e2D},
-                        {1u, 7u},          // depth or array layers
-                        {4u},              // mip count
-                        {0u, 1u, 2u, 3u},  // mip
-                        {1u}               // sample count
+                        {1u, 7u, 6u /* test for compat cube */},  // depth or array layers
+                        {4u},                                     // mip count
+                        {0u, 1u, 2u, 3u},                         // mip
+                        {1u}                                      // sample count
 );
 
 DAWN_INSTANTIATE_TEST_P(
     NonzeroDepthStencilTextureCreationTests,
-    {D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"},
+    {D3D11Backend({"nonzero_clear_resources_on_creation_for_testing"},
+                  {"lazy_clear_resource_on_first_use"}),
+     D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"},
                   {"lazy_clear_resource_on_first_use"}),
      MetalBackend({"nonzero_clear_resources_on_creation_for_testing"},
                   {"lazy_clear_resource_on_first_use"}),
@@ -401,15 +433,17 @@ DAWN_INSTANTIATE_TEST_P(
                         wgpu::TextureUsage::TextureBinding),
      wgpu::TextureUsage(wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopySrc)},
     {wgpu::TextureDimension::e2D},
-    {1u, 7u},          // depth or array layers
-    {4u},              // mip count
-    {0u, 1u, 2u, 3u},  // mip
-    {1u}               // sample count
+    {1u, 7u, 6u /* test for compat cube */},  // depth or array layers
+    {4u},                                     // mip count
+    {0u, 1u, 2u, 3u},                         // mip
+    {1u}                                      // sample count
 );
 
 DAWN_INSTANTIATE_TEST_P(
     NonzeroStencilTextureCreationTests,
-    {D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"},
+    {D3D11Backend({"nonzero_clear_resources_on_creation_for_testing"},
+                  {"lazy_clear_resource_on_first_use"}),
+     D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"},
                   {"lazy_clear_resource_on_first_use"}),
      MetalBackend({"nonzero_clear_resources_on_creation_for_testing"},
                   {"lazy_clear_resource_on_first_use"}),
@@ -425,15 +459,17 @@ DAWN_INSTANTIATE_TEST_P(
                         wgpu::TextureUsage::TextureBinding),
      wgpu::TextureUsage(wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopySrc)},
     {wgpu::TextureDimension::e2D},
-    {1u, 7u},          // depth or array layers
-    {4u},              // mip count
-    {0u, 1u, 2u, 3u},  // mip
-    {1u}               // sample count
+    {1u, 7u, 6u /* test for compat cube */},  // depth or array layers
+    {4u},                                     // mip count
+    {0u, 1u, 2u, 3u},                         // mip
+    {1u}                                      // sample count
 );
 
 DAWN_INSTANTIATE_TEST_P(
     NonzeroMultisampledTextureCreationTests,
-    {D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"},
+    {D3D11Backend({"nonzero_clear_resources_on_creation_for_testing"},
+                  {"lazy_clear_resource_on_first_use"}),
+     D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"},
                   {"lazy_clear_resource_on_first_use"}),
      MetalBackend({"nonzero_clear_resources_on_creation_for_testing"},
                   {"lazy_clear_resource_on_first_use"}),
@@ -455,3 +491,6 @@ DAWN_INSTANTIATE_TEST_P(
     {0u},  // mip
     {4u}   // sample count
 );
+
+}  // anonymous namespace
+}  // namespace dawn

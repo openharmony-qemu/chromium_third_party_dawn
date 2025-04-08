@@ -1,29 +1,44 @@
-// Copyright 2017 The Dawn Authors
+// Copyright 2017 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #ifndef SRC_DAWN_UTILS_WGPUHELPERS_H_
 #define SRC_DAWN_UTILS_WGPUHELPERS_H_
 
+#include <webgpu/webgpu_cpp.h>
+
 #include <array>
 #include <initializer_list>
+#include <string>
 #include <vector>
 
 #include "dawn/common/Constants.h"
 #include "dawn/utils/TextureUtils.h"
-#include "dawn/webgpu_cpp.h"
 
-namespace utils {
+namespace dawn::utils {
 
 enum Expectation { Success, Failure };
 
@@ -34,6 +49,7 @@ wgpu::ShaderModule CreateShaderModuleFromASM(
     wgpu::DawnShaderModuleSPIRVOptionsDescriptor* spirv_options = nullptr);
 #endif
 wgpu::ShaderModule CreateShaderModule(const wgpu::Device& device, const char* source);
+wgpu::ShaderModule CreateShaderModule(const wgpu::Device& device, const std::string& source);
 
 wgpu::Buffer CreateBufferFromData(const wgpu::Device& device,
                                   const void* data,
@@ -89,7 +105,7 @@ struct BasicRenderPass {
     uint32_t height;
     wgpu::Texture color;
     wgpu::TextureFormat colorFormat;
-    utils::ComboRenderPassDescriptor renderPassInfo;
+    ComboRenderPassDescriptor renderPassInfo;
 };
 BasicRenderPass CreateBasicRenderPass(
     const wgpu::Device& device,
@@ -103,11 +119,13 @@ wgpu::PipelineLayout MakeBasicPipelineLayout(const wgpu::Device& device,
 wgpu::PipelineLayout MakePipelineLayout(const wgpu::Device& device,
                                         std::vector<wgpu::BindGroupLayout> bgls);
 
+#ifndef __EMSCRIPTEN__
 extern wgpu::ExternalTextureBindingLayout kExternalTextureBindingLayout;
+#endif  // __EMSCRIPTEN__
 
 // Helpers to make creating bind group layouts look nicer:
 //
-//   utils::MakeBindGroupLayout(device, {
+//   dawn::utils::MakeBindGroupLayout(device, {
 //       {0, wgpu::ShaderStage::Vertex, wgpu::BufferBindingType::Uniform},
 //       {1, wgpu::ShaderStage::Fragment, wgpu::SamplerBindingType::Filtering},
 //       {3, wgpu::ShaderStage::Fragment, wgpu::TextureSampleType::Float}
@@ -134,9 +152,11 @@ struct BindingLayoutEntryInitializationHelper : wgpu::BindGroupLayoutEntry {
         wgpu::StorageTextureAccess storageTextureAccess,
         wgpu::TextureFormat format,
         wgpu::TextureViewDimension viewDimension = wgpu::TextureViewDimension::e2D);
+#ifndef __EMSCRIPTEN__
     BindingLayoutEntryInitializationHelper(uint32_t entryBinding,
                                            wgpu::ShaderStage entryVisibility,
                                            wgpu::ExternalTextureBindingLayout* bindingLayout);
+#endif  // __EMSCRIPTEN__
 
     // NOLINTNEXTLINE(runtime/explicit)
     BindingLayoutEntryInitializationHelper(const wgpu::BindGroupLayoutEntry& entry);
@@ -148,7 +168,7 @@ wgpu::BindGroupLayout MakeBindGroupLayout(
 
 // Helpers to make creating bind groups look nicer:
 //
-//   utils::MakeBindGroup(device, layout, {
+//   dawn::utils::MakeBindGroup(device, layout, {
 //       {0, mySampler},
 //       {1, myBuffer, offset, size},
 //       {3, myTextureView}
@@ -159,7 +179,9 @@ wgpu::BindGroupLayout MakeBindGroupLayout(
 struct BindingInitializationHelper {
     BindingInitializationHelper(uint32_t binding, const wgpu::Sampler& sampler);
     BindingInitializationHelper(uint32_t binding, const wgpu::TextureView& textureView);
+#ifndef __EMSCRIPTEN__
     BindingInitializationHelper(uint32_t binding, const wgpu::ExternalTexture& externalTexture);
+#endif  // __EMSCRIPTEN__
     BindingInitializationHelper(uint32_t binding,
                                 const wgpu::Buffer& buffer,
                                 uint64_t offset = 0,
@@ -173,7 +195,9 @@ struct BindingInitializationHelper {
     wgpu::Sampler sampler;
     wgpu::TextureView textureView;
     wgpu::Buffer buffer;
+#ifndef __EMSCRIPTEN__
     wgpu::ExternalTextureBindingEntry externalTextureBindingEntry;
+#endif  // __EMSCRIPTEN__
     uint64_t offset = 0;
     uint64_t size = 0;
 };
@@ -189,9 +213,11 @@ struct ColorSpaceConversionInfo {
     std::array<float, 7> srcTransferFunctionParameters;
     std::array<float, 7> dstTransferFunctionParameters;
 };
-
 ColorSpaceConversionInfo GetYUVBT709ToRGBSRGBColorSpaceConversionInfo();
+ColorSpaceConversionInfo GetNoopRGBColorSpaceConversionInfo();
 
-}  // namespace utils
+bool BackendRequiresCompat(wgpu::BackendType backend);
+
+}  // namespace dawn::utils
 
 #endif  // SRC_DAWN_UTILS_WGPUHELPERS_H_

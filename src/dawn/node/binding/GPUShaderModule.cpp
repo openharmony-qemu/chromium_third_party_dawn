@@ -1,16 +1,29 @@
-// Copyright 2021 The Dawn Authors
+// Copyright 2021 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "src/dawn/node/binding/GPUShaderModule.h"
 
@@ -18,39 +31,55 @@
 #include <utility>
 #include <vector>
 
-#include "src/dawn/node/utils/Debug.h"
+#include "src/dawn/node/binding/Converter.h"
 
 namespace wgpu::binding {
 
 ////////////////////////////////////////////////////////////////////////////////
 // wgpu::bindings::GPUShaderModule
 ////////////////////////////////////////////////////////////////////////////////
-GPUShaderModule::GPUShaderModule(wgpu::ShaderModule shader, std::shared_ptr<AsyncRunner> async)
-    : shader_(std::move(shader)), async_(std::move(async)) {}
+GPUShaderModule::GPUShaderModule(const wgpu::ShaderModuleDescriptor& desc,
+                                 wgpu::ShaderModule shader,
+                                 std::shared_ptr<AsyncRunner> async)
+    : shader_(std::move(shader)), async_(std::move(async)), label_(CopyLabel(desc.label)) {}
 
 interop::Promise<interop::Interface<interop::GPUCompilationInfo>>
 GPUShaderModule::getCompilationInfo(Napi::Env env) {
     struct GPUCompilationMessage : public interop::GPUCompilationMessage {
-        WGPUCompilationMessage message;
+        interop::GPUCompilationMessageType type;
+        uint64_t lineNum;
+        uint64_t linePos;
+        uint64_t offset;
+        uint64_t length;
+        std::string message;
 
-        explicit GPUCompilationMessage(const WGPUCompilationMessage& m) : message(m) {}
-        std::string getMessage(Napi::Env) override { return message.message; }
-        interop::GPUCompilationMessageType getType(Napi::Env) override {
-            switch (message.type) {
-                case WGPUCompilationMessageType_Error:
-                    return interop::GPUCompilationMessageType::kError;
-                case WGPUCompilationMessageType_Warning:
-                    return interop::GPUCompilationMessageType::kWarning;
-                case WGPUCompilationMessageType_Info:
-                    return interop::GPUCompilationMessageType::kInfo;
+        explicit GPUCompilationMessage(const wgpu::CompilationMessage& m)
+            : lineNum(m.lineNum),
+              linePos(m.utf16LinePos),
+              offset(m.utf16Offset),
+              length(m.utf16Length),
+              message(m.message) {
+            switch (m.type) {
+                case wgpu::CompilationMessageType::Error:
+                    type = interop::GPUCompilationMessageType::kError;
+                    break;
+                case wgpu::CompilationMessageType::Warning:
+                    type = interop::GPUCompilationMessageType::kWarning;
+                    break;
+                case wgpu::CompilationMessageType::Info:
+                    type = interop::GPUCompilationMessageType::kInfo;
+                    break;
                 default:
-                    UNIMPLEMENTED();
+                    UNREACHABLE("unrecognized handled compilation message type", m.type);
             }
         }
-        uint64_t getLineNum(Napi::Env) override { return message.lineNum; }
-        uint64_t getLinePos(Napi::Env) override { return message.linePos; }
-        uint64_t getOffset(Napi::Env) override { return message.offset; }
-        uint64_t getLength(Napi::Env) override { return message.length; }
+
+        std::string getMessage(Napi::Env) override { return message; }
+        interop::GPUCompilationMessageType getType(Napi::Env) override { return type; }
+        uint64_t getLineNum(Napi::Env) override { return lineNum; }
+        uint64_t getLinePos(Napi::Env) override { return linePos; }
+        uint64_t getOffset(Napi::Env) override { return offset; }
+        uint64_t getLength(Napi::Env) override { return length; }
     };
 
     using Messages = std::vector<interop::Interface<interop::GPUCompilationMessage>>;
@@ -74,42 +103,35 @@ GPUShaderModule::getCompilationInfo(Napi::Env env) {
         }
     };
 
-    using Promise = interop::Promise<interop::Interface<interop::GPUCompilationInfo>>;
-
-    struct Context {
-        Napi::Env env;
-        Promise promise;
-        AsyncTask task;
-    };
-    auto ctx = new Context{env, Promise(env, PROMISE_INFO), AsyncTask(async_)};
+    auto ctx = std::make_unique<AsyncContext<interop::Interface<interop::GPUCompilationInfo>>>(
+        env, PROMISE_INFO, async_);
     auto promise = ctx->promise;
 
     shader_.GetCompilationInfo(
-        [](WGPUCompilationInfoRequestStatus status, WGPUCompilationInfo const* compilationInfo,
-           void* userdata) {
-            auto c = std::unique_ptr<Context>(static_cast<Context*>(userdata));
-
+        wgpu::CallbackMode::AllowProcessEvents,
+        [ctx = std::move(ctx)](wgpu::CompilationInfoRequestStatus status,
+                               wgpu::CompilationInfo const* compilationInfo) {
             Messages messages(compilationInfo->messageCount);
             for (uint32_t i = 0; i < compilationInfo->messageCount; i++) {
                 auto& msg = compilationInfo->messages[i];
                 messages[i] =
-                    interop::GPUCompilationMessage::Create<GPUCompilationMessage>(c->env, msg);
+                    interop::GPUCompilationMessage::Create<GPUCompilationMessage>(ctx->env, msg);
             }
 
-            c->promise.Resolve(interop::GPUCompilationInfo::Create<GPUCompilationInfo>(
-                c->env, c->env, std::move(messages)));
-        },
-        ctx);
+            ctx->promise.Resolve(interop::GPUCompilationInfo::Create<GPUCompilationInfo>(
+                ctx->env, ctx->env, std::move(messages)));
+        });
 
     return promise;
 }
 
 std::string GPUShaderModule::getLabel(Napi::Env) {
-    UNIMPLEMENTED();
+    return label_;
 }
 
 void GPUShaderModule::setLabel(Napi::Env, std::string value) {
-    UNIMPLEMENTED();
+    shader_.SetLabel(std::string_view(value));
+    label_ = value;
 }
 
 }  // namespace wgpu::binding

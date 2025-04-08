@@ -1,21 +1,35 @@
-// Copyright 2019 The Dawn Authors
+// Copyright 2019 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <vector>
 
 #include "dawn/tests/unittests/validation/ValidationTest.h"
 
+namespace dawn {
 namespace {
 
 class ToggleValidationTest : public ValidationTest {
@@ -25,12 +39,12 @@ class ToggleValidationTest : public ValidationTest {
     }
 };
 
-// Tests querying the detail of a toggle from dawn::native::InstanceBase works correctly.
+// Tests querying the detail of a toggle from native::InstanceBase works correctly.
 TEST_F(ToggleValidationTest, QueryToggleInfo) {
     // Query with a valid toggle name
     {
         const char* kValidToggleName = "emulate_store_and_msaa_resolve";
-        const dawn::native::ToggleInfo* toggleInfo = GetToggleInfo(kValidToggleName);
+        const native::ToggleInfo* toggleInfo = GetToggleInfo(kValidToggleName);
         ASSERT_NE(nullptr, toggleInfo);
         ASSERT_NE(nullptr, toggleInfo->name);
         ASSERT_NE(nullptr, toggleInfo->description);
@@ -40,7 +54,7 @@ TEST_F(ToggleValidationTest, QueryToggleInfo) {
     // Query with an invalid toggle name
     {
         const char* kInvalidToggleName = "!@#$%^&*";
-        const dawn::native::ToggleInfo* toggleInfo = GetToggleInfo(kInvalidToggleName);
+        const native::ToggleInfo* toggleInfo = GetToggleInfo(kInvalidToggleName);
         ASSERT_EQ(nullptr, toggleInfo);
     }
 }
@@ -54,11 +68,11 @@ TEST_F(ToggleValidationTest, OverrideToggleUsage) {
         wgpu::DawnTogglesDescriptor deviceTogglesDesc;
         descriptor.nextInChain = &deviceTogglesDesc;
         deviceTogglesDesc.enabledToggles = &kValidToggleName;
-        deviceTogglesDesc.enabledTogglesCount = 1;
+        deviceTogglesDesc.enabledToggleCount = 1;
 
         wgpu::Device deviceWithToggle =
             wgpu::Device::Acquire(GetBackendAdapter().CreateDevice(&descriptor));
-        std::vector<const char*> toggleNames = dawn::native::GetTogglesUsed(deviceWithToggle.Get());
+        std::vector<const char*> toggleNames = native::GetTogglesUsed(deviceWithToggle.Get());
         bool validToggleExists = false;
         for (const char* toggle : toggleNames) {
             if (strcmp(toggle, kValidToggleName) == 0) {
@@ -75,11 +89,11 @@ TEST_F(ToggleValidationTest, OverrideToggleUsage) {
         wgpu::DawnTogglesDescriptor deviceTogglesDesc;
         descriptor.nextInChain = &deviceTogglesDesc;
         deviceTogglesDesc.enabledToggles = &kInvalidToggleName;
-        deviceTogglesDesc.enabledTogglesCount = 1;
+        deviceTogglesDesc.enabledToggleCount = 1;
 
         wgpu::Device deviceWithToggle =
             wgpu::Device::Acquire(GetBackendAdapter().CreateDevice(&descriptor));
-        std::vector<const char*> toggleNames = dawn::native::GetTogglesUsed(deviceWithToggle.Get());
+        std::vector<const char*> toggleNames = native::GetTogglesUsed(deviceWithToggle.Get());
         bool InvalidToggleExists = false;
         for (const char* toggle : toggleNames) {
             if (strcmp(toggle, kInvalidToggleName) == 0) {
@@ -96,11 +110,11 @@ TEST_F(ToggleValidationTest, TurnOffVsyncWithToggle) {
     wgpu::DawnTogglesDescriptor deviceTogglesDesc;
     descriptor.nextInChain = &deviceTogglesDesc;
     deviceTogglesDesc.enabledToggles = &kValidToggleName;
-    deviceTogglesDesc.enabledTogglesCount = 1;
+    deviceTogglesDesc.enabledToggleCount = 1;
 
     wgpu::Device deviceWithToggle =
         wgpu::Device::Acquire(GetBackendAdapter().CreateDevice(&descriptor));
-    std::vector<const char*> toggleNames = dawn::native::GetTogglesUsed(deviceWithToggle.Get());
+    std::vector<const char*> toggleNames = native::GetTogglesUsed(deviceWithToggle.Get());
     bool validToggleExists = false;
     for (const char* toggle : toggleNames) {
         if (strcmp(toggle, kValidToggleName) == 0) {
@@ -109,4 +123,6 @@ TEST_F(ToggleValidationTest, TurnOffVsyncWithToggle) {
     }
     ASSERT_EQ(validToggleExists, true);
 }
+
 }  // anonymous namespace
+}  // namespace dawn

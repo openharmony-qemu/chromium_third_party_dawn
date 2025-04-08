@@ -1,16 +1,29 @@
-//* Copyright 2017 The Dawn Authors
+//* Copyright 2017 The Dawn & Tint Authors
 //*
-//* Licensed under the Apache License, Version 2.0 (the "License");
-//* you may not use this file except in compliance with the License.
-//* You may obtain a copy of the License at
+//* Redistribution and use in source and binary forms, with or without
+//* modification, are permitted provided that the following conditions are met:
 //*
-//*     http://www.apache.org/licenses/LICENSE-2.0
+//* 1. Redistributions of source code must retain the above copyright notice, this
+//*    list of conditions and the following disclaimer.
 //*
-//* Unless required by applicable law or agreed to in writing, software
-//* distributed under the License is distributed on an "AS IS" BASIS,
-//* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-//* See the License for the specific language governing permissions and
-//* limitations under the License.
+//* 2. Redistributions in binary form must reproduce the above copyright notice,
+//*    this list of conditions and the following disclaimer in the documentation
+//*    and/or other materials provided with the distribution.
+//*
+//* 3. Neither the name of the copyright holder nor the names of its
+//*    contributors may be used to endorse or promote products derived from
+//*    this software without specific prior written permission.
+//*
+//* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+//* AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+//* IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+//* DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+//* FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+//* DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+//* SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+//* CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+//* OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+//* OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 {% set Prefix = metadata.proc_table_prefix %}
 {% set prefix = Prefix.lower() %}
@@ -49,6 +62,8 @@ namespace {{native_namespace}} {
                     {% set varName = as_varName(arg.name) %}
                     {% if arg.type.category in ["enum", "bitmask"] and arg.annotation == "value" %}
                         auto {{varName}}_ = static_cast<{{as_frontendType(arg.type)}}>({{varName}});
+                    {% elif arg.type.category == "structure" and arg.annotation == "value" %}
+                        auto {{varName}}_ = *reinterpret_cast<{{as_frontendType(arg.type)}}*>(&{{varName}});
                     {% elif arg.annotation != "value" or arg.type.category == "object" %}
                         auto {{varName}}_ = reinterpret_cast<{{decorate("", as_frontendType(arg.type), arg)}}>({{varName}});
                     {% else %}
@@ -56,7 +71,7 @@ namespace {{native_namespace}} {
                     {% endif %}
                 {%- endfor-%}
 
-                {% if method.autolock %}
+                {% if method.autolock and method.return_type.name.get() != 'future' %}
                     {% if type.name.get() != "device" %}
                         auto device = self->GetDevice();
                     {% else %}
@@ -64,7 +79,7 @@ namespace {{native_namespace}} {
                     {% endif %}
                     auto deviceLock(device->GetScopedLock());
                 {% else %}
-                    // This method is specified to not use AutoLock in json script.
+                    // This method is specified to not use AutoLock in json script or it returns a future.
                 {% endif %}
 
                 {% if method.return_type.name.canonical_case() != "void" %}
@@ -79,6 +94,8 @@ namespace {{native_namespace}} {
                 {% if method.return_type.name.canonical_case() != "void" %}
                     {% if method.return_type.category in ["object", "enum", "bitmask"] %}
                         return ToAPI(result);
+                    {% elif method.return_type.category in ["structure"] %}
+                        return *ToAPI(&result);
                     {% else %}
                         return result;
                     {% endif %}
@@ -87,7 +104,7 @@ namespace {{native_namespace}} {
         {% endfor %}
     {% endfor %}
 
-    {% for function in by_category["function"] if function.name.canonical_case() != "get proc address" %}
+    {% for function in by_category["function"] if function.name.canonical_case() != "get proc address" and function.name.canonical_case() != "get proc address 2" %}
         {{as_cType(function.return_type.name)}} Native{{function.name.CamelCase()}}(
             {%- for arg in function.arguments -%}
                 {%- if not loop.first %}, {% endif -%}
@@ -129,7 +146,7 @@ namespace {{native_namespace}} {
         {% set c_prefix = metadata.c_prefix %}
         struct ProcEntry {
             {{c_prefix}}Proc proc;
-            const char* name;
+            std::string_view name;
         };
         static const ProcEntry sProcMap[] = {
             {% for (type, method) in c_methods_sorted_by_name %}
@@ -140,25 +157,27 @@ namespace {{native_namespace}} {
 
     }  // anonymous namespace
 
-    WGPUProc NativeGetProcAddress(WGPUDevice, const char* procName) {
-        if (procName == nullptr) {
+    WGPUProc NativeGetProcAddress(WGPUStringView cProcName) {
+        if (cProcName.data == nullptr) {
             return nullptr;
         }
 
+        std::string_view procName(cProcName.data, cProcName.length != WGPU_STRLEN ? cProcName.length : strlen(cProcName.data));
+
         const ProcEntry* entry = std::lower_bound(&sProcMap[0], &sProcMap[sProcMapSize], procName,
-            [](const ProcEntry &a, const char *b) -> bool {
-                return strcmp(a.name, b) < 0;
+            [](const ProcEntry &a, const std::string_view& b) -> bool {
+                return a.name.compare(b) < 0;
             }
         );
 
-        if (entry != &sProcMap[sProcMapSize] && strcmp(entry->name, procName) == 0) {
+        if (entry != &sProcMap[sProcMapSize] && entry->name == procName) {
             return entry->proc;
         }
 
         // Special case the free-standing functions of the API.
         // TODO(dawn:1238) Checking string one by one is slow, it needs to be optimized.
         {% for function in by_category["function"] %}
-            if (strcmp(procName, "{{as_cMethod(None, function.name)}}") == 0) {
+            if (procName == "{{as_cMethod(None, function.name)}}") {
                 return reinterpret_cast<{{c_prefix}}Proc>(Native{{as_cppType(function.name)}});
             }
 
@@ -166,8 +185,8 @@ namespace {{native_namespace}} {
         return nullptr;
     }
 
-    std::vector<const char*> GetProcMapNamesForTestingInternal() {
-        std::vector<const char*> result;
+    std::vector<std::string_view> GetProcMapNamesForTestingInternal() {
+        std::vector<std::string_view> result;
         result.reserve(sProcMapSize);
         for (const ProcEntry& entry : sProcMap) {
             result.push_back(entry.name);
@@ -175,16 +194,20 @@ namespace {{native_namespace}} {
         return result;
     }
 
-    static {{Prefix}}ProcTable gProcTable = {
+    constexpr {{Prefix}}ProcTable MakeProcTable() {
+        {{Prefix}}ProcTable procs = {};
         {% for function in by_category["function"] %}
-            Native{{as_cppType(function.name)}},
+            procs.{{as_varName(function.name)}} = Native{{as_cppType(function.name)}};
         {% endfor %}
         {% for type in by_category["object"] %}
             {% for method in c_methods(type) %}
-                Native{{as_MethodSuffix(type.name, method.name)}},
+                procs.{{as_varName(type.name, method.name)}} = Native{{as_MethodSuffix(type.name, method.name)}};
             {% endfor %}
         {% endfor %}
-    };
+        return procs;
+    }
+
+    static {{Prefix}}ProcTable gProcTable = MakeProcTable();
 
     const {{Prefix}}ProcTable& GetProcsAutogen() {
         return gProcTable;

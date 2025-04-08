@@ -1,21 +1,35 @@
-// Copyright 2019 The Dawn Authors
+// Copyright 2019 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #ifndef SRC_DAWN_NATIVE_FORMAT_H_
 #define SRC_DAWN_NATIVE_FORMAT_H_
 
 #include <array>
+#include <variant>
 
 #include "dawn/native/dawn_platform.h"
 
@@ -25,6 +39,8 @@
 #include "dawn/native/EnumClassBitmasks.h"
 #include "dawn/native/Error.h"
 #include "dawn/native/Subresource.h"
+
+#include "absl/strings/str_format.h"
 
 // About multi-planar formats.
 //
@@ -48,6 +64,10 @@ enum class Aspect : uint8_t;
 class DeviceBase;
 
 // This mirrors wgpu::TextureSampleType as a bitmask instead.
+// NOTE: SampleTypeBit::External does not have an equivalent TextureSampleType. All future
+// additions to SampleTypeBit that have an equivalent TextureSampleType should use
+// SampleTypeBit::External's value and update SampleTypeBit::External to a higher value.
+// TODO(crbug.com/dawn/2476): Validate SampleTypeBit::External is compatible with Sampler.
 enum class SampleTypeBit : uint8_t {
     None = 0x0,
     Float = 0x1,
@@ -55,6 +75,7 @@ enum class SampleTypeBit : uint8_t {
     Depth = 0x4,
     Sint = 0x8,
     Uint = 0x10,
+    External = 0x20,
 };
 
 // Converts a wgpu::TextureSampleType to its bitmask representation.
@@ -66,18 +87,40 @@ struct TexelBlockInfo {
     uint32_t height;
 };
 
+enum class TextureComponentType {
+    Float,
+    Sint,
+    Uint,
+};
+
+enum class TextureSubsampling {
+    Undefined,
+    e420,
+    e422,
+    e444,
+};
+
+struct RequiresFeature {
+    wgpu::FeatureName feature;
+};
+
+struct CompatibilityMode {};
+
+using UnsupportedReason =
+    std::variant</* is supported */ std::monostate, RequiresFeature, CompatibilityMode>;
+
 struct AspectInfo {
     TexelBlockInfo block;
-    // TODO(crbug.com/dawn/367): Replace TextureComponentType with TextureSampleType, or make it
-    // an internal Dawn enum.
-    wgpu::TextureComponentType baseType{};
+    TextureComponentType baseType{};
     SampleTypeBit supportedSampleTypes{};
     wgpu::TextureFormat format = wgpu::TextureFormat::Undefined;
 };
 
 // The number of formats Dawn knows about. Asserts in BuildFormatTable ensure that this is the
 // exact number of known format.
-static constexpr uint32_t kKnownFormatCount = 95;
+static constexpr uint32_t kWebGPUFormatCount = 95;
+static constexpr uint32_t kDawnFormatCount = 14;
+static constexpr uint32_t kKnownFormatCount = kWebGPUFormatCount + kDawnFormatCount;
 
 using FormatIndex = TypedInteger<struct FormatIndexT, uint32_t>;
 
@@ -88,25 +131,32 @@ using FormatTable = ityp::array<FormatIndex, Format, kKnownFormatCount>;
 struct Format {
     wgpu::TextureFormat format = wgpu::TextureFormat::Undefined;
 
+    static const UnsupportedReason supported;
+
     // TODO(crbug.com/dawn/1332): These members could be stored in a Format capability matrix.
     bool isRenderable = false;
     bool isCompressed = false;
+    bool isBlendable = false;
     // A format can be known but not supported because it is part of a disabled extension.
-    bool isSupported = false;
+    UnsupportedReason unsupportedReason;
     bool supportsStorageUsage = false;
+    bool supportsReadWriteStorageUsage = false;
     bool supportsMultisample = false;
     bool supportsResolveTarget = false;
+    bool supportsStorageAttachment = false;
     Aspect aspects{};
     // Only used for renderable color formats:
     uint8_t componentCount = 0;                  // number of color channels
     uint8_t renderTargetPixelByteCost = 0;       // byte cost of pixel in render targets
     uint8_t renderTargetComponentAlignment = 0;  // byte alignment for components in render targets
 
+    bool IsSupported() const;
     bool IsColor() const;
     bool HasDepth() const;
     bool HasStencil() const;
     bool HasDepthOrStencil() const;
     bool HasAlphaChannel() const;
+    bool IsSnorm() const;
 
     // IsMultiPlanar() returns true if the format allows selecting a plane index. This is only
     // allowed by multi-planar formats (ex. NV12).
@@ -123,14 +173,21 @@ struct Format {
     // If two formats has the same baseFormat, they could copy to and be viewed as the other
     // format. Currently two formats have the same baseFormat if they differ only in sRGB-ness.
     wgpu::TextureFormat baseFormat = wgpu::TextureFormat::Undefined;
+    // Additional view format a base format is compatible with. Only populated for true base
+    // formats. Only stores a single view format because Dawn currently only supports sRGB format
+    // reinterpretation.
+    wgpu::TextureFormat baseViewFormat = wgpu::TextureFormat::Undefined;
+    // Chroma subsampling used by multi-planar formats (e.g. 4:2:0 is 1/2 horizontal and 1/2
+    // vertical resolution for UV plane, 4:2:2 is 1/2 horizontal and 1/1 vertical resolution).
+    TextureSubsampling subSampling = TextureSubsampling::Undefined;
 
     // Returns true if the formats are copy compatible.
     // Currently means they differ only in sRGB-ness.
-    bool CopyCompatibleWith(const Format& format) const;
+    bool CopyCompatibleWith(const Format& otherFormat) const;
 
     // Returns true if the formats are texture view format compatible.
     // Currently means they differ only in sRGB-ness.
-    bool ViewCompatibleWith(const Format& format) const;
+    bool ViewCompatibleWith(const Format& otherFormat) const;
 
   private:
     // Used to store the aspectInfo for one or more planes. For single plane "color" formats,
@@ -160,15 +217,16 @@ FormatIndex ComputeFormatIndex(wgpu::TextureFormat format);
 // Builds the format table with the extensions enabled on the device.
 FormatTable BuildFormatTable(const DeviceBase* device);
 
+absl::FormatConvertResult<absl::FormatConversionCharSet::kString> AbslFormatConvert(
+    const UnsupportedReason& value,
+    const absl::FormatConversionSpec& spec,
+    absl::FormatSink* s);
+
 }  // namespace dawn::native
 
-namespace dawn {
-
 template <>
-struct IsDawnBitmask<dawn::native::SampleTypeBit> {
+struct wgpu::IsWGPUBitmask<dawn::native::SampleTypeBit> {
     static constexpr bool enable = true;
 };
-
-}  // namespace dawn
 
 #endif  // SRC_DAWN_NATIVE_FORMAT_H_

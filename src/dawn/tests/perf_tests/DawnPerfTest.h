@@ -1,32 +1,49 @@
-// Copyright 2019 The Dawn Authors
+// Copyright 2019 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #ifndef SRC_DAWN_TESTS_PERF_TESTS_DAWNPERFTEST_H_
 #define SRC_DAWN_TESTS_PERF_TESTS_DAWNPERFTEST_H_
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "dawn/tests/DawnTest.h"
+#include "partition_alloc/pointers/raw_ptr.h"
 
+void InitDawnPerfTestEnvironment(int argc, char** argv);
+
+namespace dawn {
 namespace utils {
 class Timer;
 }
 
 class DawnPerfTestPlatform;
-
-void InitDawnPerfTestEnvironment(int argc, char** argv);
 
 class DawnPerfTestEnvironment : public DawnTestEnvironment {
   public:
@@ -89,6 +106,7 @@ class DawnPerfTestBase {
                      unsigned int value,
                      const std::string& units,
                      bool important) const;
+    void AddGPUTime(double GPUTime);
 
   private:
     void DoRunLoop(double maxRunTime);
@@ -101,7 +119,7 @@ class DawnPerfTestBase {
 
     virtual void Step() = 0;
 
-    DawnTestBase* mTest;
+    raw_ptr<DawnTestBase> mTest;
     bool mRunning = false;
     const unsigned int mIterationsPerStep;
     const unsigned int mMaxStepsInFlight;
@@ -109,6 +127,7 @@ class DawnPerfTestBase {
     unsigned int mNumStepsPerformed = 0;
     double mCpuTime;
     std::unique_ptr<utils::Timer> mTimer;
+    std::optional<double> mGPUTime;
 };
 
 template <typename Params = AdapterTestParam>
@@ -120,13 +139,100 @@ class DawnPerfTestWithParams : public DawnTestWithParams<Params>, public DawnPer
     void SetUp() override {
         DawnTestWithParams<Params>::SetUp();
 
-        wgpu::AdapterProperties properties;
-        this->GetAdapter().GetProperties(&properties);
-        DAWN_TEST_UNSUPPORTED_IF(properties.adapterType == wgpu::AdapterType::CPU);
+        wgpu::AdapterInfo info;
+        this->GetAdapter().GetInfo(&info);
+        DAWN_TEST_UNSUPPORTED_IF(info.adapterType == wgpu::AdapterType::CPU);
+
+        if (mSupportsTimestampQuery) {
+            InitializeGPUTimer();
+        }
     }
     ~DawnPerfTestWithParams() override = default;
+
+    std::vector<wgpu::FeatureName> GetRequiredFeatures() override {
+        std::vector<wgpu::FeatureName> requiredFeatures = {wgpu::FeatureName::TimestampQuery};
+        mSupportsTimestampQuery = DawnTestWithParams<Params>::SupportsFeatures(requiredFeatures);
+        if (mSupportsTimestampQuery) {
+            return requiredFeatures;
+        }
+        return {};
+    }
+
+    bool SupportsTimestampQuery() const { return mSupportsTimestampQuery; }
+
+    void RecordBeginTimestamp(wgpu::CommandEncoder encoder) {
+        encoder.WriteTimestamp(mTimestampQuerySet, 0);
+    }
+
+    void RecordEndTimestampAndResolveQuerySet(wgpu::CommandEncoder encoder) {
+        encoder.WriteTimestamp(mTimestampQuerySet, 1);
+        ResolveTimestamps(encoder);
+    }
+
+    wgpu::ComputePassTimestampWrites GetComputePassTimestampWrites() const {
+        wgpu::ComputePassTimestampWrites timestampWrites;
+        timestampWrites.querySet = mTimestampQuerySet;
+        timestampWrites.beginningOfPassWriteIndex = 0;
+        timestampWrites.endOfPassWriteIndex = 1;
+        return timestampWrites;
+    }
+
+    void ResolveTimestamps(wgpu::CommandEncoder encoder) {
+        encoder.ResolveQuerySet(mTimestampQuerySet, 0, kTimestampQueryCount, mResolveBuffer, 0);
+        encoder.CopyBufferToBuffer(mResolveBuffer, 0, mReadbackBuffer, 0,
+                                   sizeof(uint64_t) * kTimestampQueryCount);
+    }
+
+    void ComputeGPUElapsedTime() {
+        bool done = false;
+        mReadbackBuffer.MapAsync(wgpu::MapMode::Read, 0, sizeof(uint64_t) * kTimestampQueryCount,
+                                 wgpu::CallbackMode::AllowProcessEvents,
+                                 [&done](wgpu::MapAsyncStatus, wgpu::StringView) { done = true; });
+        while (!done) {
+            DawnTestWithParams<Params>::WaitABit();
+        }
+        const uint64_t* readbackValues =
+            static_cast<const uint64_t*>(mReadbackBuffer.GetConstMappedRange());
+        ASSERT_EQ(2u, kTimestampQueryCount);
+        double gpuTimeElapsed = (readbackValues[1] - readbackValues[0]) / 1e9;
+        AddGPUTime(gpuTimeElapsed);
+        mReadbackBuffer.Unmap();
+    }
+
+  private:
+    void InitializeGPUTimer() {
+        DAWN_ASSERT(mSupportsTimestampQuery);
+
+        wgpu::Device device = this->device;
+
+        wgpu::QuerySetDescriptor querySetDescriptor;
+        querySetDescriptor.count = kTimestampQueryCount;
+        querySetDescriptor.type = wgpu::QueryType::Timestamp;
+        mTimestampQuerySet = device.CreateQuerySet(&querySetDescriptor);
+
+        wgpu::BufferDescriptor resolveBufferDescriptor;
+        resolveBufferDescriptor.size = kTimestampQueryCount * sizeof(uint64_t);
+        resolveBufferDescriptor.usage = wgpu::BufferUsage::QueryResolve |
+                                        wgpu::BufferUsage::CopySrc | wgpu::BufferUsage::CopyDst;
+        mResolveBuffer = device.CreateBuffer(&resolveBufferDescriptor);
+
+        wgpu::BufferDescriptor readbackBufferDescriptor;
+        readbackBufferDescriptor.size = kTimestampQueryCount * sizeof(uint64_t);
+        readbackBufferDescriptor.usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::MapRead;
+        mReadbackBuffer = device.CreateBuffer(&readbackBufferDescriptor);
+    }
+
+    static constexpr uint32_t kTimestampQueryCount = 2;
+
+    bool mSupportsTimestampQuery = false;
+
+    wgpu::QuerySet mTimestampQuerySet;
+    wgpu::Buffer mResolveBuffer;
+    wgpu::Buffer mReadbackBuffer;
 };
 
 using DawnPerfTest = DawnPerfTestWithParams<>;
+
+}  // namespace dawn
 
 #endif  // SRC_DAWN_TESTS_PERF_TESTS_DAWNPERFTEST_H_

@@ -1,16 +1,29 @@
-// Copyright 2020 The Dawn Authors
+// Copyright 2020 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <vector>
 
@@ -22,6 +35,9 @@
 #include "dawn/tests/DawnTest.h"
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
+
+namespace dawn {
+namespace {
 
 constexpr uint32_t kRestrictedBudgetSize = 100000000;         // 100MB
 constexpr uint32_t kDirectlyAllocatedResourceSize = 5000000;  // 5MB
@@ -41,8 +57,8 @@ class D3D12ResidencyTestBase : public DawnTest {
         DAWN_TEST_UNSUPPORTED_IF(UsesWire());
 
         // Restrict Dawn's budget to create an artificial budget.
-        dawn::native::d3d12::Device* d3dDevice =
-            dawn::native::d3d12::ToBackend(dawn::native::FromAPI((device.Get())));
+        native::d3d12::Device* d3dDevice =
+            native::d3d12::ToBackend(native::FromAPI((device.Get())));
         d3dDevice->GetResidencyManager()->RestrictBudgetForTesting(kRestrictedBudgetSize);
 
         // Initialize a source buffer on the GPU to serve as a source to quickly copy data to other
@@ -92,22 +108,20 @@ class D3D12ResidencyTestBase : public DawnTest {
 class D3D12ResourceResidencyTests : public D3D12ResidencyTestBase {
   protected:
     bool CheckAllocationMethod(wgpu::Buffer buffer,
-                               dawn::native::AllocationMethod allocationMethod) const {
-        dawn::native::d3d12::Buffer* d3dBuffer =
-            dawn::native::d3d12::ToBackend(dawn::native::FromAPI((buffer.Get())));
+                               native::AllocationMethod allocationMethod) const {
+        native::d3d12::Buffer* d3dBuffer =
+            native::d3d12::ToBackend(native::FromAPI((buffer.Get())));
         return d3dBuffer->CheckAllocationMethodForTesting(allocationMethod);
     }
 
     bool CheckIfBufferIsResident(wgpu::Buffer buffer) const {
-        dawn::native::d3d12::Buffer* d3dBuffer =
-            dawn::native::d3d12::ToBackend(dawn::native::FromAPI((buffer.Get())));
+        native::d3d12::Buffer* d3dBuffer =
+            native::d3d12::ToBackend(native::FromAPI((buffer.Get())));
         return d3dBuffer->CheckIsResidentForTesting();
     }
 
     bool IsUMA() const {
-        return dawn::native::d3d12::ToBackend(dawn::native::FromAPI(device.Get()))
-            ->GetDeviceInfo()
-            .isUMA;
+        return native::d3d12::ToBackend(native::FromAPI(device.Get()))->GetDeviceInfo().isUMA;
     }
 };
 
@@ -124,8 +138,7 @@ TEST_P(D3D12ResourceResidencyTests, OvercommitSmallResources) {
     // internally.
     for (uint32_t i = 0; i < bufferSet1.size(); i++) {
         EXPECT_TRUE(CheckIfBufferIsResident(bufferSet1[i]));
-        EXPECT_TRUE(
-            CheckAllocationMethod(bufferSet1[i], dawn::native::AllocationMethod::kSubAllocated));
+        EXPECT_TRUE(CheckAllocationMethod(bufferSet1[i], native::AllocationMethod::kSubAllocated));
     }
 
     // Create enough directly-allocated buffers to use the entire budget.
@@ -163,7 +176,7 @@ TEST_P(D3D12ResourceResidencyTests, OvercommitLargeResources) {
     // allocated internally.
     for (uint32_t i = 0; i < bufferSet1.size(); i++) {
         EXPECT_TRUE(CheckIfBufferIsResident(bufferSet1[i]));
-        EXPECT_TRUE(CheckAllocationMethod(bufferSet1[i], dawn::native::AllocationMethod::kDirect));
+        EXPECT_TRUE(CheckAllocationMethod(bufferSet1[i], native::AllocationMethod::kDirect));
     }
 
     // Create enough directly-allocated buffers to use the entire budget.
@@ -216,13 +229,12 @@ TEST_P(D3D12ResourceResidencyTests, AsyncMappedBufferRead) {
 
     // Calling MapAsync for reading should make the buffer resident.
     bool done = false;
-    buffer.MapAsync(
-        wgpu::MapMode::Read, 0, sizeof(uint32_t),
-        [](WGPUBufferMapAsyncStatus status, void* userdata) {
-            ASSERT_EQ(WGPUBufferMapAsyncStatus_Success, status);
-            *static_cast<bool*>(userdata) = true;
-        },
-        &done);
+    buffer.MapAsync(wgpu::MapMode::Read, 0, sizeof(uint32_t),
+                    wgpu::CallbackMode::AllowProcessEvents,
+                    [&done](wgpu::MapAsyncStatus status, wgpu::StringView) {
+                        ASSERT_EQ(status, wgpu::MapAsyncStatus::Success);
+                        done = true;
+                    });
     EXPECT_TRUE(CheckIfBufferIsResident(buffer));
 
     while (!done) {
@@ -262,13 +274,12 @@ TEST_P(D3D12ResourceResidencyTests, AsyncMappedBufferWrite) {
 
     // Calling MapAsync for writing should make the buffer resident.
     bool done = false;
-    buffer.MapAsync(
-        wgpu::MapMode::Write, 0, sizeof(uint32_t),
-        [](WGPUBufferMapAsyncStatus status, void* userdata) {
-            ASSERT_EQ(WGPUBufferMapAsyncStatus_Success, status);
-            *static_cast<bool*>(userdata) = true;
-        },
-        &done);
+    buffer.MapAsync(wgpu::MapMode::Write, 0, sizeof(uint32_t),
+                    wgpu::CallbackMode::AllowProcessEvents,
+                    [&done](wgpu::MapAsyncStatus status, wgpu::StringView) {
+                        ASSERT_EQ(status, wgpu::MapAsyncStatus::Success);
+                        done = true;
+                    });
     EXPECT_TRUE(CheckIfBufferIsResident(buffer));
 
     while (!done) {
@@ -320,14 +331,14 @@ TEST_P(D3D12ResourceResidencyTests, OvercommitInASingleSubmit) {
 TEST_P(D3D12ResourceResidencyTests, SetExternalReservation) {
     // Set an external reservation of 20% the budget. We should succesfully reserve the amount we
     // request.
-    uint64_t amountReserved = dawn::native::d3d12::SetExternalMemoryReservation(
-        device.Get(), kRestrictedBudgetSize * .2, dawn::native::d3d12::MemorySegment::Local);
+    uint64_t amountReserved = native::d3d12::SetExternalMemoryReservation(
+        device.Get(), kRestrictedBudgetSize * .2, native::d3d12::MemorySegment::Local);
     EXPECT_EQ(amountReserved, kRestrictedBudgetSize * .2);
 
     // If we're on a non-UMA device, we should also check the NON_LOCAL memory segment.
     if (!IsUMA()) {
-        amountReserved = dawn::native::d3d12::SetExternalMemoryReservation(
-            device.Get(), kRestrictedBudgetSize * .2, dawn::native::d3d12::MemorySegment::NonLocal);
+        amountReserved = native::d3d12::SetExternalMemoryReservation(
+            device.Get(), kRestrictedBudgetSize * .2, native::d3d12::MemorySegment::NonLocal);
         EXPECT_EQ(amountReserved, kRestrictedBudgetSize * .2);
     }
 }
@@ -335,10 +346,6 @@ TEST_P(D3D12ResourceResidencyTests, SetExternalReservation) {
 // Checks that when a descriptor heap is bound, it is locked resident. Also checks that when a
 // previous descriptor heap becomes unbound, it is unlocked, placed in the LRU and can be evicted.
 TEST_P(D3D12DescriptorResidencyTests, SwitchedViewHeapResidency) {
-    // TODO(crbug.com/dawn/739):
-    // unknown file: error: SEH exception with code 0x87d thrown in the test body.
-    DAWN_SUPPRESS_TEST_IF(IsD3D12() && IsWARP() && IsBackendValidationEnabled());
-
     utils::ComboRenderPipelineDescriptor renderPipelineDescriptor;
 
     // Fill in a view heap with "view only" bindgroups (1x view per group) by creating a
@@ -371,14 +378,12 @@ TEST_P(D3D12DescriptorResidencyTests, SwitchedViewHeapResidency) {
 
     wgpu::Sampler sampler = device.CreateSampler();
 
-    dawn::native::d3d12::Device* d3dDevice =
-        dawn::native::d3d12::ToBackend(dawn::native::FromAPI(device.Get()));
+    native::d3d12::Device* d3dDevice = native::d3d12::ToBackend(native::FromAPI(device.Get()));
 
-    dawn::native::d3d12::ShaderVisibleDescriptorAllocator* allocator =
-        d3dDevice->GetViewShaderVisibleDescriptorAllocator();
+    auto& allocator = d3dDevice->GetViewShaderVisibleDescriptorAllocator();
     const uint64_t heapSize = allocator->GetShaderVisibleHeapSizeForTesting();
 
-    const dawn::native::d3d12::HeapVersionID heapSerial =
+    const native::d3d12::HeapVersionID heapSerial =
         allocator->GetShaderVisibleHeapSerialForTesting();
 
     wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
@@ -405,7 +410,7 @@ TEST_P(D3D12DescriptorResidencyTests, SwitchedViewHeapResidency) {
 
     // Check the heap serial to ensure the heap has switched.
     EXPECT_EQ(allocator->GetShaderVisibleHeapSerialForTesting(),
-              heapSerial + dawn::native::d3d12::HeapVersionID(1));
+              heapSerial + native::d3d12::HeapVersionID(1));
 
     // Check that currrently bound ShaderVisibleHeap is locked resident.
     EXPECT_TRUE(allocator->IsShaderVisibleHeapLockedResidentForTesting());
@@ -426,3 +431,6 @@ TEST_P(D3D12DescriptorResidencyTests, SwitchedViewHeapResidency) {
 DAWN_INSTANTIATE_TEST(D3D12ResourceResidencyTests, D3D12Backend());
 DAWN_INSTANTIATE_TEST(D3D12DescriptorResidencyTests,
                       D3D12Backend({"use_d3d12_small_shader_visible_heap"}));
+
+}  // anonymous namespace
+}  // namespace dawn

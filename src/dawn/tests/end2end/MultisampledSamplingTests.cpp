@@ -1,16 +1,29 @@
-// Copyright 2020 The Dawn Authors
+// Copyright 2020 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <vector>
 
@@ -19,7 +32,9 @@
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
 
+namespace dawn {
 namespace {
+
 // https://github.com/gpuweb/gpuweb/issues/108
 // Vulkan, Metal, and D3D11 have the same standard multisample pattern. D3D12 is the same as
 // D3D11 but it was left out of the documentation.
@@ -32,14 +47,12 @@ static constexpr std::array<std::array<float, 2>, 4> kSamplePositions = {
      {0.875 * 2 - 1, 1 - 0.375 * 2},
      {0.125 * 2 - 1, 1 - 0.625 * 2},
      {0.625 * 2 - 1, 1 - 0.875 * 2}}};
-}  // anonymous namespace
 
 class MultisampledSamplingTest : public DawnTest {
   protected:
     static constexpr wgpu::TextureFormat kColorFormat = wgpu::TextureFormat::R8Unorm;
     static constexpr wgpu::TextureFormat kDepthFormat = wgpu::TextureFormat::Depth32Float;
 
-    static constexpr wgpu::TextureFormat kDepthOutFormat = wgpu::TextureFormat::R32Float;
     static constexpr uint32_t kSampleCount = 4;
 
     // Render pipeline for drawing to a multisampled color and depth attachment.
@@ -48,9 +61,9 @@ class MultisampledSamplingTest : public DawnTest {
     // A compute pipeline to texelFetch the sample locations and output the results to a buffer.
     wgpu::ComputePipeline checkSamplePipeline;
 
-    void SetUp() override {
-        DawnTest::SetUp();
+    void SetUp() override { DawnTest::SetUp(); }
 
+    void CreatePipelines() {
         {
             utils::ComboRenderPipelineDescriptor desc;
 
@@ -80,7 +93,7 @@ class MultisampledSamplingTest : public DawnTest {
             desc.cAttributes[0].format = wgpu::VertexFormat::Float32x2;
 
             wgpu::DepthStencilState* depthStencil = desc.EnableDepthStencil(kDepthFormat);
-            depthStencil->depthWriteEnabled = true;
+            depthStencil->depthWriteEnabled = wgpu::OptionalBool::True;
 
             desc.multisample.count = kSampleCount;
             desc.cFragment.targetCount = 1;
@@ -92,7 +105,6 @@ class MultisampledSamplingTest : public DawnTest {
         }
         {
             wgpu::ComputePipelineDescriptor desc = {};
-            desc.compute.entryPoint = "main";
             desc.compute.module = utils::CreateShaderModule(device, R"(
                 @group(0) @binding(0) var texture0 : texture_multisampled_2d<f32>;
                 @group(0) @binding(1) var texture1 : texture_depth_multisampled_2d;
@@ -124,6 +136,11 @@ class MultisampledSamplingTest : public DawnTest {
 // must cover both the X and Y coordinates of the sample position (no false positives if
 // it covers the X position but not the Y, or vice versa).
 TEST_P(MultisampledSamplingTest, SamplePositions) {
+    // textureLoad with texture_depth_xxx is not supported in compat mode.
+    DAWN_TEST_UNSUPPORTED_IF(IsCompatibilityMode());
+
+    CreatePipelines();
+
     static constexpr wgpu::Extent3D kTextureSize = {1, 1, 1};
 
     wgpu::Texture colorTexture;
@@ -259,8 +276,12 @@ TEST_P(MultisampledSamplingTest, SamplePositions) {
 }
 
 DAWN_INSTANTIATE_TEST(MultisampledSamplingTest,
+                      D3D11Backend(),
                       D3D12Backend(),
                       MetalBackend(),
                       OpenGLBackend(),
                       OpenGLESBackend(),
                       VulkanBackend());
+
+}  // anonymous namespace
+}  // namespace dawn

@@ -1,16 +1,29 @@
-// Copyright 2019 The Dawn Authors
+// Copyright 2019 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/native/d3d12/UtilsD3D12.h"
 
@@ -25,6 +38,7 @@
 #include "dawn/native/d3d12/BufferD3D12.h"
 #include "dawn/native/d3d12/CommandRecordingContext.h"
 #include "dawn/native/d3d12/DeviceD3D12.h"
+#include "dawn/native/d3d12/TextureCopySplitter.h"
 
 namespace dawn::native::d3d12 {
 
@@ -44,10 +58,10 @@ uint64_t RequiredCopySizeByD3D12(const uint32_t bytesPerRow,
     // When calculating the required copy size for B2T/T2B copy, D3D12 doesn't respect
     // rowsPerImage paddings on the last image for 3D texture, but it does respect
     // bytesPerRow paddings on the last row.
-    ASSERT(blockInfo.width == 1);
-    ASSERT(blockInfo.height == 1);
+    DAWN_ASSERT(blockInfo.width == 1);
+    DAWN_ASSERT(blockInfo.height == 1);
     uint64_t lastRowBytes = Safe32x32(blockInfo.byteSize, copySize.width);
-    ASSERT(rowsPerImage > copySize.height);
+    DAWN_ASSERT(rowsPerImage > copySize.height);
     uint64_t lastImageBytesByD3D12 = Safe32x32(bytesPerRow, rowsPerImage - 1) + lastRowBytes;
 
     requiredCopySizeByD3D12 += lastImageBytesByD3D12;
@@ -101,8 +115,23 @@ D3D12_COMPARISON_FUNC ToD3D12ComparisonFunc(wgpu::CompareFunction func) {
             return D3D12_COMPARISON_FUNC_ALWAYS;
 
         case wgpu::CompareFunction::Undefined:
-            UNREACHABLE();
+            DAWN_UNREACHABLE();
     }
+}
+
+D3D12_SHADER_VISIBILITY ShaderVisibilityType(wgpu::ShaderStage visibility) {
+    DAWN_ASSERT(visibility != wgpu::ShaderStage::None);
+
+    if (visibility == wgpu::ShaderStage::Vertex) {
+        return D3D12_SHADER_VISIBILITY_VERTEX;
+    }
+
+    if (visibility == wgpu::ShaderStage::Fragment) {
+        return D3D12_SHADER_VISIBILITY_PIXEL;
+    }
+
+    // For compute or any two combination of stages, visibility must be ALL
+    return D3D12_SHADER_VISIBILITY_ALL;
 }
 
 D3D12_TEXTURE_COPY_LOCATION ComputeTextureCopyLocationForTexture(const Texture* texture,
@@ -115,26 +144,6 @@ D3D12_TEXTURE_COPY_LOCATION ComputeTextureCopyLocationForTexture(const Texture* 
     copyLocation.SubresourceIndex = texture->GetSubresourceIndex(level, layer, aspect);
 
     return copyLocation;
-}
-
-D3D12_TEXTURE_COPY_LOCATION ComputeBufferLocationForCopyTextureRegion(
-    const Texture* texture,
-    ID3D12Resource* bufferResource,
-    const Extent3D& bufferSize,
-    const uint64_t offset,
-    const uint32_t rowPitch,
-    Aspect aspect) {
-    D3D12_TEXTURE_COPY_LOCATION bufferLocation;
-    bufferLocation.pResource = bufferResource;
-    bufferLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    bufferLocation.PlacedFootprint.Offset = offset;
-    bufferLocation.PlacedFootprint.Footprint.Format =
-        texture->GetD3D12CopyableSubresourceFormat(aspect);
-    bufferLocation.PlacedFootprint.Footprint.Width = bufferSize.width;
-    bufferLocation.PlacedFootprint.Footprint.Height = bufferSize.height;
-    bufferLocation.PlacedFootprint.Footprint.Depth = bufferSize.depthOrArrayLayers;
-    bufferLocation.PlacedFootprint.Footprint.RowPitch = rowPitch;
-    return bufferLocation;
 }
 
 D3D12_BOX ComputeD3D12BoxFromOffsetAndSize(const Origin3D& offset, const Extent3D& copySize) {
@@ -162,30 +171,23 @@ void RecordBufferTextureCopyFromSplits(BufferTextureCopyDirection direction,
     const D3D12_TEXTURE_COPY_LOCATION textureLocation =
         ComputeTextureCopyLocationForTexture(texture, textureMiplevel, textureLayer, aspect);
 
+    DXGI_FORMAT dxgiFormat = texture->GetD3D12CopyableSubresourceFormat(aspect);
     for (uint32_t i = 0; i < baseCopySplit.count; ++i) {
         const TextureCopySubresource::CopyInfo& info = baseCopySplit.copies[i];
 
-        // TODO(jiawei.shao@intel.com): pre-compute bufferLocation and sourceRegion as
-        // members in TextureCopySubresource::CopyInfo.
-        const uint64_t offsetBytes = info.alignedOffset + baseOffset;
-        const D3D12_TEXTURE_COPY_LOCATION bufferLocation =
-            ComputeBufferLocationForCopyTextureRegion(texture, bufferResource, info.bufferSize,
-                                                      offsetBytes, bufferBytesPerRow, aspect);
+        D3D12_TEXTURE_COPY_LOCATION bufferLocation = info.bufferLocation;
+        bufferLocation.pResource = bufferResource;
+        bufferLocation.PlacedFootprint.Offset += baseOffset;
+        bufferLocation.PlacedFootprint.Footprint.Format = dxgiFormat;
         if (direction == BufferTextureCopyDirection::B2T) {
-            const D3D12_BOX sourceRegion =
-                ComputeD3D12BoxFromOffsetAndSize(info.bufferOffset, info.copySize);
-
-            commandList->CopyTextureRegion(&textureLocation, info.textureOffset.x,
-                                           info.textureOffset.y, info.textureOffset.z,
-                                           &bufferLocation, &sourceRegion);
+            commandList->CopyTextureRegion(&textureLocation, info.destinationOffset.x,
+                                           info.destinationOffset.y, info.destinationOffset.z,
+                                           &bufferLocation, &info.sourceRegion);
         } else {
-            ASSERT(direction == BufferTextureCopyDirection::T2B);
-            const D3D12_BOX sourceRegion =
-                ComputeD3D12BoxFromOffsetAndSize(info.textureOffset, info.copySize);
-
-            commandList->CopyTextureRegion(&bufferLocation, info.bufferOffset.x,
-                                           info.bufferOffset.y, info.bufferOffset.z,
-                                           &textureLocation, &sourceRegion);
+            DAWN_ASSERT(direction == BufferTextureCopyDirection::T2B);
+            commandList->CopyTextureRegion(&bufferLocation, info.destinationOffset.x,
+                                           info.destinationOffset.y, info.destinationOffset.z,
+                                           &textureLocation, &info.sourceRegion);
         }
     }
 }
@@ -201,7 +203,7 @@ void Record2DBufferTextureCopyWithSplit(BufferTextureCopyDirection direction,
                                         const Extent3D& copySize) {
     // See comments in Compute2DTextureCopySplits() for more details.
     const TextureCopySplits copySplits = Compute2DTextureCopySplits(
-        textureCopy.origin, copySize, blockInfo, offset, bytesPerRow, rowsPerImage);
+        direction, textureCopy.origin, copySize, blockInfo, offset, bytesPerRow, rowsPerImage);
 
     const uint64_t bytesPerLayer = bytesPerRow * rowsPerImage;
 
@@ -240,19 +242,22 @@ void RecordBufferTextureCopyWithBufferHandle(BufferTextureCopyDirection directio
                                              const uint32_t rowsPerImage,
                                              const TextureCopy& textureCopy,
                                              const Extent3D& copySize) {
-    ASSERT(HasOneBit(textureCopy.aspect));
+    DAWN_ASSERT(HasOneBit(textureCopy.aspect));
 
     TextureBase* texture = textureCopy.texture.Get();
     const TexelBlockInfo& blockInfo = texture->GetFormat().GetAspectInfo(textureCopy.aspect).block;
 
     switch (texture->GetDimension()) {
+        case wgpu::TextureDimension::Undefined:
+            DAWN_UNREACHABLE();
+
         case wgpu::TextureDimension::e1D: {
             // 1D textures copy splits are a subset of the single-layer 2D texture copy splits,
             // at least while 1D textures can only have a single array layer.
-            ASSERT(texture->GetArrayLayers() == 1);
+            DAWN_ASSERT(texture->GetArrayLayers() == 1);
 
             TextureCopySubresource copyRegions = Compute2DTextureCopySubresource(
-                textureCopy.origin, copySize, blockInfo, offset, bytesPerRow);
+                direction, textureCopy.origin, copySize, blockInfo, offset, bytesPerRow);
             RecordBufferTextureCopyFromSplits(direction, commandList, copyRegions, bufferResource,
                                               0, bytesPerRow, texture, textureCopy.mipLevel, 0,
                                               textureCopy.aspect);
@@ -269,8 +274,9 @@ void RecordBufferTextureCopyWithBufferHandle(BufferTextureCopyDirection directio
 
         case wgpu::TextureDimension::e3D: {
             // See comments in Compute3DTextureCopySplits() for more details.
-            TextureCopySubresource copyRegions = Compute3DTextureCopySplits(
-                textureCopy.origin, copySize, blockInfo, offset, bytesPerRow, rowsPerImage);
+            TextureCopySubresource copyRegions =
+                Compute3DTextureCopySplits(direction, textureCopy.origin, copySize, blockInfo,
+                                           offset, bytesPerRow, rowsPerImage);
 
             RecordBufferTextureCopyFromSplits(direction, commandList, copyRegions, bufferResource,
                                               0, bytesPerRow, texture, textureCopy.mipLevel, 0,
@@ -319,11 +325,15 @@ void RecordBufferTextureCopy(BufferTextureCopyDirection direction,
 }
 
 void SetDebugName(Device* device, ID3D12Object* object, const char* prefix, std::string label) {
+    if (!device->IsToggleEnabled(Toggle::UseUserDefinedLabelsInBackend)) {
+        return;
+    }
+
     if (!object) {
         return;
     }
 
-    if (label.empty() || !device->IsToggleEnabled(Toggle::UseUserDefinedLabelsInBackend)) {
+    if (label.empty()) {
         object->SetPrivateData(WKPDID_D3DDebugObjectName, strlen(prefix), prefix);
         return;
     }
@@ -332,6 +342,16 @@ void SetDebugName(Device* device, ID3D12Object* object, const char* prefix, std:
     objectName += "_";
     objectName += label;
     object->SetPrivateData(WKPDID_D3DDebugObjectName, objectName.length(), objectName.c_str());
+}
+
+bool CanCopyBufferToBufferWithCopyResource(Buffer* sourceBuffer,
+                                           uint64_t sourceOffset,
+                                           Buffer* destinationBuffer,
+                                           uint64_t destinationOffset,
+                                           uint64_t copySize) {
+    return sourceOffset == 0 && destinationOffset == 0 && sourceBuffer->GetSize() == copySize &&
+           destinationBuffer->GetSize() == copySize &&
+           sourceBuffer->GetAllocatedSize() == destinationBuffer->GetAllocatedSize();
 }
 
 }  // namespace dawn::native::d3d12

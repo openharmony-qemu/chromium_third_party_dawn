@@ -54,6 +54,7 @@ var (
 	procSetTokenInformation          = modadvapi32.NewProc("SetTokenInformation")
 	procSystemFunction036            = modadvapi32.NewProc("SystemFunction036")
 	procGetAdaptersAddresses         = modiphlpapi.NewProc("GetAdaptersAddresses")
+	procCreateEventW                 = modkernel32.NewProc("CreateEventW")
 	procGetACP                       = modkernel32.NewProc("GetACP")
 	procGetComputerNameExW           = modkernel32.NewProc("GetComputerNameExW")
 	procGetConsoleCP                 = modkernel32.NewProc("GetConsoleCP")
@@ -61,11 +62,17 @@ var (
 	procGetFileInformationByHandleEx = modkernel32.NewProc("GetFileInformationByHandleEx")
 	procGetFinalPathNameByHandleW    = modkernel32.NewProc("GetFinalPathNameByHandleW")
 	procGetModuleFileNameW           = modkernel32.NewProc("GetModuleFileNameW")
+	procGetTempPath2W                = modkernel32.NewProc("GetTempPath2W")
 	procLockFileEx                   = modkernel32.NewProc("LockFileEx")
+	procModule32FirstW               = modkernel32.NewProc("Module32FirstW")
+	procModule32NextW                = modkernel32.NewProc("Module32NextW")
 	procMoveFileExW                  = modkernel32.NewProc("MoveFileExW")
 	procMultiByteToWideChar          = modkernel32.NewProc("MultiByteToWideChar")
+	procRtlLookupFunctionEntry       = modkernel32.NewProc("RtlLookupFunctionEntry")
+	procRtlVirtualUnwind             = modkernel32.NewProc("RtlVirtualUnwind")
 	procSetFileInformationByHandle   = modkernel32.NewProc("SetFileInformationByHandle")
 	procUnlockFileEx                 = modkernel32.NewProc("UnlockFileEx")
+	procVirtualQuery                 = modkernel32.NewProc("VirtualQuery")
 	procNetShareAdd                  = modnetapi32.NewProc("NetShareAdd")
 	procNetShareDel                  = modnetapi32.NewProc("NetShareDel")
 	procNetUserGetLocalGroups        = modnetapi32.NewProc("NetUserGetLocalGroups")
@@ -161,6 +168,15 @@ func GetAdaptersAddresses(family uint32, flags uint32, reserved uintptr, adapter
 	return
 }
 
+func CreateEvent(eventAttrs *SecurityAttributes, manualReset uint32, initialState uint32, name *uint16) (handle syscall.Handle, err error) {
+	r0, _, e1 := syscall.Syscall6(procCreateEventW.Addr(), 4, uintptr(unsafe.Pointer(eventAttrs)), uintptr(manualReset), uintptr(initialState), uintptr(unsafe.Pointer(name)), 0, 0)
+	handle = syscall.Handle(r0)
+	if handle == 0 {
+		err = errnoErr(e1)
+	}
+	return
+}
+
 func GetACP() (acp uint32) {
 	r0, _, _ := syscall.Syscall(procGetACP.Addr(), 0, 0, 0, 0)
 	acp = uint32(r0)
@@ -216,8 +232,33 @@ func GetModuleFileName(module syscall.Handle, fn *uint16, len uint32) (n uint32,
 	return
 }
 
+func GetTempPath2(buflen uint32, buf *uint16) (n uint32, err error) {
+	r0, _, e1 := syscall.Syscall(procGetTempPath2W.Addr(), 2, uintptr(buflen), uintptr(unsafe.Pointer(buf)), 0)
+	n = uint32(r0)
+	if n == 0 {
+		err = errnoErr(e1)
+	}
+	return
+}
+
 func LockFileEx(file syscall.Handle, flags uint32, reserved uint32, bytesLow uint32, bytesHigh uint32, overlapped *syscall.Overlapped) (err error) {
 	r1, _, e1 := syscall.Syscall6(procLockFileEx.Addr(), 6, uintptr(file), uintptr(flags), uintptr(reserved), uintptr(bytesLow), uintptr(bytesHigh), uintptr(unsafe.Pointer(overlapped)))
+	if r1 == 0 {
+		err = errnoErr(e1)
+	}
+	return
+}
+
+func Module32First(snapshot syscall.Handle, moduleEntry *ModuleEntry32) (err error) {
+	r1, _, e1 := syscall.Syscall(procModule32FirstW.Addr(), 2, uintptr(snapshot), uintptr(unsafe.Pointer(moduleEntry)), 0)
+	if r1 == 0 {
+		err = errnoErr(e1)
+	}
+	return
+}
+
+func Module32Next(snapshot syscall.Handle, moduleEntry *ModuleEntry32) (err error) {
+	r1, _, e1 := syscall.Syscall(procModule32NextW.Addr(), 2, uintptr(snapshot), uintptr(unsafe.Pointer(moduleEntry)), 0)
 	if r1 == 0 {
 		err = errnoErr(e1)
 	}
@@ -241,6 +282,18 @@ func MultiByteToWideChar(codePage uint32, dwFlags uint32, str *byte, nstr int32,
 	return
 }
 
+func RtlLookupFunctionEntry(pc uintptr, baseAddress *uintptr, table *byte) (ret uintptr) {
+	r0, _, _ := syscall.Syscall(procRtlLookupFunctionEntry.Addr(), 3, uintptr(pc), uintptr(unsafe.Pointer(baseAddress)), uintptr(unsafe.Pointer(table)))
+	ret = uintptr(r0)
+	return
+}
+
+func RtlVirtualUnwind(handlerType uint32, baseAddress uintptr, pc uintptr, entry uintptr, ctxt uintptr, data *uintptr, frame *uintptr, ctxptrs *byte) (ret uintptr) {
+	r0, _, _ := syscall.Syscall9(procRtlVirtualUnwind.Addr(), 8, uintptr(handlerType), uintptr(baseAddress), uintptr(pc), uintptr(entry), uintptr(ctxt), uintptr(unsafe.Pointer(data)), uintptr(unsafe.Pointer(frame)), uintptr(unsafe.Pointer(ctxptrs)), 0)
+	ret = uintptr(r0)
+	return
+}
+
 func SetFileInformationByHandle(handle syscall.Handle, fileInformationClass uint32, buf uintptr, bufsize uint32) (err error) {
 	r1, _, e1 := syscall.Syscall6(procSetFileInformationByHandle.Addr(), 4, uintptr(handle), uintptr(fileInformationClass), uintptr(buf), uintptr(bufsize), 0, 0)
 	if r1 == 0 {
@@ -251,6 +304,14 @@ func SetFileInformationByHandle(handle syscall.Handle, fileInformationClass uint
 
 func UnlockFileEx(file syscall.Handle, reserved uint32, bytesLow uint32, bytesHigh uint32, overlapped *syscall.Overlapped) (err error) {
 	r1, _, e1 := syscall.Syscall6(procUnlockFileEx.Addr(), 5, uintptr(file), uintptr(reserved), uintptr(bytesLow), uintptr(bytesHigh), uintptr(unsafe.Pointer(overlapped)), 0)
+	if r1 == 0 {
+		err = errnoErr(e1)
+	}
+	return
+}
+
+func VirtualQuery(address uintptr, buffer *MemoryBasicInformation, length uintptr) (err error) {
+	r1, _, e1 := syscall.Syscall(procVirtualQuery.Addr(), 3, uintptr(address), uintptr(unsafe.Pointer(buffer)), uintptr(length))
 	if r1 == 0 {
 		err = errnoErr(e1)
 	}

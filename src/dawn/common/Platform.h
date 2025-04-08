@@ -1,16 +1,29 @@
-// Copyright 2017 The Dawn Authors
+// Copyright 2017 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #ifndef SRC_DAWN_COMMON_PLATFORM_H_
 #define SRC_DAWN_COMMON_PLATFORM_H_
@@ -76,6 +89,7 @@
 #elif defined(__EMSCRIPTEN__)
 #define DAWN_PLATFORM_IS_EMSCRIPTEN 1
 #define DAWN_PLATFORM_IS_POSIX 1
+#include <emscripten/emscripten.h>
 
 #else
 #error "Unsupported platform."
@@ -118,10 +132,10 @@
 
 #elif defined(__loongarch__)
 #define DAWN_PLATFORM_IS_LOONGARCH 1
-#if _LOONGARCH_SIM == _ABILP32
-#define DAWN_PLATFORM_IS_LOONGARCH32 1
-#else
+#if __loongarch_grlen == 64
 #define DAWN_PLATFORM_IS_LOONGARCH64 1
+#else
+#define DAWN_PLATFORM_IS_LOONGARCH32 1
 #endif
 
 #elif defined(__riscv)
@@ -140,15 +154,20 @@
 #define DAWN_PLATFORM_IS_MIPS64 1
 #endif
 
-#elif defiend(__s390__)
+#elif defined(__s390__)
 #define DAWN_PLATFORM_IS_S390 1
-#elif defiend(__s390x__)
+#elif defined(__s390x__)
 #define DAWN_PLATFORM_IS_S390X 1
 
 #elif defined(__PPC__)
 #define DAWN_PLATFORM_IS_PPC 1
 #elif defined(__PPC64__)
 #define DAWN_PLATFORM_IS_PPC64 1
+
+#elif defined(__wasm32__)
+#define DAWN_PLATFORM_IS_WASM32 1
+#elif defined(__wasm64__)
+#define DAWN_PLATFORM_IS_WASM64 1
 
 #else
 #error "Unsupported platform."
@@ -161,13 +180,13 @@
 #if defined(DAWN_PLATFORM_IS_X86_64) || defined(DAWN_PLATFORM_IS_ARM64) ||   \
     defined(DAWN_PLATFORM_IS_RISCV64) || defined(DAWN_PLATFORM_IS_MIPS64) || \
     defined(DAWN_PLATFORM_IS_S390X) || defined(DAWN_PLATFORM_IS_PPC64) ||    \
-    defined(DAWN_PLATFORM_IS_LOONGARCH64)
+    defined(DAWN_PLATFORM_IS_LOONGARCH64) || defined(DAWN_PLATFORM_IS_WASM64)
 #define DAWN_PLATFORM_IS_64_BIT 1
 static_assert(sizeof(sizeof(char)) == 8, "Expect sizeof(size_t) == 8");
 #elif defined(DAWN_PLATFORM_IS_I386) || defined(DAWN_PLATFORM_IS_ARM32) ||   \
     defined(DAWN_PLATFORM_IS_RISCV32) || defined(DAWN_PLATFORM_IS_MIPS32) || \
     defined(DAWN_PLATFORM_IS_S390) || defined(DAWN_PLATFORM_IS_PPC32) ||     \
-    defined(DAWN_PLATFORM_IS_EMSCRIPTEN) || defined(DAWN_PLATFORM_IS_LOONGARCH32)
+    defined(DAWN_PLATFORM_IS_LOONGARCH32) || defined(DAWN_PLATFORM_IS_WASM32)
 #define DAWN_PLATFORM_IS_32_BIT 1
 static_assert(sizeof(sizeof(char)) == 4, "Expect sizeof(size_t) == 4");
 #else
@@ -281,6 +300,13 @@ static_assert(sizeof(sizeof(char)) == 4, "Expect sizeof(size_t) == 4");
 #endif
 #if !defined(DAWN_PLATFORM_IS_PPC64)
 #define DAWN_PLATFORM_IS_PPC64 0
+#endif
+
+#if !defined(DAWN_PLATFORM_IS_WASM32)
+#define DAWN_PLATFORM_IS_WASM32 0
+#endif
+#if !defined(DAWN_PLATFORM_IS_WASM64)
+#define DAWN_PLATFORM_IS_WASM64 0
 #endif
 
 #if !defined(DAWN_PLATFORM_IS_64_BIT)

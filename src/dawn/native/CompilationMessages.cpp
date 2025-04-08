@@ -1,20 +1,34 @@
-// Copyright 2021 The Dawn Authors
+// Copyright 2021 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/native/CompilationMessages.h"
 
 #include "dawn/common/Assert.h"
+#include "dawn/common/StringViewUtils.h"
 #include "dawn/native/dawn_platform.h"
 
 #include "tint/tint.h"
@@ -23,28 +37,28 @@ namespace dawn::native {
 
 namespace {
 
-WGPUCompilationMessageType tintSeverityToMessageType(tint::diag::Severity severity) {
+wgpu::CompilationMessageType TintSeverityToMessageType(tint::diag::Severity severity) {
     switch (severity) {
         case tint::diag::Severity::Note:
-            return WGPUCompilationMessageType_Info;
+            return wgpu::CompilationMessageType::Info;
         case tint::diag::Severity::Warning:
-            return WGPUCompilationMessageType_Warning;
+            return wgpu::CompilationMessageType::Warning;
         default:
-            return WGPUCompilationMessageType_Error;
+            return wgpu::CompilationMessageType::Error;
     }
 }
 
 }  // anonymous namespace
 
 ResultOrError<uint64_t> CountUTF16CodeUnitsFromUTF8String(const std::string_view& utf8String) {
-    if (tint::utils::utf8::IsASCII(utf8String)) {
+    if (tint::utf8::IsASCII(utf8String)) {
         return utf8String.size();
     }
 
     uint64_t numberOfUTF16CodeUnits = 0;
     std::string_view remaining = utf8String;
     while (!remaining.empty()) {
-        auto [codePoint, utf8CharacterByteLength] = tint::utils::utf8::Decode(remaining);
+        auto [codePoint, utf8CharacterByteLength] = tint::utf8::Decode(remaining);
         // Directly return as something wrong has happened during the UTF-8 decoding.
         if (utf8CharacterByteLength == 0) {
             return DAWN_INTERNAL_ERROR("Fail to decode the unicode string");
@@ -69,35 +83,40 @@ ResultOrError<uint64_t> CountUTF16CodeUnitsFromUTF8String(const std::string_view
     return numberOfUTF16CodeUnits;
 }
 
-OwnedCompilationMessages::OwnedCompilationMessages() {
-    mCompilationInfo.nextInChain = 0;
-    mCompilationInfo.messageCount = 0;
-    mCompilationInfo.messages = nullptr;
-}
+OwnedCompilationMessages::OwnedCompilationMessages() = default;
 
 OwnedCompilationMessages::~OwnedCompilationMessages() = default;
 
-void OwnedCompilationMessages::AddMessageForTesting(std::string message,
+void OwnedCompilationMessages::AddUnanchoredMessage(std::string_view message,
+                                                    wgpu::CompilationMessageType type) {
+    CompilationMessage m = {};
+    m.message = message;
+    m.type = type;
+
+    AddMessage(m);
+}
+
+void OwnedCompilationMessages::AddMessageForTesting(std::string_view message,
                                                     wgpu::CompilationMessageType type,
                                                     uint64_t lineNum,
                                                     uint64_t linePos,
                                                     uint64_t offset,
                                                     uint64_t length) {
-    // Cannot add messages after GetCompilationInfo has been called.
-    ASSERT(mCompilationInfo.messages == nullptr);
+    CompilationMessage m = {};
+    m.message = message;
+    m.type = type;
+    m.lineNum = lineNum;
+    m.linePos = linePos;
+    m.offset = offset;
+    m.length = length;
+    m.utf16LinePos = linePos;
+    m.utf16Offset = offset;
+    m.utf16Length = length;
 
-    // Message can only contain ascii characters.
-    ASSERT(tint::utils::utf8::IsASCII(message));
-
-    mMessageStrings.push_back(message);
-    mMessages.push_back({nullptr, nullptr, static_cast<WGPUCompilationMessageType>(type), lineNum,
-                         linePos, offset, length, linePos, offset, length});
+    AddMessage(m);
 }
 
 MaybeError OwnedCompilationMessages::AddMessage(const tint::diag::Diagnostic& diagnostic) {
-    // Cannot add messages after GetCompilationInfo has been called.
-    ASSERT(mCompilationInfo.messages == nullptr);
-
     // Tint line and column values are 1-based.
     uint64_t lineNum = diagnostic.source.range.begin.line;
     uint64_t linePosInBytes = diagnostic.source.range.begin.column;
@@ -145,28 +164,47 @@ MaybeError OwnedCompilationMessages::AddMessage(const tint::diag::Diagnostic& di
             static_cast<uint64_t>(endLineStart - fileStart) + endLineCol - 1;
         // The length of the message is the difference between the starting offset and the
         // ending offset. Negative ranges aren't allowed.
-        ASSERT(endOffsetInBytes >= offsetInBytes);
+        DAWN_ASSERT(endOffsetInBytes >= offsetInBytes);
         lengthInBytes = endOffsetInBytes - offsetInBytes;
         DAWN_TRY_ASSIGN(lengthInUTF16, CountUTF16CodeUnitsFromUTF8String(std::string_view(
                                            fileStart + offsetInBytes, lengthInBytes)));
     }
 
-    if (diagnostic.code) {
-        mMessageStrings.push_back(std::string(diagnostic.code) + ": " + diagnostic.message);
-    } else {
-        mMessageStrings.push_back(diagnostic.message);
-    }
+    std::string plainMessage = diagnostic.message.Plain();
 
-    mMessages.push_back({nullptr, nullptr, tintSeverityToMessageType(diagnostic.severity), lineNum,
-                         linePosInBytes, offsetInBytes, lengthInBytes, linePosInUTF16,
-                         offsetInUTF16, lengthInUTF16});
+    CompilationMessage m = {};
+    m.message = std::string_view(plainMessage);
+    m.type = TintSeverityToMessageType(diagnostic.severity);
+    m.lineNum = lineNum;
+    m.linePos = linePosInBytes;
+    m.offset = offsetInBytes;
+    m.length = lengthInBytes;
+    m.utf16LinePos = linePosInUTF16;
+    m.utf16Offset = offsetInUTF16;
+    m.utf16Length = lengthInUTF16;
 
+    AddMessage(m);
     return {};
+}
+
+void OwnedCompilationMessages::AddMessage(const CompilationMessage& message) {
+    // Cannot add messages after GetCompilationInfo has been called.
+    DAWN_ASSERT(!mCompilationInfo->has_value());
+
+    DAWN_ASSERT(message.nextInChain == nullptr);
+
+    mMessages.push_back(message);
+
+    // Own the contents of the message as it might be freed afterwards.
+    // Note that we use make_unique here as moving strings doesn't guarantee that the data pointer
+    // stays the same, for example if there's some small string optimization.
+    mMessageStrings.push_back(std::make_unique<std::string>(message.message));
+    mMessages.back().message = ToOutputStringView(*mMessageStrings.back());
 }
 
 MaybeError OwnedCompilationMessages::AddMessages(const tint::diag::List& diagnostics) {
     // Cannot add messages after GetCompilationInfo has been called.
-    ASSERT(mCompilationInfo.messages == nullptr);
+    DAWN_ASSERT(!mCompilationInfo->has_value());
 
     for (const auto& diag : diagnostics) {
         DAWN_TRY(AddMessage(diag));
@@ -179,29 +217,37 @@ MaybeError OwnedCompilationMessages::AddMessages(const tint::diag::List& diagnos
 
 void OwnedCompilationMessages::ClearMessages() {
     // Cannot clear messages after GetCompilationInfo has been called.
-    ASSERT(mCompilationInfo.messages == nullptr);
+    DAWN_ASSERT(!mCompilationInfo->has_value());
 
     mMessageStrings.clear();
     mMessages.clear();
 }
 
-const WGPUCompilationInfo* OwnedCompilationMessages::GetCompilationInfo() {
-    mCompilationInfo.messageCount = mMessages.size();
-    mCompilationInfo.messages = mMessages.data();
+const CompilationInfo* OwnedCompilationMessages::GetCompilationInfo() {
+    return mCompilationInfo.Use([&](auto info) {
+        if (info->has_value()) {
+            return &info->value();
+        }
 
-    // Ensure every message points at the correct message string. Cannot do this earlier, since
-    // vector reallocations may move the pointers around.
-    for (size_t i = 0; i < mCompilationInfo.messageCount; ++i) {
-        WGPUCompilationMessage& message = mMessages[i];
-        std::string& messageString = mMessageStrings[i];
-        message.message = messageString.c_str();
-    }
-
-    return &mCompilationInfo;
+        (*info).emplace();
+        (*info)->messageCount = mMessages.size();
+        (*info)->messages = mMessages.data();
+        return &info->value();
+    });
 }
 
-const std::vector<std::string>& OwnedCompilationMessages::GetFormattedTintMessages() {
+const std::vector<std::string>& OwnedCompilationMessages::GetFormattedTintMessages() const {
     return mFormattedTintMessages;
+}
+
+bool OwnedCompilationMessages::HasWarningsOrErrors() const {
+    for (const auto& message : mMessages) {
+        if (message.type == wgpu::CompilationMessageType::Error ||
+            message.type == wgpu::CompilationMessageType::Warning) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void OwnedCompilationMessages::AddFormattedTintMessages(const tint::diag::List& diagnostics) {
@@ -210,20 +256,18 @@ void OwnedCompilationMessages::AddFormattedTintMessages(const tint::diag::List& 
     size_t errorCount = 0;
     for (auto& diag : diagnostics) {
         switch (diag.severity) {
-            case (tint::diag::Severity::Fatal):
-            case (tint::diag::Severity::Error):
-            case (tint::diag::Severity::InternalCompilerError): {
+            case tint::diag::Severity::Error: {
                 errorCount++;
-                messageList.add(tint::diag::Diagnostic(diag));
+                messageList.Add(diag);
                 break;
             }
-            case (tint::diag::Severity::Warning): {
+            case tint::diag::Severity::Warning: {
                 warningCount++;
-                messageList.add(tint::diag::Diagnostic(diag));
+                messageList.Add(diag);
                 break;
             }
-            case (tint::diag::Severity::Note): {
-                messageList.add(tint::diag::Diagnostic(diag));
+            case tint::diag::Severity::Note: {
+                messageList.Add(diag);
                 break;
             }
             default:
@@ -245,8 +289,8 @@ void OwnedCompilationMessages::AddFormattedTintMessages(const tint::diag::List& 
     if (warningCount > 0) {
         t << warningCount << " warning(s) ";
     }
-    t << "generated while compiling the shader:" << std::endl
-      << tint::diag::Formatter{style}.format(messageList);
+    t << "generated while compiling the shader:\n"
+      << tint::diag::Formatter{style}.Format(messageList).Plain();
     mFormattedTintMessages.push_back(t.str());
 }
 

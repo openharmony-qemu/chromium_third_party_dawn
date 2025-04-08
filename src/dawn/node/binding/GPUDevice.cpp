@@ -1,20 +1,34 @@
-// Copyright 2021 The Dawn Authors
+// Copyright 2021 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "src/dawn/node/binding/GPUDevice.h"
 
 #include <memory>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -58,54 +72,27 @@ const char* str(WGPULoggingType ty) {
     }
 }
 
-// Returns a string representation of the WGPUErrorType
-const char* str(WGPUErrorType ty) {
-    switch (ty) {
-        case WGPUErrorType_NoError:
-            return "no error";
-        case WGPUErrorType_Validation:
-            return "validation";
-        case WGPUErrorType_OutOfMemory:
-            return "out of memory";
-        case WGPUErrorType_Unknown:
-            return "unknown";
-        case WGPUErrorType_DeviceLost:
-            return "device lost";
-        default:
-            return "unknown";
-    }
-}
-
 // There's something broken with Node when attempting to write more than 65536 bytes to cout.
 // Split the string up into writes of 4k chunks.
 // Likely related: https://github.com/nodejs/node/issues/12921
-void chunkedWrite(const char* msg) {
-    while (true) {
-        auto n = printf("%.4096s", msg);
-        if (n <= 0) {
-            break;
+void chunkedWrite(wgpu::StringView msg) {
+    while (msg.length != 0) {
+        int n;
+        if (msg.length > 4096) {
+            n = printf("%.4096s", msg.data);
+        } else {
+            n = printf("%.*s", static_cast<int>(msg.length), msg.data);
         }
-        msg += n;
+        msg.data += n;
+        msg.length -= n;
     }
 }
-
-class DeviceLostInfo : public interop::GPUDeviceLostInfo {
-  public:
-    DeviceLostInfo(interop::GPUDeviceLostReason reason, std::string message)
-        : reason_(reason), message_(message) {}
-    interop::GPUDeviceLostReason getReason(Napi::Env env) override { return reason_; }
-    std::string getMessage(Napi::Env) override { return message_; }
-
-  private:
-    interop::GPUDeviceLostReason reason_;
-    std::string message_;
-};
 
 class OOMError : public interop::GPUOutOfMemoryError {
   public:
     explicit OOMError(std::string message) : message_(std::move(message)) {}
 
-    std::string getMessage(Napi::Env) override { return message_; };
+    std::string getMessage(Napi::Env) override { return message_; }
 
   private:
     std::string message_;
@@ -115,7 +102,17 @@ class ValidationError : public interop::GPUValidationError {
   public:
     explicit ValidationError(std::string message) : message_(std::move(message)) {}
 
-    std::string getMessage(Napi::Env) override { return message_; };
+    std::string getMessage(Napi::Env) override { return message_; }
+
+  private:
+    std::string message_;
+};
+
+class InternalError : public interop::GPUInternalError {
+  public:
+    explicit InternalError(std::string message) : message_(std::move(message)) {}
+
+    std::string getMessage(Napi::Env) override { return message_; }
 
   private:
     std::string message_;
@@ -124,45 +121,38 @@ class ValidationError : public interop::GPUValidationError {
 }  // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
+// wgpu::bindings::GPUDeviceLostInfo
+////////////////////////////////////////////////////////////////////////////////
+GPUDeviceLostInfo::GPUDeviceLostInfo(interop::GPUDeviceLostReason reason, std::string message)
+    : reason_(reason), message_(message) {}
+
+interop::GPUDeviceLostReason GPUDeviceLostInfo::getReason(Napi::Env env) {
+    return reason_;
+}
+
+std::string GPUDeviceLostInfo::getMessage(Napi::Env) {
+    return message_;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // wgpu::bindings::GPUDevice
 ////////////////////////////////////////////////////////////////////////////////
-GPUDevice::GPUDevice(Napi::Env env, wgpu::Device device)
+GPUDevice::GPUDevice(Napi::Env env,
+                     const wgpu::DeviceDescriptor& desc,
+                     wgpu::Device device,
+                     interop::Promise<interop::Interface<interop::GPUDeviceLostInfo>> lost_promise,
+                     std::shared_ptr<AsyncRunner> async)
     : env_(env),
       device_(device),
-      async_(std::make_shared<AsyncRunner>(env, device)),
-      lost_promise_(env, PROMISE_INFO) {
+      async_(async),
+      lost_promise_(lost_promise),
+      label_(CopyLabel(desc.label)) {
     device_.SetLoggingCallback(
-        [](WGPULoggingType type, char const* message, void* userdata) {
+        [](WGPULoggingType type, WGPUStringView message, void* userdata) {
             printf("%s:\n", str(type));
             chunkedWrite(message);
         },
         nullptr);
-    device_.SetUncapturedErrorCallback(
-        [](WGPUErrorType type, char const* message, void* userdata) {
-            printf("%s:\n", str(type));
-            chunkedWrite(message);
-        },
-        nullptr);
-
-    device_.SetDeviceLostCallback(
-        [](WGPUDeviceLostReason reason, char const* message, void* userdata) {
-            auto r = interop::GPUDeviceLostReason::kDestroyed;
-            switch (reason) {
-                case WGPUDeviceLostReason_Force32:
-                    UNREACHABLE("WGPUDeviceLostReason_Force32");
-                    break;
-                case WGPUDeviceLostReason_Destroyed:
-                case WGPUDeviceLostReason_Undefined:
-                    r = interop::GPUDeviceLostReason::kDestroyed;
-                    break;
-            }
-            auto* self = static_cast<GPUDevice*>(userdata);
-            if (self->lost_promise_.GetState() == interop::PromiseState::Pending) {
-                self->lost_promise_.Resolve(
-                    interop::GPUDeviceLostInfo::Create<DeviceLostInfo>(self->env_, r, message));
-            }
-        },
-        this);
 }
 
 GPUDevice::~GPUDevice() {
@@ -177,18 +167,43 @@ GPUDevice::~GPUDevice() {
     }
 }
 
-interop::Interface<interop::GPUSupportedFeatures> GPUDevice::getFeatures(Napi::Env env) {
-    size_t count = device_.EnumerateFeatures(nullptr);
-    std::vector<wgpu::FeatureName> features(count);
-    if (count > 0) {
-        device_.EnumerateFeatures(features.data());
+void GPUDevice::ForceLoss(wgpu::DeviceLostReason reason, const char* message) {
+    if (lost_promise_.GetState() == interop::PromiseState::Pending) {
+        lost_promise_.Resolve(interop::GPUDeviceLostInfo::Create<GPUDeviceLostInfo>(
+            env_, interop::GPUDeviceLostReason::kUnknown, std::string(message)));
     }
-    return interop::GPUSupportedFeatures::Create<GPUSupportedFeatures>(env, env,
-                                                                       std::move(features));
+    device_.ForceLoss(reason, message);
+}
+
+interop::Interface<interop::GPUSupportedFeatures> GPUDevice::getFeatures(Napi::Env env) {
+    wgpu::SupportedFeatures features{};
+    device_.GetFeatures(&features);
+    return interop::GPUSupportedFeatures::Create<GPUSupportedFeatures>(env, env, features);
 }
 
 interop::Interface<interop::GPUSupportedLimits> GPUDevice::getLimits(Napi::Env env) {
     wgpu::SupportedLimits limits{};
+    wgpu::DawnExperimentalSubgroupLimits subgroupLimits{};
+    wgpu::DawnExperimentalImmediateDataLimits immediateDataLimits{};
+
+    auto InsertInChain = [&](wgpu::ChainedStructOut* node) {
+        node->nextInChain = limits.nextInChain;
+        limits.nextInChain = node;
+    };
+
+    // Query the subgroup limits only if subgroups feature is enabled on the device.
+    // TODO(349125474): Remove deprecated ChromiumExperimentalSubgroups.
+    if (device_.HasFeature(wgpu::FeatureName::Subgroups) ||
+        device_.HasFeature(wgpu::FeatureName::ChromiumExperimentalSubgroups)) {
+        InsertInChain(&subgroupLimits);
+    }
+
+    // Query the immediate data limits only if ChromiumExperimentalImmediateData feature
+    // is available on device.
+    if (device_.HasFeature(FeatureName::ChromiumExperimentalImmediateData)) {
+        InsertInChain(&subgroupLimits);
+    }
+
     if (!device_.GetLimits(&limits)) {
         Napi::Error::New(env, "failed to get device limits").ThrowAsJavaScriptException();
     }
@@ -201,7 +216,7 @@ interop::Interface<interop::GPUQueue> GPUDevice::getQueue(Napi::Env env) {
 
 void GPUDevice::destroy(Napi::Env env) {
     if (lost_promise_.GetState() == interop::PromiseState::Pending) {
-        lost_promise_.Resolve(interop::GPUDeviceLostInfo::Create<DeviceLostInfo>(
+        lost_promise_.Resolve(interop::GPUDeviceLostInfo::Create<GPUDeviceLostInfo>(
             env_, interop::GPUDeviceLostReason::kDestroyed, "device was destroyed"));
     }
     device_.Destroy();
@@ -238,7 +253,19 @@ interop::Interface<interop::GPUTexture> GPUDevice::createTexture(
         !conv(desc.viewFormats, desc.viewFormatCount, descriptor.viewFormats)) {
         return {};
     }
-    return interop::GPUTexture::Create<GPUTexture>(env, device_, device_.CreateTexture(&desc));
+
+    wgpu::TextureBindingViewDimensionDescriptor texture_binding_view_dimension_desc{};
+    wgpu::TextureViewDimension texture_binding_view_dimension;
+    if (descriptor.textureBindingViewDimension.has_value() &&
+        conv(texture_binding_view_dimension, descriptor.textureBindingViewDimension)) {
+        texture_binding_view_dimension_desc.textureBindingViewDimension =
+            texture_binding_view_dimension;
+        desc.nextInChain =
+            reinterpret_cast<wgpu::ChainedStruct*>(&texture_binding_view_dimension_desc);
+    }
+
+    return interop::GPUTexture::Create<GPUTexture>(env, device_, desc,
+                                                   device_.CreateTexture(&desc));
 }
 
 interop::Interface<interop::GPUSampler> GPUDevice::createSampler(
@@ -260,13 +287,13 @@ interop::Interface<interop::GPUSampler> GPUDevice::createSampler(
         !conv(desc.maxAnisotropy, descriptor.maxAnisotropy)) {
         return {};
     }
-    return interop::GPUSampler::Create<GPUSampler>(env, device_.CreateSampler(&desc));
+    return interop::GPUSampler::Create<GPUSampler>(env, desc, device_.CreateSampler(&desc));
 }
 
 interop::Interface<interop::GPUExternalTexture> GPUDevice::importExternalTexture(
-    Napi::Env,
+    Napi::Env env,
     interop::GPUExternalTextureDescriptor descriptor) {
-    UNIMPLEMENTED();
+    UNIMPLEMENTED(env, {});
 }
 
 interop::Interface<interop::GPUBindGroupLayout> GPUDevice::createBindGroupLayout(
@@ -281,7 +308,7 @@ interop::Interface<interop::GPUBindGroupLayout> GPUDevice::createBindGroupLayout
     }
 
     return interop::GPUBindGroupLayout::Create<GPUBindGroupLayout>(
-        env, device_.CreateBindGroupLayout(&desc));
+        env, desc, device_.CreateBindGroupLayout(&desc));
 }
 
 interop::Interface<interop::GPUPipelineLayout> GPUDevice::createPipelineLayout(
@@ -296,7 +323,7 @@ interop::Interface<interop::GPUPipelineLayout> GPUDevice::createPipelineLayout(
     }
 
     return interop::GPUPipelineLayout::Create<GPUPipelineLayout>(
-        env, device_.CreatePipelineLayout(&desc));
+        env, desc, device_.CreatePipelineLayout(&desc));
 }
 
 interop::Interface<interop::GPUBindGroup> GPUDevice::createBindGroup(
@@ -310,7 +337,7 @@ interop::Interface<interop::GPUBindGroup> GPUDevice::createBindGroup(
         return {};
     }
 
-    return interop::GPUBindGroup::Create<GPUBindGroup>(env, device_.CreateBindGroup(&desc));
+    return interop::GPUBindGroup::Create<GPUBindGroup>(env, desc, device_.CreateBindGroup(&desc));
 }
 
 interop::Interface<interop::GPUShaderModule> GPUDevice::createShaderModule(
@@ -318,15 +345,25 @@ interop::Interface<interop::GPUShaderModule> GPUDevice::createShaderModule(
     interop::GPUShaderModuleDescriptor descriptor) {
     Converter conv(env);
 
-    wgpu::ShaderModuleWGSLDescriptor wgsl_desc{};
+    wgpu::ShaderSourceWGSL wgsl_desc{};
     wgpu::ShaderModuleDescriptor sm_desc{};
-    if (!conv(wgsl_desc.source, descriptor.code) || !conv(sm_desc.label, descriptor.label)) {
+    if (!conv(wgsl_desc.code, descriptor.code) || !conv(sm_desc.label, descriptor.label)) {
         return {};
     }
     sm_desc.nextInChain = &wgsl_desc;
 
+    // Special case for a source containing a \0. This should be an error instead of just truncating
+    // the source.
+    if (descriptor.code.find('\0') != std::string::npos) {
+        return interop::GPUShaderModule::Create<GPUShaderModule>(
+            env, sm_desc,
+            device_.CreateErrorShaderModule(&sm_desc,
+                                            "The WGSL shader contains an illegal character '\\0'"),
+            async_);
+    }
+
     return interop::GPUShaderModule::Create<GPUShaderModule>(
-        env, device_.CreateShaderModule(&sm_desc), async_);
+        env, sm_desc, device_.CreateShaderModule(&sm_desc), async_);
 }
 
 interop::Interface<interop::GPUComputePipeline> GPUDevice::createComputePipeline(
@@ -340,7 +377,7 @@ interop::Interface<interop::GPUComputePipeline> GPUDevice::createComputePipeline
     }
 
     return interop::GPUComputePipeline::Create<GPUComputePipeline>(
-        env, device_.CreateComputePipeline(&desc));
+        env, desc, device_.CreateComputePipeline(&desc));
 }
 
 interop::Interface<interop::GPURenderPipeline> GPUDevice::createRenderPipeline(
@@ -354,48 +391,38 @@ interop::Interface<interop::GPURenderPipeline> GPUDevice::createRenderPipeline(
     }
 
     return interop::GPURenderPipeline::Create<GPURenderPipeline>(
-        env, device_.CreateRenderPipeline(&desc));
+        env, desc, device_.CreateRenderPipeline(&desc));
 }
 
 interop::Promise<interop::Interface<interop::GPUComputePipeline>>
 GPUDevice::createComputePipelineAsync(Napi::Env env,
                                       interop::GPUComputePipelineDescriptor descriptor) {
-    using Promise = interop::Promise<interop::Interface<interop::GPUComputePipeline>>;
-
-    Converter conv(env);
+    Converter conv(env, device_);
 
     wgpu::ComputePipelineDescriptor desc{};
     if (!conv(desc, descriptor)) {
-        Promise promise(env, PROMISE_INFO);
-        promise.Reject(Errors::OperationError(env));
-        return promise;
+        return {env, interop::kUnusedPromise};
     }
 
-    struct Context {
-        Napi::Env env;
-        Promise promise;
-        AsyncTask task;
-    };
-    auto ctx = new Context{env, Promise(env, PROMISE_INFO), AsyncTask(async_)};
+    auto ctx = std::make_unique<AsyncContext<interop::Interface<interop::GPUComputePipeline>>>(
+        env, PROMISE_INFO, async_);
     auto promise = ctx->promise;
 
     device_.CreateComputePipelineAsync(
-        &desc,
-        [](WGPUCreatePipelineAsyncStatus status, WGPUComputePipeline pipeline, char const* message,
-           void* userdata) {
-            auto c = std::unique_ptr<Context>(static_cast<Context*>(userdata));
-
+        &desc, wgpu::CallbackMode::AllowProcessEvents,
+        [ctx = std::move(ctx), label = CopyLabel(desc.label)](
+            wgpu::CreatePipelineAsyncStatus status, wgpu::ComputePipeline pipeline,
+            wgpu::StringView) {
             switch (status) {
-                case WGPUCreatePipelineAsyncStatus::WGPUCreatePipelineAsyncStatus_Success:
-                    c->promise.Resolve(
-                        interop::GPUComputePipeline::Create<GPUComputePipeline>(c->env, pipeline));
+                case wgpu::CreatePipelineAsyncStatus::Success:
+                    ctx->promise.Resolve(interop::GPUComputePipeline::Create<GPUComputePipeline>(
+                        ctx->env, pipeline, label));
                     break;
                 default:
-                    c->promise.Reject(Errors::OperationError(c->env));
+                    ctx->promise.Reject(Errors::GPUPipelineError(ctx->env));
                     break;
             }
-        },
-        ctx);
+        });
 
     return promise;
 }
@@ -403,42 +430,32 @@ GPUDevice::createComputePipelineAsync(Napi::Env env,
 interop::Promise<interop::Interface<interop::GPURenderPipeline>>
 GPUDevice::createRenderPipelineAsync(Napi::Env env,
                                      interop::GPURenderPipelineDescriptor descriptor) {
-    using Promise = interop::Promise<interop::Interface<interop::GPURenderPipeline>>;
-
     Converter conv(env, device_);
 
     wgpu::RenderPipelineDescriptor desc{};
     if (!conv(desc, descriptor)) {
-        Promise promise(env, PROMISE_INFO);
-        promise.Reject(Errors::OperationError(env));
-        return promise;
+        return {env, interop::kUnusedPromise};
     }
 
-    struct Context {
-        Napi::Env env;
-        Promise promise;
-        AsyncTask task;
-    };
-    auto ctx = new Context{env, Promise(env, PROMISE_INFO), AsyncTask(async_)};
+    auto ctx = std::make_unique<AsyncContext<interop::Interface<interop::GPURenderPipeline>>>(
+        env, PROMISE_INFO, async_);
     auto promise = ctx->promise;
 
     device_.CreateRenderPipelineAsync(
-        &desc,
-        [](WGPUCreatePipelineAsyncStatus status, WGPURenderPipeline pipeline, char const* message,
-           void* userdata) {
-            auto c = std::unique_ptr<Context>(static_cast<Context*>(userdata));
-
+        &desc, wgpu::CallbackMode::AllowProcessEvents,
+        [ctx = std::move(ctx), label = CopyLabel(desc.label)](
+            wgpu::CreatePipelineAsyncStatus status, wgpu::RenderPipeline pipeline,
+            wgpu::StringView) {
             switch (status) {
-                case WGPUCreatePipelineAsyncStatus::WGPUCreatePipelineAsyncStatus_Success:
-                    c->promise.Resolve(
-                        interop::GPURenderPipeline::Create<GPURenderPipeline>(c->env, pipeline));
+                case wgpu::CreatePipelineAsyncStatus::Success:
+                    ctx->promise.Resolve(interop::GPURenderPipeline::Create<GPURenderPipeline>(
+                        ctx->env, pipeline, label));
                     break;
                 default:
-                    c->promise.Reject(Errors::OperationError(c->env));
+                    ctx->promise.Reject(Errors::GPUPipelineError(ctx->env));
                     break;
             }
-        },
-        ctx);
+        });
 
     return promise;
 }
@@ -446,9 +463,13 @@ GPUDevice::createRenderPipelineAsync(Napi::Env env,
 interop::Interface<interop::GPUCommandEncoder> GPUDevice::createCommandEncoder(
     Napi::Env env,
     interop::GPUCommandEncoderDescriptor descriptor) {
+    Converter conv(env, device_);
     wgpu::CommandEncoderDescriptor desc{};
+    if (!conv(desc.label, descriptor.label)) {
+        return {};
+    }
     return interop::GPUCommandEncoder::Create<GPUCommandEncoder>(
-        env, device_, device_.CreateCommandEncoder(&desc));
+        env, device_, desc, device_.CreateCommandEncoder(&desc));
 }
 
 interop::Interface<interop::GPURenderBundleEncoder> GPUDevice::createRenderBundleEncoder(
@@ -458,7 +479,7 @@ interop::Interface<interop::GPURenderBundleEncoder> GPUDevice::createRenderBundl
 
     wgpu::RenderBundleEncoderDescriptor desc{};
     if (!conv(desc.label, descriptor.label) ||
-        !conv(desc.colorFormats, desc.colorFormatsCount, descriptor.colorFormats) ||
+        !conv(desc.colorFormats, desc.colorFormatCount, descriptor.colorFormats) ||
         !conv(desc.depthStencilFormat, descriptor.depthStencilFormat) ||
         !conv(desc.sampleCount, descriptor.sampleCount) ||
         !conv(desc.depthReadOnly, descriptor.depthReadOnly) ||
@@ -467,7 +488,7 @@ interop::Interface<interop::GPURenderBundleEncoder> GPUDevice::createRenderBundl
     }
 
     return interop::GPURenderBundleEncoder::Create<GPURenderBundleEncoder>(
-        env, device_.CreateRenderBundleEncoder(&desc));
+        env, desc, device_.CreateRenderBundleEncoder(&desc));
 }
 
 interop::Interface<interop::GPUQuerySet> GPUDevice::createQuerySet(
@@ -481,7 +502,7 @@ interop::Interface<interop::GPUQuerySet> GPUDevice::createQuerySet(
         return {};
     }
 
-    return interop::GPUQuerySet::Create<GPUQuerySet>(env, device_.CreateQuerySet(&desc));
+    return interop::GPUQuerySet::Create<GPUQuerySet>(env, desc, device_.CreateQuerySet(&desc));
 }
 
 interop::Promise<interop::Interface<interop::GPUDeviceLostInfo>> GPUDevice::getLost(Napi::Env env) {
@@ -509,88 +530,97 @@ void GPUDevice::pushErrorScope(Napi::Env env, interop::GPUErrorFilter filter) {
 
 interop::Promise<std::optional<interop::Interface<interop::GPUError>>> GPUDevice::popErrorScope(
     Napi::Env env) {
-    using Promise = interop::Promise<std::optional<interop::Interface<interop::GPUError>>>;
-    struct Context {
-        Napi::Env env;
-        Promise promise;
-        AsyncTask task;
-    };
-    auto* ctx = new Context{env, Promise(env, PROMISE_INFO), AsyncTask(async_)};
+    auto ctx = std::make_unique<AsyncContext<std::optional<interop::Interface<interop::GPUError>>>>(
+        env, PROMISE_INFO, async_);
     auto promise = ctx->promise;
 
     device_.PopErrorScope(
-        [](WGPUErrorType type, char const* message, void* userdata) {
-            auto c = std::unique_ptr<Context>(static_cast<Context*>(userdata));
-            auto env = c->env;
+        wgpu::CallbackMode::AllowProcessEvents,
+        [ctx = std::move(ctx)](wgpu::PopErrorScopeStatus, wgpu::ErrorType type,
+                               wgpu::StringView message) {
+            auto env = ctx->env;
             switch (type) {
-                case WGPUErrorType::WGPUErrorType_NoError:
-                    c->promise.Resolve({});
+                case wgpu::ErrorType::NoError:
+                    ctx->promise.Resolve({});
                     break;
-                case WGPUErrorType::WGPUErrorType_OutOfMemory: {
+                case wgpu::ErrorType::OutOfMemory: {
                     interop::Interface<interop::GPUError> err{
-                        interop::GPUOutOfMemoryError::Create<OOMError>(env, message)};
-                    c->promise.Resolve(err);
+                        interop::GPUOutOfMemoryError::Create<OOMError>(env, std::string(message))};
+                    ctx->promise.Resolve(err);
                     break;
                 }
-                case WGPUErrorType::WGPUErrorType_Validation: {
+                case wgpu::ErrorType::Validation: {
                     interop::Interface<interop::GPUError> err{
-                        interop::GPUValidationError::Create<ValidationError>(env, message)};
-                    c->promise.Resolve(err);
+                        interop::GPUValidationError::Create<ValidationError>(env,
+                                                                             std::string(message))};
+                    ctx->promise.Resolve(err);
                     break;
                 }
-                case WGPUErrorType::WGPUErrorType_Unknown:
-                case WGPUErrorType::WGPUErrorType_DeviceLost:
-                    c->promise.Reject(Errors::OperationError(env, message));
+                case wgpu::ErrorType::Internal: {
+                    interop::Interface<interop::GPUError> err{
+                        interop::GPUInternalError::Create<InternalError>(env,
+                                                                         std::string(message))};
+                    ctx->promise.Resolve(err);
+                    break;
+                }
+                case wgpu::ErrorType::Unknown:
+                case wgpu::ErrorType::DeviceLost:
+                    ctx->promise.Reject(Errors::OperationError(env, std::string(message)));
                     break;
                 default:
-                    c->promise.Reject("unhandled error type");
+                    ctx->promise.Reject(
+                        "unhandled error type (" +
+                        std::to_string(
+                            static_cast<std::underlying_type<wgpu::ErrorType>::type>(type)) +
+                        ")");
                     break;
             }
-        },
-        ctx);
+        });
 
     return promise;
 }
 
 std::string GPUDevice::getLabel(Napi::Env) {
-    UNIMPLEMENTED();
+    return label_;
 }
 
 void GPUDevice::setLabel(Napi::Env, std::string value) {
-    UNIMPLEMENTED();
+    device_.SetLabel(std::string_view(value));
+    label_ = value;
 }
 
-interop::Interface<interop::EventHandler> GPUDevice::getOnuncapturederror(Napi::Env) {
+interop::Interface<interop::EventHandler> GPUDevice::getOnuncapturederror(Napi::Env env) {
     // TODO(dawn:1348): Implement support for the "unhandlederror" event.
-    UNIMPLEMENTED();
+    UNIMPLEMENTED(env, {});
 }
 
-void GPUDevice::setOnuncapturederror(Napi::Env, interop::Interface<interop::EventHandler> value) {
+void GPUDevice::setOnuncapturederror(Napi::Env env,
+                                     interop::Interface<interop::EventHandler> value) {
     // TODO(dawn:1348): Implement support for the "unhandlederror" event.
-    UNIMPLEMENTED();
+    UNIMPLEMENTED(env);
 }
 
 void GPUDevice::addEventListener(
-    Napi::Env,
+    Napi::Env env,
     std::string type,
     std::optional<interop::Interface<interop::EventListener>> callback,
     std::optional<std::variant<interop::AddEventListenerOptions, bool>> options) {
     // TODO(dawn:1348): Implement support for the "unhandlederror" event.
-    UNIMPLEMENTED();
+    UNIMPLEMENTED(env);
 }
 
 void GPUDevice::removeEventListener(
-    Napi::Env,
+    Napi::Env env,
     std::string type,
     std::optional<interop::Interface<interop::EventListener>> callback,
     std::optional<std::variant<interop::EventListenerOptions, bool>> options) {
     // TODO(dawn:1348): Implement support for the "unhandlederror" event.
-    UNIMPLEMENTED();
+    UNIMPLEMENTED(env);
 }
 
-bool GPUDevice::dispatchEvent(Napi::Env, interop::Interface<interop::Event> event) {
+bool GPUDevice::dispatchEvent(Napi::Env env, interop::Interface<interop::Event> event) {
     // TODO(dawn:1348): Implement support for the "unhandlederror" event.
-    UNIMPLEMENTED();
+    UNIMPLEMENTED(env, {});
 }
 
 }  // namespace wgpu::binding

@@ -80,6 +80,8 @@ var (
 	flagExtldflags quoted.Flag
 	flagExtar      = flag.String("extar", "", "archive program for buildmode=c-archive")
 
+	flagCaptureHostObjs = flag.String("capturehostobjs", "", "capture host object files loaded during internal linking to specified dir")
+
 	flagA             = flag.Bool("a", false, "no-op (deprecated)")
 	FlagC             = flag.Bool("c", false, "dump call graph")
 	FlagD             = flag.Bool("d", false, "disable dynamic executable")
@@ -93,10 +95,12 @@ var (
 	flagInterpreter   = flag.String("I", "", "use `linker` as ELF dynamic linker")
 	FlagDebugTramp    = flag.Int("debugtramp", 0, "debug trampolines")
 	FlagDebugTextSize = flag.Int("debugtextsize", 0, "debug text section max size")
+	flagDebugNosplit  = flag.Bool("debugnosplit", false, "dump nosplit call graph")
 	FlagStrictDups    = flag.Int("strictdups", 0, "sanity check duplicate symbol contents during object file reading (1=warn 2=err).")
 	FlagRound         = flag.Int("R", -1, "set address rounding `quantum`")
-	FlagTextAddr      = flag.Int64("T", -1, "set text segment `address`")
+	FlagTextAddr      = flag.Int64("T", -1, "set the start address of text symbols")
 	flagEntrySymbol   = flag.String("E", "", "set `entry` symbol name")
+	flagPruneWeakMap  = flag.Bool("pruneweakmap", true, "prune weak mapinit refs")
 	cpuprofile        = flag.String("cpuprofile", "", "write cpu profile to `file`")
 	memprofile        = flag.String("memprofile", "", "write memory profile to `file`")
 	memprofilerate    = flag.Int64("memprofilerate", 0, "set runtime.MemProfileRate to `rate`")
@@ -106,6 +110,9 @@ var (
 
 // Main is the main entry point for the linker code.
 func Main(arch *sys.Arch, theArch Arch) {
+	log.SetPrefix("link: ")
+	log.SetFlags(0)
+
 	thearch = theArch
 	ctxt := linknew(arch)
 	ctxt.Bso = bufio.NewWriter(os.Stdout)
@@ -119,12 +126,16 @@ func Main(arch *sys.Arch, theArch Arch) {
 		}
 	}
 
-	final := gorootFinal()
-	addstrdata1(ctxt, "runtime.defaultGOROOT="+final)
-	addstrdata1(ctxt, "internal/buildcfg.defaultGOROOT="+final)
+	if final := gorootFinal(); final == "$GOROOT" {
+		// cmd/go sets GOROOT_FINAL to the dummy value "$GOROOT" when -trimpath is set,
+		// but runtime.GOROOT() should return the empty string, not a bogus value.
+		// (See https://go.dev/issue/51461.)
+	} else {
+		addstrdata1(ctxt, "runtime.defaultGOROOT="+final)
+	}
 
 	buildVersion := buildcfg.Version
-	if goexperiment := buildcfg.GOEXPERIMENT(); goexperiment != "" {
+	if goexperiment := buildcfg.Experiment.String(); goexperiment != "" {
 		buildVersion += " X:" + goexperiment
 	}
 	addstrdata1(ctxt, "runtime.buildVersion="+buildVersion)
@@ -150,6 +161,14 @@ func Main(arch *sys.Arch, theArch Arch) {
 	if ctxt.Debugvlog > 0 {
 		// dump symbol info on crash
 		defer func() { ctxt.loader.Dump() }()
+	}
+	if ctxt.Debugvlog > 1 {
+		// dump symbol info on error
+		AtExit(func() {
+			if nerrors > 0 {
+				ctxt.loader.Dump()
+			}
+		})
 	}
 
 	switch *flagHeadType {
@@ -177,6 +196,10 @@ func Main(arch *sys.Arch, theArch Arch) {
 	}
 
 	checkStrictDups = *FlagStrictDups
+
+	if ctxt.IsDarwin() && ctxt.BuildMode == BuildModeCShared {
+		*FlagW = true // default to -w in c-shared mode on darwin, see #61229
+	}
 
 	if !buildcfg.Experiment.RegabiWrappers {
 		abiInternalVer = 0
@@ -260,6 +283,9 @@ func Main(arch *sys.Arch, theArch Arch) {
 	bench.Start("loadlib")
 	ctxt.loadlib()
 
+	bench.Start("inittasks")
+	ctxt.inittasks()
+
 	bench.Start("deadcode")
 	deadcode(ctxt)
 
@@ -279,8 +305,8 @@ func Main(arch *sys.Arch, theArch Arch) {
 	bench.Start("callgraph")
 	ctxt.callgraph()
 
-	bench.Start("dostkcheck")
-	ctxt.dostkcheck()
+	bench.Start("doStackCheck")
+	ctxt.doStackCheck()
 
 	bench.Start("mangleTypeSym")
 	ctxt.mangleTypeSym()

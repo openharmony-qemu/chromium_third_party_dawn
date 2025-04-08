@@ -1,16 +1,29 @@
-// Copyright 2020 The Dawn Authors
+// Copyright 2020 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <cmath>
 #include <vector>
@@ -21,16 +34,17 @@
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
 
+namespace dawn {
+namespace {
+
 constexpr static unsigned int kRTSize = 16;
 
-namespace {
 // MipLevel colors, ordering from base level to high level
 // each mipmap of the texture is having a different color
 // so we can check if the sampler anisotropic filtering is fetching
 // from the correct miplevel
 const std::array<utils::RGBA8, 3> colors = {utils::RGBA8::kRed, utils::RGBA8::kGreen,
                                             utils::RGBA8::kBlue};
-}  // namespace
 
 class SamplerFilterAnisotropicTest : public DawnTest {
   protected:
@@ -147,7 +161,7 @@ class SamplerFilterAnisotropicTest : public DawnTest {
             wgpu::SamplerDescriptor descriptor = {};
             descriptor.minFilter = wgpu::FilterMode::Linear;
             descriptor.magFilter = wgpu::FilterMode::Linear;
-            descriptor.mipmapFilter = wgpu::FilterMode::Linear;
+            descriptor.mipmapFilter = wgpu::MipmapFilterMode::Linear;
             descriptor.maxAnisotropy = maxAnisotropy;
             sampler = device.CreateSampler(&descriptor);
         }
@@ -277,10 +291,6 @@ class SamplerFilterAnisotropicTest : public DawnTest {
 };
 
 TEST_P(SamplerFilterAnisotropicTest, SlantedPlaneMipmap) {
-    // TODO(crbug.com/dawn/740): Test output is wrong with D3D12 + WARP.
-    DAWN_SUPPRESS_TEST_IF(IsD3D12() && IsWARP());
-
-    DAWN_SUPPRESS_TEST_IF(IsOpenGL() || IsOpenGLES());
     const uint16_t maxAnisotropyLists[] = {1, 2, 16, 128};
     for (uint16_t t : maxAnisotropyLists) {
         TestFilterAnisotropic(t);
@@ -288,8 +298,12 @@ TEST_P(SamplerFilterAnisotropicTest, SlantedPlaneMipmap) {
 }
 
 DAWN_INSTANTIATE_TEST(SamplerFilterAnisotropicTest,
+                      D3D11Backend(),
                       D3D12Backend(),
                       MetalBackend(),
                       OpenGLBackend(),
                       OpenGLESBackend(),
                       VulkanBackend());
+
+}  // anonymous namespace
+}  // namespace dawn

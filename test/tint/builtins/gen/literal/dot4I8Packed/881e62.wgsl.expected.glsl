@@ -1,74 +1,56 @@
-SKIP: FAILED
+#version 310 es
+precision highp float;
+precision highp int;
 
-
-enable chromium_experimental_dp4a;
-
-fn dot4I8Packed_881e62() {
-  var res : i32 = dot4I8Packed(1u, 1u);
+layout(binding = 0, std430)
+buffer prevent_dce_block_1_ssbo {
+  int inner;
+} v;
+int dot4I8Packed_881e62() {
+  int res = 1;
+  return res;
 }
-
-@vertex
-fn vertex_main() -> @builtin(position) vec4<f32> {
-  dot4I8Packed_881e62();
-  return vec4<f32>();
+void main() {
+  v.inner = dot4I8Packed_881e62();
 }
+#version 310 es
 
-@fragment
-fn fragment_main() {
-  dot4I8Packed_881e62();
+layout(binding = 0, std430)
+buffer prevent_dce_block_1_ssbo {
+  int inner;
+} v;
+int dot4I8Packed_881e62() {
+  int res = 1;
+  return res;
 }
-
-@compute @workgroup_size(1)
-fn compute_main() {
-  dot4I8Packed_881e62();
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+void main() {
+  v.inner = dot4I8Packed_881e62();
 }
+#version 310 es
 
-Failed to generate: error: Unknown builtin method: dot4I8Packed
 
-enable chromium_experimental_dp4a;
+struct VertexOutput {
+  vec4 pos;
+  int prevent_dce;
+};
 
-fn dot4I8Packed_881e62() {
-  var res : i32 = dot4I8Packed(1u, 1u);
+layout(location = 0) flat out int vertex_main_loc0_Output;
+int dot4I8Packed_881e62() {
+  int res = 1;
+  return res;
 }
-
-@vertex
-fn vertex_main() -> @builtin(position) vec4<f32> {
-  dot4I8Packed_881e62();
-  return vec4<f32>();
+VertexOutput vertex_main_inner() {
+  VertexOutput tint_symbol = VertexOutput(vec4(0.0f), 0);
+  tint_symbol.pos = vec4(0.0f);
+  tint_symbol.prevent_dce = dot4I8Packed_881e62();
+  return tint_symbol;
 }
-
-@fragment
-fn fragment_main() {
-  dot4I8Packed_881e62();
+void main() {
+  VertexOutput v = vertex_main_inner();
+  gl_Position = v.pos;
+  gl_Position[1u] = -(gl_Position.y);
+  gl_Position[2u] = ((2.0f * gl_Position.z) - gl_Position.w);
+  vertex_main_loc0_Output = v.prevent_dce;
+  gl_PointSize = 1.0f;
 }
-
-@compute @workgroup_size(1)
-fn compute_main() {
-  dot4I8Packed_881e62();
-}
-
-Failed to generate: error: Unknown builtin method: dot4I8Packed
-
-enable chromium_experimental_dp4a;
-
-fn dot4I8Packed_881e62() {
-  var res : i32 = dot4I8Packed(1u, 1u);
-}
-
-@vertex
-fn vertex_main() -> @builtin(position) vec4<f32> {
-  dot4I8Packed_881e62();
-  return vec4<f32>();
-}
-
-@fragment
-fn fragment_main() {
-  dot4I8Packed_881e62();
-}
-
-@compute @workgroup_size(1)
-fn compute_main() {
-  dot4I8Packed_881e62();
-}
-
-Failed to generate: error: Unknown builtin method: dot4I8Packed

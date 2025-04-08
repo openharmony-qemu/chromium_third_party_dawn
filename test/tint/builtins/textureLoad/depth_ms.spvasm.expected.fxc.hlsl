@@ -3,8 +3,7 @@ static float4 tint_symbol_1 = (0.0f).xxxx;
 
 void textureLoad_6273b1() {
   float res = 0.0f;
-  const float4 x_17 = float4(arg_0.Load(int3(0, 0, 0), 1).x, 0.0f, 0.0f, 0.0f);
-  res = x_17.x;
+  res = float4(arg_0.Load(int3(0, 0, 0), 1).x, 0.0f, 0.0f, 0.0f).x;
   return;
 }
 
@@ -28,12 +27,12 @@ struct tint_symbol_3 {
 
 vertex_main_out vertex_main_inner() {
   vertex_main_1();
-  const vertex_main_out tint_symbol_4 = {tint_symbol_1};
+  vertex_main_out tint_symbol_4 = {tint_symbol_1};
   return tint_symbol_4;
 }
 
 tint_symbol_3 vertex_main() {
-  const vertex_main_out inner_result = vertex_main_inner();
+  vertex_main_out inner_result = vertex_main_inner();
   tint_symbol_3 wrapper_result = (tint_symbol_3)0;
   wrapper_result.tint_symbol_1_1 = inner_result.tint_symbol_1_1;
   return wrapper_result;

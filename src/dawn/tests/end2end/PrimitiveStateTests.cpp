@@ -1,16 +1,29 @@
-// Copyright 2021 The Dawn Authors
+// Copyright 2021 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <vector>
 
@@ -18,6 +31,10 @@
 #include "dawn/tests/DawnTest.h"
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
+#include "partition_alloc/pointers/raw_ptr.h"
+
+namespace dawn {
+namespace {
 
 constexpr static unsigned int kRTSize = 1;
 
@@ -77,7 +94,7 @@ class DepthClippingTest : public DawnTest {
     }
 
     struct TestSpec {
-        wgpu::PrimitiveDepthClipControl* depthClipControl;
+        bool unclippedDepth;
         utils::RGBA8 color;
         float depth;
     };
@@ -110,12 +127,12 @@ class DepthClippingTest : public DawnTest {
 
             // Create a pipeline for the triangles with the test spec's params.
             utils::ComboRenderPipelineDescriptor descriptor;
-            descriptor.primitive.nextInChain = test.depthClipControl;
+            descriptor.primitive.unclippedDepth = test.unclippedDepth;
             descriptor.primitive.topology = wgpu::PrimitiveTopology::PointList;
             descriptor.vertex.module = vsModule;
             descriptor.cFragment.module = fsModule;
             wgpu::DepthStencilState* depthStencil = descriptor.EnableDepthStencil();
-            depthStencil->depthWriteEnabled = true;
+            depthStencil->depthWriteEnabled = wgpu::OptionalBool::True;
             depthStencil->format = wgpu::TextureFormat::Depth24PlusStencil8;
 
             wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&descriptor);
@@ -146,20 +163,17 @@ class DepthClippingTest : public DawnTest {
 
 // Test that fragments beyond the far plane are not clipped if unclippedDepth is true
 TEST_P(DepthClippingTest, UnclippedBeyondFarPlane) {
-    wgpu::PrimitiveDepthClipControl depthClipControl;
-    depthClipControl.unclippedDepth = true;
-
     DoTest(
         {
             // Draw a red triangle at depth 1.
             {
-                nullptr,                      /* depthClipControl */
+                false,                        /* unclippedDepth */
                 utils::RGBA8(255, 0, 0, 255), /* color */
                 1.f,                          /* depth */
             },
             // Draw a green triangle at depth 2 which should not be clipped.
             {
-                &depthClipControl,            /* depthClipControl */
+                true,                         /* unclippedDepth */
                 utils::RGBA8(0, 255, 0, 255), /* color */
                 2.f,                          /* depth */
             },
@@ -171,20 +185,17 @@ TEST_P(DepthClippingTest, UnclippedBeyondFarPlane) {
 
 // Test that fragments beyond the far plane are clipped if unclippedDepth is false
 TEST_P(DepthClippingTest, ClippedBeyondFarPlane) {
-    wgpu::PrimitiveDepthClipControl depthClipControl;
-    depthClipControl.unclippedDepth = false;
-
     DoTest(
         {
             // Draw a red triangle at depth 1.
             {
-                nullptr,                      /* depthClipControl */
+                false,                        /* unclippedDepth */
                 utils::RGBA8(255, 0, 0, 255), /* color */
                 1.f,                          /* depth */
             },
             // Draw a green triangle at depth 2 which should be clipped.
             {
-                &depthClipControl,            /* depthClipControl */
+                false,                        /* unclippedDepth */
                 utils::RGBA8(0, 255, 0, 255), /* color */
                 2.f,                          /* depth */
             },
@@ -200,13 +211,13 @@ TEST_P(DepthClippingTest, ClippedBeyondFarPlaneFeatureUnused) {
         {
             // Draw a red triangle at depth 1.
             {
-                nullptr,                      /* depthClipControl */
+                false,                        /* unclippedDepth */
                 utils::RGBA8(255, 0, 0, 255), /* color */
                 1.f,                          /* depth */
             },
             // Draw a green triangle at depth 2 which should be clipped.
             {
-                nullptr,                      /* depthClipControl */
+                false,                        /* unclippedDepth */
                 utils::RGBA8(0, 255, 0, 255), /* color */
                 2.f,                          /* depth */
             },
@@ -218,20 +229,17 @@ TEST_P(DepthClippingTest, ClippedBeyondFarPlaneFeatureUnused) {
 
 // Test that fragments beyond the near plane are not clipped if unclippedDepth is true
 TEST_P(DepthClippingTest, UnclippedBeyondNearPlane) {
-    wgpu::PrimitiveDepthClipControl depthClipControl;
-    depthClipControl.unclippedDepth = true;
-
     DoTest(
         {
             // Draw a red triangle at depth 0.
             {
-                nullptr,                      /* depthClipControl */
+                false,                        /* unclippedDepth */
                 utils::RGBA8(255, 0, 0, 255), /* color */
                 0.f,                          /* depth */
             },
             // Draw a green triangle at depth -1 which should not be clipped.
             {
-                &depthClipControl,            /* depthClipControl */
+                true,                         /* unclippedDepth */
                 utils::RGBA8(0, 255, 0, 255), /* color */
                 -1.f,                         /* depth */
             },
@@ -243,42 +251,17 @@ TEST_P(DepthClippingTest, UnclippedBeyondNearPlane) {
 
 // Test that fragments beyond the near plane are clipped if unclippedDepth is false
 TEST_P(DepthClippingTest, ClippedBeyondNearPlane) {
-    wgpu::PrimitiveDepthClipControl depthClipControl;
-    depthClipControl.unclippedDepth = false;
-
     DoTest(
         {
             // Draw a red triangle at depth 0.
             {
-                nullptr,                      /* depthClipControl */
+                false,                        /* unclippedDepth */
                 utils::RGBA8(255, 0, 0, 255), /* color */
                 0.f,                          /* depth */
             },
             // Draw a green triangle at depth -1 which should be clipped.
             {
-                &depthClipControl,            /* depthClipControl */
-                utils::RGBA8(0, 255, 0, 255), /* color */
-                -1.f,                         /* depth */
-            },
-        },
-        // The resulting fragment should be red because the green triangle is
-        // outside the clip volume.
-        utils::RGBA8(255, 0, 0, 255));
-}
-
-// Test that fragments beyond the near plane are clipped if unclippedDepth is not specified
-TEST_P(DepthClippingTest, ClippedBeyondNearPlaneFeatureUnused) {
-    DoTest(
-        {
-            // Draw a red triangle at depth 0.
-            {
-                nullptr,                      /* depthClipControl */
-                utils::RGBA8(255, 0, 0, 255), /* color */
-                0.f,                          /* depth */
-            },
-            // Draw a green triangle at depth -1 which should be clipped.
-            {
-                nullptr,                      /* depthClipControl */
+                false,                        /* unclippedDepth */
                 utils::RGBA8(0, 255, 0, 255), /* color */
                 -1.f,                         /* depth */
             },
@@ -291,23 +274,19 @@ TEST_P(DepthClippingTest, ClippedBeyondNearPlaneFeatureUnused) {
 // Test that fragments are properly clipped or clamped if multiple render pipelines are used
 // within the same render pass with differing unclippedDepth values.
 TEST_P(DepthClippingTest, MultipleRenderPipelines) {
-    wgpu::PrimitiveDepthClipControl depthClipControl1;
-    depthClipControl1.unclippedDepth = true;
-
-    wgpu::PrimitiveDepthClipControl depthClipControl2;
-    depthClipControl2.unclippedDepth = false;
-
     DoTest(
         {
             // Draw green with no clipping
             {
-                &depthClipControl1, utils::RGBA8(0, 255, 0, 255), /* color */
-                2.f,                                              /* depth */
+                true,                         /* unclippedDepth */
+                utils::RGBA8(0, 255, 0, 255), /* color */
+                2.f,                          /* depth */
             },
             // Draw red with clipping
             {
-                &depthClipControl2, utils::RGBA8(255, 0, 0, 255), /* color */
-                2.f,                                              /* depth */
+                false,                        /* unclippedDepth */
+                utils::RGBA8(255, 0, 0, 255), /* color */
+                2.f,                          /* depth */
             },
         },
         utils::RGBA8(0, 255, 0, 255));  // Result should be green
@@ -317,12 +296,9 @@ TEST_P(DepthClippingTest, MultipleRenderPipelines) {
 // depths are not being clamped instead. In the fragment shader, we should see
 // depth values outside the viewport.
 TEST_P(DepthClippingTest, UnclippedNotClamped) {
-    wgpu::PrimitiveDepthClipControl depthClipControl;
-    depthClipControl.unclippedDepth = true;
-
     // Create a pipeline to render a point.
     utils::ComboRenderPipelineDescriptor descriptor;
-    descriptor.primitive.nextInChain = &depthClipControl;
+    descriptor.primitive.unclippedDepth = true;
     descriptor.primitive.topology = wgpu::PrimitiveTopology::PointList;
     // Draw the point at (0, 0) with depth 2.0.
     descriptor.vertex.module = utils::CreateShaderModule(device, R"(
@@ -336,7 +312,7 @@ TEST_P(DepthClippingTest, UnclippedNotClamped) {
             return vec4f(frag_pos.z / 4.0, 0.0, 0.0, 1.0);
         })");
     wgpu::DepthStencilState* depthStencil = descriptor.EnableDepthStencil();
-    depthStencil->depthWriteEnabled = true;
+    depthStencil->depthWriteEnabled = wgpu::OptionalBool::True;
     depthStencil->format = wgpu::TextureFormat::Depth24PlusStencil8;
 
     wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&descriptor);
@@ -363,3 +339,6 @@ DAWN_INSTANTIATE_TEST(DepthClippingTest,
                       OpenGLBackend(),
                       OpenGLESBackend(),
                       VulkanBackend());
+
+}  // anonymous namespace
+}  // namespace dawn

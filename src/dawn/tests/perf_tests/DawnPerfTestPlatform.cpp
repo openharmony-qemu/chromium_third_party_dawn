@@ -1,16 +1,29 @@
-// Copyright 2019 The Dawn Authors
+// Copyright 2019 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/tests/perf_tests/DawnPerfTestPlatform.h"
 
@@ -22,42 +35,43 @@
 #include "dawn/platform/tracing/TraceEvent.h"
 #include "dawn/tests/perf_tests/DawnPerfTest.h"
 #include "dawn/utils/Timer.h"
+
+namespace dawn {
 namespace {
 
 struct TraceCategoryInfo {
     unsigned char enabled;
-    dawn::platform::TraceCategory category;
+    platform::TraceCategory category;
 };
 
 constexpr TraceCategoryInfo gTraceCategories[4] = {
-    {1, dawn::platform::TraceCategory::General},
-    {1, dawn::platform::TraceCategory::Validation},
-    {1, dawn::platform::TraceCategory::Recording},
-    {1, dawn::platform::TraceCategory::GPUWork},
+    {1, platform::TraceCategory::General},
+    {1, platform::TraceCategory::Validation},
+    {1, platform::TraceCategory::Recording},
+    {1, platform::TraceCategory::GPUWork},
 };
 
-static_assert(static_cast<uint32_t>(dawn::platform::TraceCategory::General) == 0);
-static_assert(static_cast<uint32_t>(dawn::platform::TraceCategory::Validation) == 1);
-static_assert(static_cast<uint32_t>(dawn::platform::TraceCategory::Recording) == 2);
-static_assert(static_cast<uint32_t>(dawn::platform::TraceCategory::GPUWork) == 3);
+static_assert(static_cast<uint32_t>(platform::TraceCategory::General) == 0);
+static_assert(static_cast<uint32_t>(platform::TraceCategory::Validation) == 1);
+static_assert(static_cast<uint32_t>(platform::TraceCategory::Recording) == 2);
+static_assert(static_cast<uint32_t>(platform::TraceCategory::GPUWork) == 3);
 
 }  // anonymous namespace
 
-DawnPerfTestPlatform::DawnPerfTestPlatform()
-    : dawn::platform::Platform(), mTimer(utils::CreateTimer()) {}
+DawnPerfTestPlatform::DawnPerfTestPlatform() : platform::Platform(), mTimer(utils::CreateTimer()) {}
 
 DawnPerfTestPlatform::~DawnPerfTestPlatform() = default;
 
 const unsigned char* DawnPerfTestPlatform::GetTraceCategoryEnabledFlag(
-    dawn::platform::TraceCategory category) {
+    platform::TraceCategory category) {
     switch (category) {
-        case dawn::platform::TraceCategory::General:
-        case dawn::platform::TraceCategory::Validation:
-        case dawn::platform::TraceCategory::Recording:
-        case dawn::platform::TraceCategory::GPUWork:
+        case platform::TraceCategory::General:
+        case platform::TraceCategory::Validation:
+        case platform::TraceCategory::Recording:
+        case platform::TraceCategory::GPUWork:
             break;
         default:
-            UNREACHABLE();
+            DAWN_UNREACHABLE();
     }
     return &gTraceCategories[static_cast<uint32_t>(category)].enabled;
 }
@@ -146,3 +160,5 @@ std::vector<DawnPerfTestPlatform::TraceEvent> DawnPerfTestPlatform::AcquireTrace
     }
     return traceEventBuffer;
 }
+
+}  // namespace dawn

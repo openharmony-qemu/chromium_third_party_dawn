@@ -1,16 +1,29 @@
-// Copyright 2020 The Dawn Authors
+// Copyright 2020 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <vector>
 
@@ -18,11 +31,14 @@
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
 
+namespace dawn {
+namespace {
+
 // Clear the content of the result buffer into 0xFFFFFFFF.
 constexpr static uint64_t kSentinelValue = ~uint64_t(0u);
 constexpr static uint64_t kZero = 0u;
 constexpr static unsigned int kRTSize = 4;
-constexpr uint64_t kMinDestinationOffset = 256;
+constexpr uint64_t kMinDestinationOffset = kQueryResolveAlignment;
 constexpr uint64_t kMinCount = kMinDestinationOffset / sizeof(uint64_t);
 constexpr wgpu::TextureFormat kColorFormat = wgpu::TextureFormat::RGBA8Unorm;
 constexpr wgpu::TextureFormat kDepthStencilFormat = wgpu::TextureFormat::Depth24PlusStencil8;
@@ -55,22 +71,21 @@ class OcclusionExpectation : public detail::Expectation {
     explicit OcclusionExpectation(Result expected) { mExpected = expected; }
 
     testing::AssertionResult Check(const void* data, size_t size) override {
-        ASSERT(size % sizeof(uint64_t) == 0);
+        DAWN_ASSERT(size % sizeof(uint64_t) == 0);
         const uint64_t* actual = static_cast<const uint64_t*>(data);
         for (size_t i = 0; i < size / sizeof(uint64_t); i++) {
             if (actual[i] == kSentinelValue) {
                 return testing::AssertionFailure()
                        << "Data[" << i << "] was not written (it kept the sentinel value of "
-                       << kSentinelValue << ")." << std::endl;
+                       << kSentinelValue << ").\n";
             }
             if (mExpected == Result::Zero && actual[i] != 0) {
                 return testing::AssertionFailure()
-                       << "Expected data[" << i << "] to be zero, actual: " << actual[i] << "."
-                       << std::endl;
+                       << "Expected data[" << i << "] to be zero, actual: " << actual[i] << ".\n";
             }
             if (mExpected == Result::NonZero && actual[i] == 0) {
                 return testing::AssertionFailure()
-                       << "Expected data[" << i << "] to be non-zero." << std::endl;
+                       << "Expected data[" << i << "] to be non-zero.\n";
             }
         }
 
@@ -228,6 +243,9 @@ TEST_P(OcclusionQueryTests, QuerySetDestroy) {
 // zero indicates that no sample passed depth/stencil testing,
 // non-zero indicates that at least one sample passed depth/stencil testing.
 TEST_P(OcclusionQueryTests, QueryWithDepthStencilTest) {
+    // TODO(dawn:1870): D3D11_QUERY_OCCLUSION_PREDICATE doesn't work on Intel Gen12.
+    DAWN_SUPPRESS_TEST_IF(IsD3D11() && IsIntelGen12());
+
     // Disable depth/stencil testing, the samples always pass the testing, the expected occlusion
     // result is non-zero.
     TestOcclusionQueryWithDepthStencilTest(false, false, OcclusionExpectation::Result::NonZero);
@@ -246,6 +264,9 @@ TEST_P(OcclusionQueryTests, QueryWithDepthStencilTest) {
 // zero indicates that no sample passed scissor testing,
 // non-zero indicates that at least one sample passed scissor testing.
 TEST_P(OcclusionQueryTests, QueryWithScissorTest) {
+    // TODO(dawn:1870): D3D11_QUERY_OCCLUSION_PREDICATE doesn't work on Intel Gen12.
+    DAWN_SUPPRESS_TEST_IF(IsD3D11() && IsIntelGen12());
+
     // Test there are samples passed scissor testing, the expected occlusion result is non-zero.
     TestOcclusionQueryWithScissorTest({2, 1, 2, 1}, OcclusionExpectation::Result::NonZero);
 
@@ -366,6 +387,12 @@ TEST_P(OcclusionQueryTests, ResolveWithoutWritten) {
 
 // Test setting an occlusion query to non-zero, then rewriting it without drawing, resolves to 0.
 TEST_P(OcclusionQueryTests, RewriteNoDrawToZero) {
+    // TODO(dawn:1870): D3D11_QUERY_OCCLUSION_PREDICATE doesn't work on Intel Gen12.
+    DAWN_SUPPRESS_TEST_IF(IsD3D11() && IsIntelGen12());
+
+    // TODO(dawn:2247): Failing on ANGLE/D3D11
+    DAWN_SUPPRESS_TEST_IF(IsANGLED3D11());
+
     constexpr uint32_t kQueryCount = 1;
 
     wgpu::QuerySet querySet = CreateOcclusionQuerySet(kQueryCount);
@@ -404,6 +431,9 @@ TEST_P(OcclusionQueryTests, RewriteNoDrawToZero) {
 // Test setting an occlusion query to non-zero, then rewriting it without drawing, resolves to 0.
 // Do the two queries+resolves in separate submits.
 TEST_P(OcclusionQueryTests, RewriteNoDrawToZeroSeparateSubmit) {
+    // TODO(dawn:1870): D3D11_QUERY_OCCLUSION_PREDICATE doesn't work on Intel Gen12.
+    DAWN_SUPPRESS_TEST_IF(IsD3D11() && IsIntelGen12());
+
     constexpr uint32_t kQueryCount = 1;
 
     wgpu::QuerySet querySet = CreateOcclusionQuerySet(kQueryCount);
@@ -444,6 +474,12 @@ TEST_P(OcclusionQueryTests, RewriteNoDrawToZeroSeparateSubmit) {
 // Test that resetting an occlusion query to zero works when a draw is done where all primitives
 // fail the depth test.
 TEST_P(OcclusionQueryTests, RewriteToZeroWithDraw) {
+    // TODO(dawn:1870): D3D11_QUERY_OCCLUSION_PREDICATE doesn't work on Intel Gen12.
+    DAWN_SUPPRESS_TEST_IF(IsD3D11() && IsIntelGen12());
+
+    // TODO(dawn:2247): Failing on ANGLE/D3D11
+    DAWN_SUPPRESS_TEST_IF(IsANGLED3D11());
+
     constexpr uint32_t kQueryCount = 1;
 
     utils::ComboRenderPipelineDescriptor descriptor;
@@ -503,22 +539,29 @@ TEST_P(OcclusionQueryTests, RewriteToZeroWithDraw) {
 
 // Test resolving occlusion query to the destination buffer with offset
 TEST_P(OcclusionQueryTests, ResolveToBufferWithOffset) {
+    // TODO(crbug.com/dawn/2295): diagnose this failure on Pixel 6 OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsARM());
+
     constexpr uint32_t kQueryCount = 2;
 
     wgpu::QuerySet querySet = CreateOcclusionQuerySet(kQueryCount);
 
-    utils::BasicRenderPass renderPass = utils::CreateBasicRenderPass(device, kRTSize, kRTSize);
-    renderPass.renderPassInfo.occlusionQuerySet = querySet;
+    // Fill the occlusion query with some data.
+    {
+        wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
 
-    wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
-    wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&renderPass.renderPassInfo);
-    pass.SetPipeline(pipeline);
-    pass.BeginOcclusionQuery(0);
-    pass.Draw(3);
-    pass.EndOcclusionQuery();
-    pass.End();
-    wgpu::CommandBuffer commands = encoder.Finish();
-    queue.Submit(1, &commands);
+        utils::BasicRenderPass renderPass = utils::CreateBasicRenderPass(device, kRTSize, kRTSize);
+        renderPass.renderPassInfo.occlusionQuerySet = querySet;
+        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&renderPass.renderPassInfo);
+        pass.SetPipeline(pipeline);
+        pass.BeginOcclusionQuery(0);
+        pass.Draw(3);
+        pass.EndOcclusionQuery();
+        pass.End();
+
+        wgpu::CommandBuffer commands = encoder.Finish();
+        queue.Submit(1, &commands);
+    }
 
     constexpr uint64_t kBufferSize = kQueryCount * sizeof(uint64_t) + kMinDestinationOffset;
     constexpr uint64_t kCount = kQueryCount + kMinCount;
@@ -559,61 +602,18 @@ TEST_P(OcclusionQueryTests, ResolveToBufferWithOffset) {
     }
 }
 
-class PipelineStatisticsQueryTests : public QueryTests {
-  protected:
-    void SetUp() override {
-        DawnTest::SetUp();
-
-        // Skip all tests if pipeline statistics feature is not supported
-        DAWN_TEST_UNSUPPORTED_IF(!SupportsFeatures({wgpu::FeatureName::PipelineStatisticsQuery}));
-    }
-
-    std::vector<wgpu::FeatureName> GetRequiredFeatures() override {
-        std::vector<wgpu::FeatureName> requiredFeatures = {};
-        if (SupportsFeatures({wgpu::FeatureName::PipelineStatisticsQuery})) {
-            requiredFeatures.push_back(wgpu::FeatureName::PipelineStatisticsQuery);
-        }
-
-        return requiredFeatures;
-    }
-
-    wgpu::QuerySet CreateQuerySetForPipelineStatistics(
-        uint32_t queryCount,
-        std::vector<wgpu::PipelineStatisticName> pipelineStatistics = {}) {
-        wgpu::QuerySetDescriptor descriptor;
-        descriptor.count = queryCount;
-        descriptor.type = wgpu::QueryType::PipelineStatistics;
-
-        if (pipelineStatistics.size() > 0) {
-            descriptor.pipelineStatistics = pipelineStatistics.data();
-            descriptor.pipelineStatisticsCount = pipelineStatistics.size();
-        }
-        return device.CreateQuerySet(&descriptor);
-    }
-};
-
-// Test creating query set with the type of PipelineStatistics
-TEST_P(PipelineStatisticsQueryTests, QuerySetCreation) {
-    // Zero-sized query set is allowed.
-    CreateQuerySetForPipelineStatistics(0, {wgpu::PipelineStatisticName::ClipperInvocations,
-                                            wgpu::PipelineStatisticName::VertexShaderInvocations});
-
-    CreateQuerySetForPipelineStatistics(1, {wgpu::PipelineStatisticName::ClipperInvocations,
-                                            wgpu::PipelineStatisticName::VertexShaderInvocations});
-}
-
 class TimestampExpectation : public detail::Expectation {
   public:
     ~TimestampExpectation() override = default;
 
     // Expect the timestamp results are greater than 0.
     testing::AssertionResult Check(const void* data, size_t size) override {
-        ASSERT(size % sizeof(uint64_t) == 0);
+        DAWN_ASSERT(size % sizeof(uint64_t) == 0);
         const uint64_t* timestamps = static_cast<const uint64_t*>(data);
         for (size_t i = 0; i < size / sizeof(uint64_t); i++) {
             if (timestamps[i] == 0) {
                 return testing::AssertionFailure()
-                       << "Expected data[" << i << "] to be greater than 0." << std::endl;
+                       << "Expected data[" << i << "] to be greater than 0.\n";
             }
         }
 
@@ -637,7 +637,6 @@ class TimestampQueryTests : public QueryTests {
 
         wgpu::ComputePipelineDescriptor csDesc;
         csDesc.compute.module = module;
-        csDesc.compute.entryPoint = "main";
         computePipeline = device.CreateComputePipeline(&csDesc);
     }
 
@@ -682,13 +681,11 @@ class TimestampQueryTests : public QueryTests {
         return device.CreateRenderPipeline(&descriptor);
     }
 
-    void EncodeComputeTimestampWrites(
-        const wgpu::CommandEncoder& encoder,
-        const std::vector<wgpu::ComputePassTimestampWrite>& timestampWrites,
-        bool hasPipeline = true) {
+    void EncodeComputeTimestampWrites(const wgpu::CommandEncoder& encoder,
+                                      const wgpu::ComputePassTimestampWrites& timestampWrites,
+                                      bool hasPipeline = true) {
         wgpu::ComputePassDescriptor descriptor;
-        descriptor.timestampWriteCount = timestampWrites.size();
-        descriptor.timestampWrites = timestampWrites.data();
+        descriptor.timestampWrites = &timestampWrites;
 
         wgpu::ComputePassEncoder pass = encoder.BeginComputePass(&descriptor);
         if (hasPipeline) {
@@ -698,19 +695,17 @@ class TimestampQueryTests : public QueryTests {
         pass.End();
     }
 
-    void EncodeRenderTimestampWrites(
-        const wgpu::CommandEncoder& encoder,
-        const std::vector<wgpu::RenderPassTimestampWrite>& timestampWrites,
-        bool hasPipeline = true,
-        bool hasFragmentStage = true) {
+    void EncodeRenderTimestampWrites(const wgpu::CommandEncoder& encoder,
+                                     const wgpu::RenderPassTimestampWrites& timestampWrites,
+                                     bool hasPipeline = true,
+                                     bool hasFragmentStage = true) {
         wgpu::Texture depthTexture = CreateRenderTexture(kDepthStencilFormat);
         utils::ComboRenderPassDescriptor renderPassDesc =
             hasFragmentStage
                 ? utils::ComboRenderPassDescriptor({CreateRenderTexture(kColorFormat).CreateView()})
                 : utils::ComboRenderPassDescriptor(
                       {}, CreateRenderTexture(kDepthStencilFormat).CreateView());
-        renderPassDesc.timestampWriteCount = timestampWrites.size();
-        renderPassDesc.timestampWrites = timestampWrites.data();
+        renderPassDesc.timestampWrites = &timestampWrites;
 
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&renderPassDesc);
         if (hasPipeline) {
@@ -722,10 +717,14 @@ class TimestampQueryTests : public QueryTests {
     }
 
     void TestTimestampWritesOnComputePass(
-        const std::vector<wgpu::ComputePassTimestampWrite>& timestampWrites,
-        const std::vector<wgpu::ComputePassTimestampWrite>& timestampWritesOnAnotherPass = {},
+        const wgpu::ComputePassTimestampWrites& timestampWrites,
+        const wgpu::ComputePassTimestampWrites& timestampWritesOnAnotherPass = {},
         bool hasPipeline = true) {
-        size_t queryCount = timestampWrites.size() + timestampWritesOnAnotherPass.size();
+        bool hasAnotherPass =
+            timestampWritesOnAnotherPass.beginningOfPassWriteIndex !=
+                wgpu::kQuerySetIndexUndefined ||
+            timestampWritesOnAnotherPass.endOfPassWriteIndex != wgpu::kQuerySetIndexUndefined;
+        size_t queryCount = hasAnotherPass ? 2 : 4;
         // The destination buffer offset must be a multiple of 256.
         wgpu::Buffer destination =
             CreateResolveBuffer(queryCount * kMinDestinationOffset + sizeof(uint64_t));
@@ -734,37 +733,60 @@ class TimestampQueryTests : public QueryTests {
         EncodeComputeTimestampWrites(encoder, timestampWrites, hasPipeline);
 
         // Begin another compute pass if the timestampWritesOnAnotherPass is set.
-        if (!timestampWritesOnAnotherPass.empty()) {
+        if (hasAnotherPass) {
             EncodeComputeTimestampWrites(encoder, timestampWritesOnAnotherPass, hasPipeline);
         }
 
-        // Resolve queries one by one because the query set at the beginning of pass may be
-        // different with the one at the end of pass.
-        for (size_t i = 0; i < timestampWrites.size(); i++) {
-            encoder.ResolveQuerySet(timestampWrites[i].querySet, timestampWrites[i].queryIndex, 1,
-                                    destination, i * kMinDestinationOffset);
+        int currentOffset = 0;
+        if (timestampWrites.beginningOfPassWriteIndex != wgpu::kQuerySetIndexUndefined) {
+            encoder.ResolveQuerySet(timestampWrites.querySet,
+                                    timestampWrites.beginningOfPassWriteIndex, 1, destination,
+                                    currentOffset);
+            currentOffset += kMinDestinationOffset;
         }
-        for (size_t i = 0; i < timestampWritesOnAnotherPass.size(); i++) {
-            encoder.ResolveQuerySet(timestampWritesOnAnotherPass[i].querySet,
-                                    timestampWritesOnAnotherPass[i].queryIndex, 1, destination,
-                                    (timestampWrites.size() + i) * kMinDestinationOffset);
+        if (timestampWrites.endOfPassWriteIndex != wgpu::kQuerySetIndexUndefined) {
+            encoder.ResolveQuerySet(timestampWrites.querySet, timestampWrites.endOfPassWriteIndex,
+                                    1, destination, currentOffset);
+            currentOffset += kMinDestinationOffset;
+        }
+
+        if (hasAnotherPass) {
+            if (timestampWritesOnAnotherPass.beginningOfPassWriteIndex !=
+                wgpu::kQuerySetIndexUndefined) {
+                encoder.ResolveQuerySet(timestampWritesOnAnotherPass.querySet,
+                                        timestampWritesOnAnotherPass.beginningOfPassWriteIndex, 1,
+                                        destination, currentOffset);
+                currentOffset += kMinDestinationOffset;
+            }
+            if (timestampWritesOnAnotherPass.endOfPassWriteIndex != wgpu::kQuerySetIndexUndefined) {
+                encoder.ResolveQuerySet(timestampWritesOnAnotherPass.querySet,
+                                        timestampWritesOnAnotherPass.endOfPassWriteIndex, 1,
+                                        destination, currentOffset);
+                currentOffset += kMinDestinationOffset;
+            }
         }
 
         wgpu::CommandBuffer commands = encoder.Finish();
         queue.Submit(1, &commands);
 
-        for (size_t i = 0; i < queryCount; i++) {
+        size_t entryCount = currentOffset / kMinDestinationOffset;
+
+        for (size_t i = 0; i < entryCount; i++) {
             EXPECT_BUFFER(destination, i * kMinDestinationOffset, sizeof(uint64_t),
                           new TimestampExpectation);
         }
     }
 
     void TestTimestampWritesOnRenderPass(
-        const std::vector<wgpu::RenderPassTimestampWrite>& timestampWrites,
-        const std::vector<wgpu::RenderPassTimestampWrite>& timestampWritesOnAnotherPass = {},
+        const wgpu::RenderPassTimestampWrites& timestampWrites,
+        const wgpu::RenderPassTimestampWrites& timestampWritesOnAnotherPass = {},
         bool hasPipeline = true,
         bool hasFragmentStage = true) {
-        size_t queryCount = timestampWrites.size() + timestampWritesOnAnotherPass.size();
+        bool hasAnotherPass =
+            timestampWritesOnAnotherPass.beginningOfPassWriteIndex !=
+                wgpu::kQuerySetIndexUndefined ||
+            timestampWritesOnAnotherPass.endOfPassWriteIndex != wgpu::kQuerySetIndexUndefined;
+        size_t queryCount = hasAnotherPass ? 2 : 4;
         // The destination buffer offset must be a multiple of 256.
         wgpu::Buffer destination =
             CreateResolveBuffer(queryCount * kMinDestinationOffset + sizeof(uint64_t));
@@ -773,28 +795,46 @@ class TimestampQueryTests : public QueryTests {
         EncodeRenderTimestampWrites(encoder, timestampWrites, hasPipeline, hasFragmentStage);
 
         // Begin another render pass if the timestampWritesOnAnotherPass is set.
-        if (!timestampWritesOnAnotherPass.empty()) {
+        if (hasAnotherPass) {
             EncodeRenderTimestampWrites(encoder, timestampWritesOnAnotherPass, hasPipeline,
                                         hasFragmentStage);
         }
 
-        // Resolve queries one by one because the query set at the beginning of pass may be
-        // different with the one at the end of pass.
-        for (size_t i = 0; i < timestampWrites.size(); i++) {
-            encoder.ResolveQuerySet(timestampWrites[i].querySet, timestampWrites[i].queryIndex, 1,
-                                    destination, i * kMinDestinationOffset);
+        int currentOffset = 0;
+        if (timestampWrites.beginningOfPassWriteIndex != wgpu::kQuerySetIndexUndefined) {
+            encoder.ResolveQuerySet(timestampWrites.querySet,
+                                    timestampWrites.beginningOfPassWriteIndex, 1, destination,
+                                    currentOffset);
+            currentOffset += kMinDestinationOffset;
+        }
+        if (timestampWrites.endOfPassWriteIndex != wgpu::kQuerySetIndexUndefined) {
+            encoder.ResolveQuerySet(timestampWrites.querySet, timestampWrites.endOfPassWriteIndex,
+                                    1, destination, currentOffset);
+            currentOffset += kMinDestinationOffset;
         }
 
-        for (size_t i = 0; i < timestampWritesOnAnotherPass.size(); i++) {
-            encoder.ResolveQuerySet(timestampWritesOnAnotherPass[i].querySet,
-                                    timestampWritesOnAnotherPass[i].queryIndex, 1, destination,
-                                    (timestampWrites.size() + i) * kMinDestinationOffset);
+        if (hasAnotherPass) {
+            if (timestampWritesOnAnotherPass.beginningOfPassWriteIndex !=
+                wgpu::kQuerySetIndexUndefined) {
+                encoder.ResolveQuerySet(timestampWritesOnAnotherPass.querySet,
+                                        timestampWritesOnAnotherPass.beginningOfPassWriteIndex, 1,
+                                        destination, currentOffset);
+                currentOffset += kMinDestinationOffset;
+            }
+            if (timestampWritesOnAnotherPass.endOfPassWriteIndex != wgpu::kQuerySetIndexUndefined) {
+                encoder.ResolveQuerySet(timestampWritesOnAnotherPass.querySet,
+                                        timestampWritesOnAnotherPass.endOfPassWriteIndex, 1,
+                                        destination, currentOffset);
+                currentOffset += kMinDestinationOffset;
+            }
         }
 
         wgpu::CommandBuffer commands = encoder.Finish();
         queue.Submit(1, &commands);
 
-        for (size_t i = 0; i < queryCount; i++) {
+        size_t entryCount = currentOffset / kMinDestinationOffset;
+
+        for (size_t i = 0; i < entryCount; i++) {
             EXPECT_BUFFER(destination, i * kMinDestinationOffset, sizeof(uint64_t),
                           new TimestampExpectation);
         }
@@ -858,41 +898,18 @@ TEST_P(TimestampQueryTests, TimestampWritesQuerySetOnComputePass) {
     wgpu::QuerySet querySet0 = CreateQuerySetForTimestamp(1);
     wgpu::QuerySet querySet1 = CreateQuerySetForTimestamp(1);
 
-    TestTimestampWritesOnComputePass({{querySet0, 0, wgpu::ComputePassTimestampLocation::Beginning},
-                                      {querySet1, 0, wgpu::ComputePassTimestampLocation::End}});
+    TestTimestampWritesOnComputePass({querySet0, 0, wgpu::kQuerySetIndexUndefined},
+                                     {querySet1, wgpu::kQuerySetIndexUndefined, 0});
 }
 
 // Test timestampWrites with query index in compute pass descriptor
 TEST_P(TimestampQueryTests, TimestampWritesQueryIndexOnComputePass) {
-    constexpr uint32_t kQueryCount = 2;
+    // Set timestampWrites with different query indexes and locations, not need test write same
+    // query index due to it's not allowed on compute pass.
+    wgpu::QuerySet querySet = CreateQuerySetForTimestamp(2);
 
-    // Set timestampWrites with different query indexes on same compute pass
-    {
-        wgpu::QuerySet querySet = CreateQuerySetForTimestamp(kQueryCount);
-
-        TestTimestampWritesOnComputePass(
-            {{querySet, 0, wgpu::ComputePassTimestampLocation::Beginning},
-             {querySet, 1, wgpu::ComputePassTimestampLocation::End}});
-    }
-
-    // Set timestampWrites with same query index on same compute pass
-    {
-        wgpu::QuerySet querySet = CreateQuerySetForTimestamp(kQueryCount);
-
-        TestTimestampWritesOnComputePass(
-            {{querySet, 0, wgpu::ComputePassTimestampLocation::Beginning},
-             {querySet, 0, wgpu::ComputePassTimestampLocation::End}});
-    }
-
-    // Set timestampWrites with same query indexes on different compute pass
-    {
-        wgpu::QuerySet querySet0 = CreateQuerySetForTimestamp(kQueryCount);
-        wgpu::QuerySet querySet1 = CreateQuerySetForTimestamp(kQueryCount);
-
-        TestTimestampWritesOnComputePass(
-            {{querySet0, 0, wgpu::ComputePassTimestampLocation::Beginning}},
-            {{querySet1, 0, wgpu::ComputePassTimestampLocation::End}});
-    }
+    TestTimestampWritesOnComputePass({querySet, 0, wgpu::kQuerySetIndexUndefined},
+                                     {querySet, wgpu::kQuerySetIndexUndefined, 1});
 }
 
 // Test timestampWrites with timestamp location in compute pass descriptor
@@ -903,10 +920,9 @@ TEST_P(TimestampQueryTests, TimestampWritesLocationOnComputePass) {
     {
         wgpu::QuerySet querySet = CreateQuerySetForTimestamp(kQueryCount);
 
-        TestTimestampWritesOnComputePass(
-            {{querySet, 0, wgpu::ComputePassTimestampLocation::Beginning}});
+        TestTimestampWritesOnComputePass({querySet, 0, wgpu::kQuerySetIndexUndefined});
 
-        TestTimestampWritesOnComputePass({{querySet, 1, wgpu::ComputePassTimestampLocation::End}});
+        TestTimestampWritesOnComputePass({querySet, wgpu::kQuerySetIndexUndefined, 1});
     }
 
     // Set timestampWrites with same location on different compute pass
@@ -914,9 +930,8 @@ TEST_P(TimestampQueryTests, TimestampWritesLocationOnComputePass) {
         wgpu::QuerySet querySet0 = CreateQuerySetForTimestamp(1);
         wgpu::QuerySet querySet1 = CreateQuerySetForTimestamp(1);
 
-        TestTimestampWritesOnComputePass(
-            {{querySet0, 0, wgpu::ComputePassTimestampLocation::Beginning}},
-            {{querySet1, 0, wgpu::ComputePassTimestampLocation::Beginning}});
+        TestTimestampWritesOnComputePass({querySet0, 0, wgpu::kQuerySetIndexUndefined},
+                                         {querySet1, 0, wgpu::kQuerySetIndexUndefined});
     }
 }
 
@@ -928,9 +943,7 @@ TEST_P(TimestampQueryTests, TimestampWritesOnComputePassWithNoPipline) {
 
     wgpu::QuerySet querySet = CreateQuerySetForTimestamp(2);
 
-    TestTimestampWritesOnComputePass({{querySet, 0, wgpu::ComputePassTimestampLocation::Beginning},
-                                      {querySet, 1, wgpu::ComputePassTimestampLocation::End}},
-                                     {}, false);
+    TestTimestampWritesOnComputePass({querySet, 0, 1}, {}, false);
 }
 
 // Test timestampWrites with query set in render pass descriptor
@@ -942,18 +955,18 @@ TEST_P(TimestampQueryTests, TimestampWritesQuerySetOnRenderPass) {
     wgpu::QuerySet querySet0 = CreateQuerySetForTimestamp(1);
     wgpu::QuerySet querySet1 = CreateQuerySetForTimestamp(1);
 
-    TestTimestampWritesOnRenderPass({{querySet0, 0, wgpu::RenderPassTimestampLocation::Beginning},
-                                     {querySet1, 0, wgpu::RenderPassTimestampLocation::End}});
+    TestTimestampWritesOnRenderPass({querySet0, 0, wgpu::kQuerySetIndexUndefined},
+                                    {querySet1, 0, wgpu::kQuerySetIndexUndefined});
 }
 
-// Test timestampWrites with query index in compute pass descriptor
+// Test timestampWrites with query index in render pass descriptor
 TEST_P(TimestampQueryTests, TimestampWritesQueryIndexOnRenderPass) {
     // Set timestampWrites with different query indexes and locations, not need test write same
     // query index due to it's not allowed on render pass.
     wgpu::QuerySet querySet = CreateQuerySetForTimestamp(2);
 
-    TestTimestampWritesOnRenderPass({{querySet, 0, wgpu::RenderPassTimestampLocation::Beginning},
-                                     {querySet, 1, wgpu::RenderPassTimestampLocation::End}});
+    TestTimestampWritesOnRenderPass({querySet, 0, wgpu::kQuerySetIndexUndefined},
+                                    {querySet, wgpu::kQuerySetIndexUndefined, 1});
 }
 
 // Test timestampWrites with timestamp location in render pass descriptor
@@ -962,10 +975,9 @@ TEST_P(TimestampQueryTests, TimestampWritesLocationOnRenderPass) {
     {
         wgpu::QuerySet querySet = CreateQuerySetForTimestamp(2);
 
-        TestTimestampWritesOnRenderPass(
-            {{querySet, 0, wgpu::RenderPassTimestampLocation::Beginning}});
+        TestTimestampWritesOnRenderPass({querySet, 0, wgpu::kQuerySetIndexUndefined});
 
-        TestTimestampWritesOnRenderPass({{querySet, 1, wgpu::RenderPassTimestampLocation::End}});
+        TestTimestampWritesOnRenderPass({querySet, wgpu::kQuerySetIndexUndefined, 1});
     }
 
     // Set timestampWrites with same location on different render pass
@@ -973,18 +985,15 @@ TEST_P(TimestampQueryTests, TimestampWritesLocationOnRenderPass) {
         wgpu::QuerySet querySet0 = CreateQuerySetForTimestamp(1);
         wgpu::QuerySet querySet1 = CreateQuerySetForTimestamp(1);
 
-        TestTimestampWritesOnRenderPass(
-            {{querySet0, 0, wgpu::RenderPassTimestampLocation::Beginning}},
-            {{querySet1, 0, wgpu::RenderPassTimestampLocation::Beginning}});
+        TestTimestampWritesOnRenderPass({querySet0, 0, wgpu::kQuerySetIndexUndefined},
+                                        {querySet1, 0, wgpu::kQuerySetIndexUndefined});
     }
 }
 
 // Test timestampWrites on render pass without pipeline
 TEST_P(TimestampQueryTests, TimestampWritesOnRenderPassWithNoPipline) {
     wgpu::QuerySet querySet = CreateQuerySetForTimestamp(2);
-    TestTimestampWritesOnRenderPass({{querySet, 0, wgpu::RenderPassTimestampLocation::Beginning},
-                                     {querySet, 1, wgpu::RenderPassTimestampLocation::End}},
-                                    {}, false);
+    TestTimestampWritesOnRenderPass({querySet, 0, 1}, {}, false);
 }
 
 // Test timestampWrites on render pass with pipeline but no fragment stage
@@ -992,9 +1001,7 @@ TEST_P(TimestampQueryTests, TimestampWritesOnRenderPassWithOnlyVertexStage) {
     DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("use_placeholder_fragment_in_vertex_only_pipeline"));
 
     wgpu::QuerySet querySet = CreateQuerySetForTimestamp(2);
-    TestTimestampWritesOnRenderPass({{querySet, 0, wgpu::RenderPassTimestampLocation::Beginning},
-                                     {querySet, 1, wgpu::RenderPassTimestampLocation::End}},
-                                    {}, true, false);
+    TestTimestampWritesOnRenderPass({querySet, 0, 1}, {}, true, false);
 }
 
 // Test resolving timestamp query from another different encoder
@@ -1111,10 +1118,6 @@ TEST_P(TimestampQueryTests, ResolveToBufferWithOffset) {
 // Test resolving a query set twice into the same destination buffer with potentially overlapping
 // ranges
 TEST_P(TimestampQueryTests, ResolveTwiceToSameBuffer) {
-    // TODO(dawn:1546): Intel D3D driver regression on Gen12 GPUs. The compute shader in two
-    // ResolveQuerySet execute wrong.
-    DAWN_SUPPRESS_TEST_IF(IsD3D12() && IsIntelGen12());
-
     constexpr uint32_t kQueryCount = kMinCount + 2;
 
     wgpu::QuerySet querySet = CreateQuerySetForTimestamp(kQueryCount);
@@ -1135,6 +1138,9 @@ TEST_P(TimestampQueryTests, ResolveTwiceToSameBuffer) {
 // Test calling WriteTimestamp many times into separate query sets.
 // Regression test for crbug.com/dawn/1603.
 TEST_P(TimestampQueryTests, ManyWriteTimestampDistinctQuerySets) {
+    // TODO(crbug.com/dawn/1829): Avoid OOM on Apple GPUs.
+    DAWN_SUPPRESS_TEST_IF(IsApple());
+
     constexpr uint32_t kQueryCount = 100;
     // Write timestamp with a different query sets many times
     for (uint32_t i = 0; i < kQueryCount; ++i) {
@@ -1159,16 +1165,17 @@ class TimestampQueryInsidePassesTests : public TimestampQueryTests {
 
         // Skip all tests if timestamp feature is not supported
         DAWN_TEST_UNSUPPORTED_IF(
-            !SupportsFeatures({wgpu::FeatureName::TimestampQueryInsidePasses}));
+            !SupportsFeatures({wgpu::FeatureName::ChromiumExperimentalTimestampQueryInsidePasses}));
     }
 
     std::vector<wgpu::FeatureName> GetRequiredFeatures() override {
         std::vector<wgpu::FeatureName> requiredFeatures = {};
-        if (SupportsFeatures({wgpu::FeatureName::TimestampQueryInsidePasses})) {
-            requiredFeatures.push_back(wgpu::FeatureName::TimestampQueryInsidePasses);
-            // The timestamp query feature must be supported if the timestamp query inside passes
-            // feature is supported. Enable timestamp query for testing queries overwrite inside and
-            // outside of the passes.
+        if (SupportsFeatures({wgpu::FeatureName::ChromiumExperimentalTimestampQueryInsidePasses})) {
+            requiredFeatures.push_back(
+                wgpu::FeatureName::ChromiumExperimentalTimestampQueryInsidePasses);
+            // The timestamp query feature must be supported if the chromium experimental timestamp
+            // query inside passes feature is supported. Enable timestamp query for testing queries
+            // overwrite inside and outside of the passes.
             requiredFeatures.push_back(wgpu::FeatureName::TimestampQuery);
         }
         return requiredFeatures;
@@ -1222,6 +1229,9 @@ TEST_P(TimestampQueryInsidePassesTests, FromOnRenderPass) {
 
 // Test calling timestamp query from compute pass encoder
 TEST_P(TimestampQueryInsidePassesTests, FromComputePass) {
+    // TODO(crbug.com/dawn/1852): Flaky negative timestamps on Mac AMD.
+    DAWN_SUPPRESS_TEST_IF(IsMacOS() && IsMetal() && IsAMD());
+
     constexpr uint32_t kQueryCount = 2;
 
     // Write timestamp with different query indexes
@@ -1284,25 +1294,27 @@ TEST_P(TimestampQueryInsidePassesTests, FromComputePass) {
 }
 
 DAWN_INSTANTIATE_TEST(OcclusionQueryTests,
+                      D3D11Backend(),
                       D3D12Backend(),
                       MetalBackend(),
                       MetalBackend({"metal_fill_empty_occlusion_queries_with_zero"}),
-                      VulkanBackend());
-DAWN_INSTANTIATE_TEST(PipelineStatisticsQueryTests,
-                      D3D12Backend(),
-                      MetalBackend(),
                       OpenGLBackend(),
                       OpenGLESBackend(),
                       VulkanBackend());
 DAWN_INSTANTIATE_TEST(TimestampQueryTests,
+                      D3D11Backend(),
                       D3D12Backend(),
                       MetalBackend(),
                       OpenGLBackend(),
                       OpenGLESBackend(),
                       VulkanBackend());
 DAWN_INSTANTIATE_TEST(TimestampQueryInsidePassesTests,
+                      D3D11Backend(),
                       D3D12Backend(),
                       MetalBackend(),
                       OpenGLBackend(),
                       OpenGLESBackend(),
                       VulkanBackend());
+
+}  // anonymous namespace
+}  // namespace dawn

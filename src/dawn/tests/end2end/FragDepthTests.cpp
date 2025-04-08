@@ -1,20 +1,36 @@
-// Copyright 2022 The Dawn Authors
+// Copyright 2022 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/tests/DawnTest.h"
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
+
+namespace dawn {
+namespace {
 
 constexpr wgpu::TextureFormat kDepthFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -22,9 +38,6 @@ class FragDepthTests : public DawnTest {};
 
 // Test that when writing to FragDepth the result is clamped to the viewport.
 TEST_P(FragDepthTests, FragDepthIsClampedToViewport) {
-    // TODO(dawn:1125): Add the shader transform to clamp the frag depth to the GL backend.
-    DAWN_SUPPRESS_TEST_IF(IsOpenGL() || IsOpenGLES());
-
     wgpu::ShaderModule module = utils::CreateShaderModule(device, R"(
         @vertex fn vs() -> @builtin(position) vec4f {
             return vec4f(0.0, 0.0, 0.5, 1.0);
@@ -38,14 +51,12 @@ TEST_P(FragDepthTests, FragDepthIsClampedToViewport) {
     // Create the pipeline that uses frag_depth to output the depth.
     utils::ComboRenderPipelineDescriptor pDesc;
     pDesc.vertex.module = module;
-    pDesc.vertex.entryPoint = "vs";
     pDesc.primitive.topology = wgpu::PrimitiveTopology::PointList;
     pDesc.cFragment.module = module;
-    pDesc.cFragment.entryPoint = "fs";
     pDesc.cFragment.targetCount = 0;
 
     wgpu::DepthStencilState* pDescDS = pDesc.EnableDepthStencil(kDepthFormat);
-    pDescDS->depthWriteEnabled = true;
+    pDescDS->depthWriteEnabled = wgpu::OptionalBool::True;
     pDescDS->depthCompare = wgpu::CompareFunction::Always;
     wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&pDesc);
 
@@ -77,8 +88,11 @@ TEST_P(FragDepthTests, FragDepthIsClampedToViewport) {
 // Test for the push constant logic for ClampFragDepth in Vulkan to check that changing the
 // pipeline layout doesn't invalidate the push constants that were set.
 TEST_P(FragDepthTests, ChangingPipelineLayoutDoesntInvalidateViewport) {
-    // TODO(dawn:1125): Add the shader transform to clamp the frag depth to the GL backend.
-    DAWN_SUPPRESS_TEST_IF(IsOpenGL() || IsOpenGLES());
+    // TODO(dawn:1805): Load ByteAddressBuffer in Pixel Shader doesn't work with NVIDIA on D3D11
+    DAWN_SUPPRESS_TEST_IF(IsD3D11() && IsNvidia());
+
+    // TODO(dawn:2393): ANGLE/D3D11 fails in HLSL shader compilation (UAV vs PS register bug)
+    DAWN_SUPPRESS_TEST_IF(IsANGLED3D11());
 
     wgpu::ShaderModule module = utils::CreateShaderModule(device, R"(
         @vertex fn vs() -> @builtin(position) vec4f {
@@ -99,14 +113,13 @@ TEST_P(FragDepthTests, ChangingPipelineLayoutDoesntInvalidateViewport) {
     // Create the pipeline and bindgroup for the pipeline layout with a uniform buffer.
     utils::ComboRenderPipelineDescriptor upDesc;
     upDesc.vertex.module = module;
-    upDesc.vertex.entryPoint = "vs";
     upDesc.primitive.topology = wgpu::PrimitiveTopology::PointList;
     upDesc.cFragment.module = module;
     upDesc.cFragment.entryPoint = "fsUniform";
     upDesc.cFragment.targetCount = 0;
 
     wgpu::DepthStencilState* upDescDS = upDesc.EnableDepthStencil(kDepthFormat);
-    upDescDS->depthWriteEnabled = true;
+    upDescDS->depthWriteEnabled = wgpu::OptionalBool::True;
     upDescDS->depthCompare = wgpu::CompareFunction::Always;
     wgpu::RenderPipeline uniformPipeline = device.CreateRenderPipeline(&upDesc);
 
@@ -118,14 +131,13 @@ TEST_P(FragDepthTests, ChangingPipelineLayoutDoesntInvalidateViewport) {
     // Create the pipeline and bindgroup for the pipeline layout with a uniform buffer.
     utils::ComboRenderPipelineDescriptor spDesc;
     spDesc.vertex.module = module;
-    spDesc.vertex.entryPoint = "vs";
     spDesc.primitive.topology = wgpu::PrimitiveTopology::PointList;
     spDesc.cFragment.module = module;
     spDesc.cFragment.entryPoint = "fsStorage";
     spDesc.cFragment.targetCount = 0;
 
     wgpu::DepthStencilState* spDescDS = spDesc.EnableDepthStencil(kDepthFormat);
-    spDescDS->depthWriteEnabled = true;
+    spDescDS->depthWriteEnabled = wgpu::OptionalBool::True;
     spDescDS->depthCompare = wgpu::CompareFunction::Always;
     wgpu::RenderPipeline storagePipeline = device.CreateRenderPipeline(&spDesc);
 
@@ -186,14 +198,12 @@ TEST_P(FragDepthTests, RasterizationClipBeforeFS) {
     // Create the pipeline and bindgroup for the pipeline layout with a uniform buffer.
     utils::ComboRenderPipelineDescriptor pDesc;
     pDesc.vertex.module = module;
-    pDesc.vertex.entryPoint = "vs";
     pDesc.primitive.topology = wgpu::PrimitiveTopology::PointList;
     pDesc.cFragment.module = module;
-    pDesc.cFragment.entryPoint = "fs";
     pDesc.cFragment.targetCount = 0;
 
     wgpu::DepthStencilState* pDescDS = pDesc.EnableDepthStencil(kDepthFormat);
-    pDescDS->depthWriteEnabled = true;
+    pDescDS->depthWriteEnabled = wgpu::OptionalBool::True;
     pDescDS->depthCompare = wgpu::CompareFunction::Always;
     wgpu::RenderPipeline uniformPipeline = device.CreateRenderPipeline(&pDesc);
 
@@ -224,8 +234,12 @@ TEST_P(FragDepthTests, RasterizationClipBeforeFS) {
 }
 
 DAWN_INSTANTIATE_TEST(FragDepthTests,
+                      D3D11Backend(),
                       D3D12Backend(),
                       MetalBackend(),
                       OpenGLBackend(),
                       OpenGLESBackend(),
                       VulkanBackend());
+
+}  // anonymous namespace
+}  // namespace dawn

@@ -1,33 +1,85 @@
-// Copyright 2023 The Dawn Authors
+// Copyright 2023 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/tests/unittests/native/mocks/DawnMockTest.h"
 
+#include <utility>
+
 #include "dawn/dawn_proc.h"
+#include "dawn/native/ChainUtils.h"
 
 namespace dawn::native {
 
-DawnMockTest::DawnMockTest() {
-    dawnProcSetProcs(&dawn::native::GetProcs());
+DawnMockTest::DawnMockTest() : mDeviceToggles(ToggleStage::Device) {}
 
-    mDeviceMock = new ::testing::NiceMock<DeviceMock>();
-    device = wgpu::Device::Acquire(ToAPI(mDeviceMock));
+void DawnMockTest::SetUp() {
+    dawnProcSetProcs(&dawn::native::GetProcs());
+    Ref<InstanceBase> instance = APICreateInstance(nullptr);
+    const auto& adapters = instance->EnumerateAdapters();
+    DAWN_ASSERT(!adapters.empty());
+
+    auto result = ValidateAndUnpack(&mDeviceDescriptor);
+    DAWN_ASSERT(result.IsSuccess());
+    UnpackedPtr<DeviceDescriptor> packedDeviceDescriptor = result.AcquireSuccess();
+
+    Ref<DeviceBase::DeviceLostEvent> lostEvent =
+        DeviceBase::DeviceLostEvent::Create(&mDeviceDescriptor);
+
+    auto deviceMock = AcquireRef(new ::testing::NiceMock<DeviceMock>(
+        adapters[0].Get(), packedDeviceDescriptor, mDeviceToggles, std::move(lostEvent)));
+    mDeviceMock = deviceMock.Get();
+    device = wgpu::Device::Acquire(ToAPI(ReturnToAPI<DeviceBase>(std::move(deviceMock))));
+}
+
+void DawnMockTest::DropDevice() {
+    if (device == nullptr) {
+        return;
+    }
+
+    // Since the device owns the instance in these tests, we need to explicitly verify that the
+    // instance has completed all work. To do this, we take an additional ref to the instance here
+    // and use it to process events until completion after dropping the device.
+    Ref<InstanceBase> instance = mDeviceMock->GetInstance();
+
+    mDeviceMock = nullptr;
+    device = nullptr;
+
+    do {
+    } while (instance->ProcessEvents());
+    instance = nullptr;
 }
 
 DawnMockTest::~DawnMockTest() {
-    device = wgpu::Device();
+    DropDevice();
     dawnProcSetProcs(nullptr);
+}
+
+void DawnMockTest::ProcessEvents() {
+    mDeviceMock->GetInstance()->ProcessEvents();
 }
 
 }  // namespace dawn::native

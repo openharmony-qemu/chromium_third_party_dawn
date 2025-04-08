@@ -36,12 +36,13 @@ fi
 GOROOT="$(cd .. && pwd)"
 
 gettargets() {
-	../bin/go tool dist list | sed -e 's|/|-|'
+	../bin/go tool dist list | sed -e 's|/|-|' |
+		egrep -v '^(android|ios)' # need C toolchain even for cross-compiling
 	echo linux-arm-arm5
 }
 
 selectedtargets() {
-	gettargets | egrep "$pattern"
+	gettargets | grep -E "$pattern"
 }
 
 # put linux first in the target list to get all the architectures up front.

@@ -1,31 +1,47 @@
-// Copyright 2017 The Dawn Authors
+// Copyright 2017 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #ifndef SRC_DAWN_TESTS_UNITTESTS_VALIDATION_VALIDATIONTEST_H_
 #define SRC_DAWN_TESTS_UNITTESTS_VALIDATION_VALIDATIONTEST_H_
 
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
+#include <webgpu/webgpu_cpp.h>
+
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "dawn/common/Log.h"
+#include "dawn/native/BindGroupLayout.h"
 #include "dawn/native/DawnNative.h"
-#include "dawn/webgpu_cpp.h"
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 
 // Argument helpers to allow macro overriding.
-#define UNIMPLEMENTED_MACRO(...) UNREACHABLE()
+#define UNIMPLEMENTED_MACRO(...) DAWN_UNREACHABLE()
 #define GET_3RD_ARG_HELPER_(_1, _2, NAME, ...) NAME
 #define GET_3RD_ARG_(args) GET_3RD_ARG_HELPER_ args
 
@@ -76,22 +92,36 @@
         }                                                       \
     } while (0)
 
-#define EXPECT_DEPRECATION_WARNINGS(statement, n)                                                  \
-    do {                                                                                           \
-        FlushWire();                                                                               \
-        size_t warningsBefore = dawn::native::GetDeprecationWarningCountForTesting(backendDevice); \
-        EXPECT_EQ(mLastWarningCount, warningsBefore);                                              \
-        statement;                                                                                 \
-        FlushWire();                                                                               \
-        size_t warningsAfter = dawn::native::GetDeprecationWarningCountForTesting(backendDevice);  \
-        EXPECT_EQ(warningsAfter, warningsBefore + n);                                              \
-        mLastWarningCount = warningsAfter;                                                         \
+#define EXPECT_DEPRECATION_WARNINGS(statement, n)                          \
+    do {                                                                   \
+        FlushWire();                                                       \
+        uint64_t warningsBefore = GetInstanceDeprecationCountForTesting(); \
+        EXPECT_EQ(mLastWarningCount, warningsBefore);                      \
+        statement;                                                         \
+        FlushWire();                                                       \
+        uint64_t warningsAfter = GetInstanceDeprecationCountForTesting();  \
+        EXPECT_EQ(warningsAfter, warningsBefore + n);                      \
+        mLastWarningCount = warningsAfter;                                 \
     } while (0)
 #define EXPECT_DEPRECATION_WARNING(statement) EXPECT_DEPRECATION_WARNINGS(statement, 1)
 
-namespace utils {
+// Gmock matcher helpers that may be used throughout other tests.
+
+// BindGroupLayouts can either be cache equivalent meaning that they may have different
+// compatibility tokens but same internal layout, or fully equivalent meaning that they have the
+// same token and internal layout. Note that being fully equivalent implies that they are cache
+// equivalent.
+MATCHER_P(BindGroupLayoutCacheEq, other, "") {
+    return dawn::native::FromAPI(arg.Get())->GetInternalBindGroupLayout() ==
+           dawn::native::FromAPI(other.Get())->GetInternalBindGroupLayout();
+}
+MATCHER_P(BindGroupLayoutEq, other, "") {
+    return dawn::native::FromAPI(arg.Get())->IsLayoutEqual(dawn::native::FromAPI(other.Get()));
+}
+
+namespace dawn::utils {
 class WireHelper;
-}  // namespace utils
+}  // namespace dawn::utils
 
 void InitDawnValidationTestEnvironment(int argc, char** argv);
 
@@ -100,6 +130,8 @@ class ValidationTest : public testing::Test {
     ValidationTest();
     ~ValidationTest() override;
 
+    // The default setup initializes the Instance with AllowUnsafeAPIs enabled and additional
+    // toggles and features via the getters enabled/disabled on the device.
     void SetUp() override;
     void TearDown() override;
 
@@ -113,7 +145,7 @@ class ValidationTest : public testing::Test {
     bool UsesWire() const;
 
     void FlushWire();
-    void WaitForAllOperations(const wgpu::Device& device);
+    void WaitForAllOperations();
 
     // Helper functions to create objects to test validation.
 
@@ -132,28 +164,44 @@ class ValidationTest : public testing::Test {
     const dawn::native::ToggleInfo* GetToggleInfo(const char* name) const;
     bool HasToggleEnabled(const char* toggle) const;
     wgpu::SupportedLimits GetSupportedLimits() const;
+    dawn::utils::WireHelper* GetWireHelper() const;
 
   protected:
     dawn::native::Adapter& GetBackendAdapter();
-    virtual WGPUDevice CreateTestDevice(dawn::native::Adapter dawnAdapter);
 
+    // Called during SetUp() to get the required features and toggles to be enabled for the tests.
+    // Override these appropriately for different tests.
+    virtual bool AllowUnsafeAPIs();
+    virtual std::vector<wgpu::FeatureName> GetRequiredFeatures();
+    virtual std::vector<const char*> GetEnabledToggles();
+    virtual std::vector<const char*> GetDisabledToggles();
+
+    // Sets up the internal members by initializing the instances, adapter, and device.
+    void SetUp(const wgpu::InstanceDescriptor* nativeDesc,
+               const wgpu::InstanceDescriptor* wireDesc = nullptr);
+
+    uint64_t GetInstanceDeprecationCountForTesting();
+    // Helps compute expected deprecated warning count for creating device with given descriptor.
+    uint32_t GetDeviceCreationDeprecationWarningExpectation(
+        const wgpu::DeviceDescriptor& descriptor);
+    // Request device and handle deprecation warning emitted during creating device.
     wgpu::Device RequestDeviceSync(const wgpu::DeviceDescriptor& deviceDesc);
+
+    virtual bool UseCompatibilityMode() const;
 
     wgpu::Device device;
     wgpu::Adapter adapter;
     WGPUDevice backendDevice;
+    wgpu::Instance instance;
 
-    size_t mLastWarningCount = 0;
+    uint64_t mLastWarningCount = 0;
 
   private:
     std::unique_ptr<dawn::native::Instance> mDawnInstance;
-    wgpu::Instance mInstance;
     dawn::native::Adapter mBackendAdapter;
-    std::unique_ptr<utils::WireHelper> mWireHelper;
+    std::unique_ptr<dawn::utils::WireHelper> mWireHelper;
     WGPUDevice mLastCreatedBackendDevice;
 
-    static void OnDeviceError(WGPUErrorType type, const char* message, void* userdata);
-    static void OnDeviceLost(WGPUDeviceLostReason reason, const char* message, void* userdata);
     std::string mDeviceErrorMessage;
     bool mExpectError = false;
     bool mError = false;

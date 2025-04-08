@@ -145,6 +145,19 @@ start:
 	SRLW	X5, X6, X7				// bb535300
 	SUBW	X5, X6, X7				// bb035340
 	SRAW	X5, X6, X7				// bb535340
+	ADDIW	$1, X6					// 1b031300
+	SLLIW	$1, X6					// 1b131300
+	SRLIW	$1, X6					// 1b531300
+	SRAIW	$1, X6					// 1b531340
+	ADDW	X5, X7					// bb835300
+	SLLW	X5, X7					// bb935300
+	SRLW	X5, X7					// bbd35300
+	SUBW	X5, X7					// bb835340
+	SRAW	X5, X7					// bbd35340
+	ADDW	$1, X6					// 1b031300
+	SLLW	$1, X6					// 1b131300
+	SRLW	$1, X6					// 1b531300
+	SRAW	$1, X6					// 1b531340
 
 	// 5.3: Load and Store Instructions (RV64I)
 	LD	(X5), X6				// 03b30200
@@ -170,28 +183,28 @@ start:
 	// 8.2: Load-Reserved/Store-Conditional
 	LRW	(X5), X6				// 2fa30214
 	LRD	(X5), X6				// 2fb30214
-	SCW	X5, (X6), X7				// af23531c
-	SCD	X5, (X6), X7				// af33531c
+	SCW	X5, (X6), X7				// af23531a
+	SCD	X5, (X6), X7				// af33531a
 
 	// 8.3: Atomic Memory Operations
-	AMOSWAPW	X5, (X6), X7			// af23530c
-	AMOSWAPD	X5, (X6), X7			// af33530c
-	AMOADDW		X5, (X6), X7			// af235304
-	AMOADDD		X5, (X6), X7			// af335304
-	AMOANDW		X5, (X6), X7			// af235364
-	AMOANDD		X5, (X6), X7			// af335364
-	AMOORW		X5, (X6), X7			// af235344
-	AMOORD		X5, (X6), X7			// af335344
-	AMOXORW		X5, (X6), X7			// af235324
-	AMOXORD		X5, (X6), X7			// af335324
-	AMOMAXW		X5, (X6), X7			// af2353a4
-	AMOMAXD		X5, (X6), X7			// af3353a4
-	AMOMAXUW	X5, (X6), X7			// af2353e4
-	AMOMAXUD	X5, (X6), X7			// af3353e4
-	AMOMINW		X5, (X6), X7			// af235384
-	AMOMIND		X5, (X6), X7			// af335384
-	AMOMINUW	X5, (X6), X7			// af2353c4
-	AMOMINUD	X5, (X6), X7			// af3353c4
+	AMOSWAPW	X5, (X6), X7			// af23530e
+	AMOSWAPD	X5, (X6), X7			// af33530e
+	AMOADDW		X5, (X6), X7			// af235306
+	AMOADDD		X5, (X6), X7			// af335306
+	AMOANDW		X5, (X6), X7			// af235366
+	AMOANDD		X5, (X6), X7			// af335366
+	AMOORW		X5, (X6), X7			// af235346
+	AMOORD		X5, (X6), X7			// af335346
+	AMOXORW		X5, (X6), X7			// af235326
+	AMOXORD		X5, (X6), X7			// af335326
+	AMOMAXW		X5, (X6), X7			// af2353a6
+	AMOMAXD		X5, (X6), X7			// af3353a6
+	AMOMAXUW	X5, (X6), X7			// af2353e6
+	AMOMAXUD	X5, (X6), X7			// af3353e6
+	AMOMINW		X5, (X6), X7			// af235386
+	AMOMIND		X5, (X6), X7			// af335386
+	AMOMINUW	X5, (X6), X7			// af2353c6
+	AMOMINUD	X5, (X6), X7			// af3353c6
 
 	// 10.1: Base Counters and Timers
 	RDCYCLE		X5				// f32200c0
@@ -305,7 +318,9 @@ start:
 	MOV	$-2147483647, X5			// b70200809b821200
 
 	// Converted to load of symbol (AUIPC + LD)
-	MOV	$4294967296, X5				// 9702000083b20200
+	MOV	$4294967295, X5				// 9702000083b20200
+	// Converted to MOV $1, X5 + SLLI $32, X5
+	MOV	$4294967296, X5				// 9302100093920202
 
 	MOV	(X5), X6				// 03b30200
 	MOV	4(X5), X6				// 03b34200

@@ -1,20 +1,34 @@
-// Copyright 2020 The Dawn Authors
+// Copyright 2020 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/tests/unittests/wire/WireTest.h"
 
 namespace dawn::wire {
+namespace {
 
 using testing::_;
 using testing::Invoke;
@@ -30,156 +44,128 @@ class WireExtensionTests : public WireTest {
 
 // Serialize/Deserializes a chained struct correctly.
 TEST_F(WireExtensionTests, ChainedStruct) {
-    WGPUShaderModuleDescriptor shaderModuleDesc = {};
+    wgpu::ShaderModuleDescriptor shaderModuleDesc = {};
+    wgpu::ShaderSourceWGSL clientExt = {};
+    shaderModuleDesc.nextInChain = &clientExt;
+    clientExt.code = {"/* comment */", WGPU_STRLEN};
+
     WGPUShaderModule apiShaderModule = api.GetNewShaderModule();
-    WGPUShaderModule shaderModule = wgpuDeviceCreateShaderModule(device, &shaderModuleDesc);
-    EXPECT_CALL(api, DeviceCreateShaderModule(apiDevice, _)).WillOnce(Return(apiShaderModule));
-    FlushClient();
-
-    WGPUPrimitiveDepthClipControl clientExt = {};
-    clientExt.chain.sType = WGPUSType_PrimitiveDepthClipControl;
-    clientExt.chain.next = nullptr;
-    clientExt.unclippedDepth = true;
-
-    WGPURenderPipelineDescriptor renderPipelineDesc = {};
-    renderPipelineDesc.vertex.module = shaderModule;
-    renderPipelineDesc.vertex.entryPoint = "main";
-    renderPipelineDesc.primitive.nextInChain = &clientExt.chain;
-
-    wgpuDeviceCreateRenderPipeline(device, &renderPipelineDesc);
-    EXPECT_CALL(api, DeviceCreateRenderPipeline(apiDevice, NotNull()))
-        .WillOnce(Invoke(
-            [&](Unused, const WGPURenderPipelineDescriptor* serverDesc) -> WGPURenderPipeline {
-                const auto* ext = reinterpret_cast<const WGPUPrimitiveDepthClipControl*>(
-                    serverDesc->primitive.nextInChain);
-                EXPECT_EQ(ext->chain.sType, clientExt.chain.sType);
-                EXPECT_EQ(ext->unclippedDepth, true);
+    wgpu::ShaderModule shaderModule = device.CreateShaderModule(&shaderModuleDesc);
+    EXPECT_CALL(api, DeviceCreateShaderModule(apiDevice, _))
+        .WillOnce(
+            Invoke([&](Unused, const WGPUShaderModuleDescriptor* serverDesc) -> WGPUShaderModule {
+                const auto* ext =
+                    reinterpret_cast<const WGPUShaderSourceWGSL*>(serverDesc->nextInChain);
+                EXPECT_EQ(ext->chain.sType, WGPUSType_ShaderSourceWGSL);
+                EXPECT_NE(ext->code.length, WGPU_STRLEN) << "The wire should decay WGPU_STRLEN";
+                EXPECT_EQ(0, memcmp(ext->code.data, clientExt.code.data, ext->code.length));
+                EXPECT_EQ(ext->code.length, strlen(clientExt.code.data));
                 EXPECT_EQ(ext->chain.next, nullptr);
 
-                return api.GetNewRenderPipeline();
+                return apiShaderModule;
             }));
     FlushClient();
 }
 
 // Serialize/Deserializes multiple chained structs correctly.
-TEST_F(WireExtensionTests, MutlipleChainedStructs) {
-    WGPUShaderModuleDescriptor shaderModuleDesc = {};
+TEST_F(WireExtensionTests, MultipleChainedStructs) {
+    wgpu::ShaderModuleDescriptor shaderModuleDesc = {};
+
+    wgpu::ShaderSourceWGSL clientExt2 = {};
+    clientExt2.code = {"/* comment 2 */", WGPU_STRLEN};
+
+    wgpu::ShaderSourceWGSL clientExt1 = {};
+    clientExt1.code = {"/* comment 1 */", WGPU_STRLEN};
+    clientExt1.nextInChain = &clientExt2;
+    shaderModuleDesc.nextInChain = &clientExt1;
+
     WGPUShaderModule apiShaderModule = api.GetNewShaderModule();
-    WGPUShaderModule shaderModule = wgpuDeviceCreateShaderModule(device, &shaderModuleDesc);
-    EXPECT_CALL(api, DeviceCreateShaderModule(apiDevice, _)).WillOnce(Return(apiShaderModule));
-    FlushClient();
+    wgpu::ShaderModule shaderModule1 = device.CreateShaderModule(&shaderModuleDesc);
+    EXPECT_CALL(api, DeviceCreateShaderModule(apiDevice, _))
+        .WillOnce(
+            Invoke([&](Unused, const WGPUShaderModuleDescriptor* serverDesc) -> WGPUShaderModule {
+                const auto* ext1 =
+                    reinterpret_cast<const WGPUShaderSourceWGSL*>(serverDesc->nextInChain);
+                EXPECT_EQ(ext1->chain.sType, WGPUSType_ShaderSourceWGSL);
+                EXPECT_NE(ext1->code.length, WGPU_STRLEN) << "The wire should decay WGPU_STRLEN";
+                EXPECT_EQ(0, memcmp(ext1->code.data, clientExt1.code.data, ext1->code.length));
+                EXPECT_EQ(ext1->code.length, strlen(clientExt1.code.data));
 
-    WGPUPrimitiveDepthClipControl clientExt2 = {};
-    clientExt2.chain.sType = WGPUSType_PrimitiveDepthClipControl;
-    clientExt2.chain.next = nullptr;
-    clientExt2.unclippedDepth = false;
-
-    WGPUPrimitiveDepthClipControl clientExt1 = {};
-    clientExt1.chain.sType = WGPUSType_PrimitiveDepthClipControl;
-    clientExt1.chain.next = &clientExt2.chain;
-    clientExt1.unclippedDepth = true;
-
-    WGPURenderPipelineDescriptor renderPipelineDesc = {};
-    renderPipelineDesc.vertex.module = shaderModule;
-    renderPipelineDesc.vertex.entryPoint = "main";
-    renderPipelineDesc.primitive.nextInChain = &clientExt1.chain;
-
-    wgpuDeviceCreateRenderPipeline(device, &renderPipelineDesc);
-    EXPECT_CALL(api, DeviceCreateRenderPipeline(apiDevice, NotNull()))
-        .WillOnce(Invoke(
-            [&](Unused, const WGPURenderPipelineDescriptor* serverDesc) -> WGPURenderPipeline {
-                const auto* ext1 = reinterpret_cast<const WGPUPrimitiveDepthClipControl*>(
-                    serverDesc->primitive.nextInChain);
-                EXPECT_EQ(ext1->chain.sType, clientExt1.chain.sType);
-                EXPECT_EQ(ext1->unclippedDepth, true);
-
-                const auto* ext2 =
-                    reinterpret_cast<const WGPUPrimitiveDepthClipControl*>(ext1->chain.next);
-                EXPECT_EQ(ext2->chain.sType, clientExt2.chain.sType);
-                EXPECT_EQ(ext2->unclippedDepth, false);
+                const auto* ext2 = reinterpret_cast<const WGPUShaderSourceWGSL*>(ext1->chain.next);
+                EXPECT_EQ(ext2->chain.sType, WGPUSType_ShaderSourceWGSL);
+                EXPECT_NE(ext2->code.length, WGPU_STRLEN) << "The wire should decay WGPU_STRLEN";
+                EXPECT_EQ(0, memcmp(ext2->code.data, clientExt2.code.data, ext2->code.length));
+                EXPECT_EQ(ext2->code.length, strlen(clientExt2.code.data));
                 EXPECT_EQ(ext2->chain.next, nullptr);
 
-                return api.GetNewRenderPipeline();
+                return apiShaderModule;
             }));
     FlushClient();
 
     // Swap the order of the chained structs.
-    renderPipelineDesc.primitive.nextInChain = &clientExt2.chain;
-    clientExt2.chain.next = &clientExt1.chain;
-    clientExt1.chain.next = nullptr;
+    shaderModuleDesc.nextInChain = &clientExt2;
+    clientExt2.nextInChain = &clientExt1;
+    clientExt1.nextInChain = nullptr;
 
-    wgpuDeviceCreateRenderPipeline(device, &renderPipelineDesc);
-    EXPECT_CALL(api, DeviceCreateRenderPipeline(apiDevice, NotNull()))
-        .WillOnce(Invoke(
-            [&](Unused, const WGPURenderPipelineDescriptor* serverDesc) -> WGPURenderPipeline {
-                const auto* ext2 = reinterpret_cast<const WGPUPrimitiveDepthClipControl*>(
-                    serverDesc->primitive.nextInChain);
-                EXPECT_EQ(ext2->chain.sType, clientExt2.chain.sType);
-                EXPECT_EQ(ext2->unclippedDepth, false);
+    wgpu::ShaderModule shaderModule2 = device.CreateShaderModule(&shaderModuleDesc);
+    EXPECT_CALL(api, DeviceCreateShaderModule(apiDevice, _))
+        .WillOnce(
+            Invoke([&](Unused, const WGPUShaderModuleDescriptor* serverDesc) -> WGPUShaderModule {
+                const auto* ext2 =
+                    reinterpret_cast<const WGPUShaderSourceWGSL*>(serverDesc->nextInChain);
+                EXPECT_EQ(ext2->chain.sType, WGPUSType_ShaderSourceWGSL);
+                EXPECT_NE(ext2->code.length, WGPU_STRLEN) << "The wire should decay WGPU_STRLEN";
+                EXPECT_EQ(0, memcmp(ext2->code.data, clientExt2.code.data, ext2->code.length));
+                EXPECT_EQ(ext2->code.length, strlen(clientExt2.code.data));
 
-                const auto* ext1 =
-                    reinterpret_cast<const WGPUPrimitiveDepthClipControl*>(ext2->chain.next);
-                EXPECT_EQ(ext1->chain.sType, clientExt1.chain.sType);
-                EXPECT_EQ(ext1->unclippedDepth, true);
+                const auto* ext1 = reinterpret_cast<const WGPUShaderSourceWGSL*>(ext2->chain.next);
+                EXPECT_EQ(ext1->chain.sType, WGPUSType_ShaderSourceWGSL);
+                EXPECT_NE(ext1->code.length, WGPU_STRLEN) << "The wire should decay WGPU_STRLEN";
+                EXPECT_EQ(0, memcmp(ext1->code.data, clientExt1.code.data, ext1->code.length));
+                EXPECT_EQ(ext1->code.length, strlen(clientExt1.code.data));
                 EXPECT_EQ(ext1->chain.next, nullptr);
 
-                return api.GetNewRenderPipeline();
+                return apiShaderModule;
             }));
     FlushClient();
 }
 
 // Test that a chained struct with Invalid sType passes through as Invalid.
 TEST_F(WireExtensionTests, InvalidSType) {
-    WGPUShaderModuleDescriptor shaderModuleDesc = {};
+    wgpu::ShaderModuleDescriptor shaderModuleDesc = {};
+    wgpu::ShaderSourceWGSL clientExt = {};
+    shaderModuleDesc.nextInChain = &clientExt;
+    clientExt.sType = wgpu::SType(0);
+
     WGPUShaderModule apiShaderModule = api.GetNewShaderModule();
-    WGPUShaderModule shaderModule = wgpuDeviceCreateShaderModule(device, &shaderModuleDesc);
-    EXPECT_CALL(api, DeviceCreateShaderModule(apiDevice, _)).WillOnce(Return(apiShaderModule));
-    FlushClient();
+    wgpu::ShaderModule shaderModule = device.CreateShaderModule(&shaderModuleDesc);
+    EXPECT_CALL(api, DeviceCreateShaderModule(apiDevice, _))
+        .WillOnce(
+            Invoke([&](Unused, const WGPUShaderModuleDescriptor* serverDesc) -> WGPUShaderModule {
+                EXPECT_EQ(serverDesc->nextInChain->sType, WGPUSType(0));
+                EXPECT_EQ(serverDesc->nextInChain->next, nullptr);
 
-    WGPUPrimitiveDepthClipControl clientExt = {};
-    clientExt.chain.sType = WGPUSType_Invalid;
-    clientExt.chain.next = nullptr;
-
-    WGPURenderPipelineDescriptor renderPipelineDesc = {};
-    renderPipelineDesc.vertex.module = shaderModule;
-    renderPipelineDesc.vertex.entryPoint = "main";
-    renderPipelineDesc.primitive.nextInChain = &clientExt.chain;
-
-    wgpuDeviceCreateRenderPipeline(device, &renderPipelineDesc);
-    EXPECT_CALL(api, DeviceCreateRenderPipeline(apiDevice, NotNull()))
-        .WillOnce(Invoke(
-            [&](Unused, const WGPURenderPipelineDescriptor* serverDesc) -> WGPURenderPipeline {
-                EXPECT_EQ(serverDesc->primitive.nextInChain->sType, WGPUSType_Invalid);
-                EXPECT_EQ(serverDesc->primitive.nextInChain->next, nullptr);
-                return api.GetNewRenderPipeline();
+                return apiShaderModule;
             }));
     FlushClient();
 }
 
 // Test that a chained struct with unknown sType passes through as Invalid.
 TEST_F(WireExtensionTests, UnknownSType) {
-    WGPUShaderModuleDescriptor shaderModuleDesc = {};
+    wgpu::ShaderModuleDescriptor shaderModuleDesc = {};
+    wgpu::ShaderSourceWGSL clientExt = {};
+    shaderModuleDesc.nextInChain = &clientExt;
+    clientExt.sType = static_cast<wgpu::SType>(-1);
+
     WGPUShaderModule apiShaderModule = api.GetNewShaderModule();
-    WGPUShaderModule shaderModule = wgpuDeviceCreateShaderModule(device, &shaderModuleDesc);
-    EXPECT_CALL(api, DeviceCreateShaderModule(apiDevice, _)).WillOnce(Return(apiShaderModule));
-    FlushClient();
+    wgpu::ShaderModule shaderModule = device.CreateShaderModule(&shaderModuleDesc);
+    EXPECT_CALL(api, DeviceCreateShaderModule(apiDevice, _))
+        .WillOnce(
+            Invoke([&](Unused, const WGPUShaderModuleDescriptor* serverDesc) -> WGPUShaderModule {
+                EXPECT_EQ(serverDesc->nextInChain->sType, WGPUSType(0));
+                EXPECT_EQ(serverDesc->nextInChain->next, nullptr);
 
-    WGPUPrimitiveDepthClipControl clientExt = {};
-    clientExt.chain.sType = static_cast<WGPUSType>(-1);
-    clientExt.chain.next = nullptr;
-
-    WGPURenderPipelineDescriptor renderPipelineDesc = {};
-    renderPipelineDesc.vertex.module = shaderModule;
-    renderPipelineDesc.vertex.entryPoint = "main";
-    renderPipelineDesc.primitive.nextInChain = &clientExt.chain;
-
-    wgpuDeviceCreateRenderPipeline(device, &renderPipelineDesc);
-    EXPECT_CALL(api, DeviceCreateRenderPipeline(apiDevice, NotNull()))
-        .WillOnce(Invoke(
-            [&](Unused, const WGPURenderPipelineDescriptor* serverDesc) -> WGPURenderPipeline {
-                EXPECT_EQ(serverDesc->primitive.nextInChain->sType, WGPUSType_Invalid);
-                EXPECT_EQ(serverDesc->primitive.nextInChain->next, nullptr);
-                return api.GetNewRenderPipeline();
+                return apiShaderModule;
             }));
     FlushClient();
 }
@@ -188,60 +174,59 @@ TEST_F(WireExtensionTests, UnknownSType) {
 // sType passes through as Invalid.
 TEST_F(WireExtensionTests, ValidAndInvalidSTypeInChain) {
     WGPUShaderModuleDescriptor shaderModuleDesc = {};
-    WGPUShaderModule apiShaderModule = api.GetNewShaderModule();
-    WGPUShaderModule shaderModule = wgpuDeviceCreateShaderModule(device, &shaderModuleDesc);
-    EXPECT_CALL(api, DeviceCreateShaderModule(apiDevice, _)).WillOnce(Return(apiShaderModule));
-    FlushClient();
 
-    WGPUPrimitiveDepthClipControl clientExt2 = {};
-    clientExt2.chain.sType = WGPUSType_Invalid;
+    WGPUShaderSourceWGSL clientExt2 = {};
+    clientExt2.chain.sType = WGPUSType(0);
     clientExt2.chain.next = nullptr;
 
-    WGPUPrimitiveDepthClipControl clientExt1 = {};
-    clientExt1.chain.sType = WGPUSType_PrimitiveDepthClipControl;
+    WGPUShaderSourceWGSL clientExt1 = {};
+    clientExt1.chain.sType = WGPUSType_ShaderSourceWGSL;
     clientExt1.chain.next = &clientExt2.chain;
-    clientExt1.unclippedDepth = true;
+    clientExt1.code = {"/* comment 1 */", WGPU_STRLEN};
+    shaderModuleDesc.nextInChain = &clientExt1.chain;
 
-    WGPURenderPipelineDescriptor renderPipelineDesc = {};
-    renderPipelineDesc.vertex.module = shaderModule;
-    renderPipelineDesc.vertex.entryPoint = "main";
-    renderPipelineDesc.primitive.nextInChain = &clientExt1.chain;
-
-    wgpuDeviceCreateRenderPipeline(device, &renderPipelineDesc);
-    EXPECT_CALL(api, DeviceCreateRenderPipeline(apiDevice, NotNull()))
-        .WillOnce(Invoke(
-            [&](Unused, const WGPURenderPipelineDescriptor* serverDesc) -> WGPURenderPipeline {
-                const auto* ext = reinterpret_cast<const WGPUPrimitiveDepthClipControl*>(
-                    serverDesc->primitive.nextInChain);
+    WGPUShaderModule apiShaderModule = api.GetNewShaderModule();
+    wgpu::ShaderModule shaderModule1 = wgpuDeviceCreateShaderModule(cDevice, &shaderModuleDesc);
+    EXPECT_CALL(api, DeviceCreateShaderModule(apiDevice, _))
+        .WillOnce(
+            Invoke([&](Unused, const WGPUShaderModuleDescriptor* serverDesc) -> WGPUShaderModule {
+                const auto* ext =
+                    reinterpret_cast<const WGPUShaderSourceWGSL*>(serverDesc->nextInChain);
                 EXPECT_EQ(ext->chain.sType, clientExt1.chain.sType);
-                EXPECT_EQ(ext->unclippedDepth, true);
+                EXPECT_NE(ext->code.length, WGPU_STRLEN) << "The wire should decay WGPU_STRLEN";
+                EXPECT_EQ(0, memcmp(ext->code.data, clientExt1.code.data, ext->code.length));
+                EXPECT_EQ(ext->code.length, strlen(clientExt1.code.data));
 
-                EXPECT_EQ(ext->chain.next->sType, WGPUSType_Invalid);
+                EXPECT_EQ(ext->chain.next->sType, WGPUSType(0));
                 EXPECT_EQ(ext->chain.next->next, nullptr);
-                return api.GetNewRenderPipeline();
+
+                return apiShaderModule;
             }));
     FlushClient();
 
     // Swap the order of the chained structs.
-    renderPipelineDesc.primitive.nextInChain = &clientExt2.chain;
+    shaderModuleDesc.nextInChain = &clientExt2.chain;
     clientExt2.chain.next = &clientExt1.chain;
     clientExt1.chain.next = nullptr;
 
-    wgpuDeviceCreateRenderPipeline(device, &renderPipelineDesc);
-    EXPECT_CALL(api, DeviceCreateRenderPipeline(apiDevice, NotNull()))
-        .WillOnce(Invoke(
-            [&](Unused, const WGPURenderPipelineDescriptor* serverDesc) -> WGPURenderPipeline {
-                EXPECT_EQ(serverDesc->primitive.nextInChain->sType, WGPUSType_Invalid);
+    wgpu::ShaderModule shaderModule2 = wgpuDeviceCreateShaderModule(cDevice, &shaderModuleDesc);
+    EXPECT_CALL(api, DeviceCreateShaderModule(apiDevice, _))
+        .WillOnce(
+            Invoke([&](Unused, const WGPUShaderModuleDescriptor* serverDesc) -> WGPUShaderModule {
+                EXPECT_EQ(serverDesc->nextInChain->sType, WGPUSType(0));
 
-                const auto* ext = reinterpret_cast<const WGPUPrimitiveDepthClipControl*>(
-                    serverDesc->primitive.nextInChain->next);
+                const auto* ext =
+                    reinterpret_cast<const WGPUShaderSourceWGSL*>(serverDesc->nextInChain->next);
                 EXPECT_EQ(ext->chain.sType, clientExt1.chain.sType);
-                EXPECT_EQ(ext->unclippedDepth, true);
+                EXPECT_NE(ext->code.length, WGPU_STRLEN) << "The wire should decay WGPU_STRLEN";
+                EXPECT_EQ(0, memcmp(ext->code.data, clientExt1.code.data, ext->code.length));
+                EXPECT_EQ(ext->code.length, strlen(clientExt1.code.data));
                 EXPECT_EQ(ext->chain.next, nullptr);
 
-                return api.GetNewRenderPipeline();
+                return apiShaderModule;
             }));
     FlushClient();
 }
 
+}  // anonymous namespace
 }  // namespace dawn::wire

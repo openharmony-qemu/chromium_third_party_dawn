@@ -1,16 +1,29 @@
-// Copyright 2017 The Dawn Authors
+// Copyright 2017 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/utils/WGPUHelpers.h"
 
@@ -28,18 +41,7 @@
 #include "spirv-tools/optimizer.hpp"
 #endif
 
-namespace {
-std::array<float, 12> kYuvToRGBMatrixBT709 = {1.164384f, 0.0f,       1.792741f,  -0.972945f,
-                                              1.164384f, -0.213249f, -0.532909f, 0.301483f,
-                                              1.164384f, 2.112402f,  0.0f,       -1.133402f};
-std::array<float, 9> kGamutConversionMatrixBT709ToSrgb = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-                                                          0.0f, 0.0f, 0.0f, 1.0f};
-std::array<float, 7> kGammaDecodeBT709 = {2.2, 1.0 / 1.099, 0.099 / 1.099, 1 / 4.5, 0.081,
-                                          0.0, 0.0};
-std::array<float, 7> kGammaEncodeSrgb = {1 / 2.4, 1.137119, 0.0, 12.92, 0.0031308, -0.055, 0.0};
-}  // namespace
-
-namespace utils {
+namespace dawn::utils {
 #if TINT_BUILD_SPV_READER
 wgpu::ShaderModule CreateShaderModuleFromASM(
     const wgpu::Device& device,
@@ -51,15 +53,15 @@ wgpu::ShaderModule CreateShaderModuleFromASM(
     wgpu::ShaderModule result = nullptr;
 
     spv_context context = spvContextCreate(SPV_ENV_UNIVERSAL_1_3);
-    ASSERT(context != nullptr);
+    DAWN_ASSERT(context != nullptr);
 
     spv_binary spirv = nullptr;
     spv_diagnostic diagnostic = nullptr;
     if (spvTextToBinary(context, source, strlen(source), &spirv, &diagnostic) == SPV_SUCCESS) {
-        ASSERT(spirv != nullptr);
-        ASSERT(spirv->wordCount <= std::numeric_limits<uint32_t>::max());
+        DAWN_ASSERT(spirv != nullptr);
+        DAWN_ASSERT(spirv->wordCount <= std::numeric_limits<uint32_t>::max());
 
-        wgpu::ShaderModuleSPIRVDescriptor spirvDesc;
+        wgpu::ShaderSourceSPIRV spirvDesc;
         spirvDesc.codeSize = static_cast<uint32_t>(spirv->wordCount);
         spirvDesc.code = spirv->code;
         spirvDesc.nextInChain = spirv_options;
@@ -68,7 +70,7 @@ wgpu::ShaderModule CreateShaderModuleFromASM(
         descriptor.nextInChain = &spirvDesc;
         result = device.CreateShaderModule(&descriptor);
     } else {
-        ASSERT(diagnostic != nullptr);
+        DAWN_ASSERT(diagnostic != nullptr);
         dawn::WarningLog() << "CreateShaderModuleFromASM SPIRV assembly error:"
                            << diagnostic->position.line + 1 << ":"
                            << diagnostic->position.column + 1 << ": " << diagnostic->error;
@@ -83,11 +85,15 @@ wgpu::ShaderModule CreateShaderModuleFromASM(
 #endif
 
 wgpu::ShaderModule CreateShaderModule(const wgpu::Device& device, const char* source) {
-    wgpu::ShaderModuleWGSLDescriptor wgslDesc;
-    wgslDesc.source = source;
+    wgpu::ShaderSourceWGSL wgslDesc;
+    wgslDesc.code = source;
     wgpu::ShaderModuleDescriptor descriptor;
     descriptor.nextInChain = &wgslDesc;
     return device.CreateShaderModule(&descriptor);
+}
+
+wgpu::ShaderModule CreateShaderModule(const wgpu::Device& device, const std::string& source) {
+    return CreateShaderModule(device, source.c_str());
 }
 
 wgpu::Buffer CreateBufferFromData(const wgpu::Device& device,
@@ -119,7 +125,7 @@ ComboRenderPassDescriptor::ComboRenderPassDescriptor(
     cDepthStencilAttachmentInfo.stencilLoadOp = wgpu::LoadOp::Clear;
     cDepthStencilAttachmentInfo.stencilStoreOp = wgpu::StoreOp::Store;
 
-    colorAttachmentCount = static_cast<uint32_t>(colorAttachmentInfo.size());
+    colorAttachmentCount = colorAttachmentInfo.size();
     uint32_t colorAttachmentIndex = 0;
     for (const wgpu::TextureView& colorAttachment : colorAttachmentInfo) {
         if (colorAttachment.Get() != nullptr) {
@@ -211,7 +217,7 @@ BasicRenderPass CreateBasicRenderPass(const wgpu::Device& device,
     descriptor.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc;
     wgpu::Texture color = device.CreateTexture(&descriptor);
 
-    return BasicRenderPass(width, height, color);
+    return BasicRenderPass(width, height, color, format);
 }
 
 wgpu::ImageCopyBuffer CreateImageCopyBuffer(wgpu::Buffer buffer,
@@ -279,7 +285,7 @@ wgpu::BindGroupLayout MakeBindGroupLayout(
     }
 
     wgpu::BindGroupLayoutDescriptor descriptor;
-    descriptor.entryCount = static_cast<uint32_t>(entries.size());
+    descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
     return device.CreateBindGroupLayout(&descriptor);
 }
@@ -332,6 +338,7 @@ BindingLayoutEntryInitializationHelper::BindingLayoutEntryInitializationHelper(
     storageTexture.viewDimension = textureViewDimension;
 }
 
+#ifndef __EMSCRIPTEN__
 // ExternalTextureBindingLayout never contains data, so just make one that can be reused instead
 // of declaring a new one every time it's needed.
 wgpu::ExternalTextureBindingLayout kExternalTextureBindingLayout = {};
@@ -345,6 +352,14 @@ BindingLayoutEntryInitializationHelper::BindingLayoutEntryInitializationHelper(
     nextInChain = bindingLayout;
 }
 
+BindingInitializationHelper::BindingInitializationHelper(
+    uint32_t binding,
+    const wgpu::ExternalTexture& externalTexture)
+    : binding(binding) {
+    externalTextureBindingEntry.externalTexture = externalTexture;
+}
+#endif  // __EMSCRIPTEN__
+
 BindingLayoutEntryInitializationHelper::BindingLayoutEntryInitializationHelper(
     const wgpu::BindGroupLayoutEntry& entry)
     : wgpu::BindGroupLayoutEntry(entry) {}
@@ -356,13 +371,6 @@ BindingInitializationHelper::BindingInitializationHelper(uint32_t binding,
 BindingInitializationHelper::BindingInitializationHelper(uint32_t binding,
                                                          const wgpu::TextureView& textureView)
     : binding(binding), textureView(textureView) {}
-
-BindingInitializationHelper::BindingInitializationHelper(
-    uint32_t binding,
-    const wgpu::ExternalTexture& externalTexture)
-    : binding(binding) {
-    externalTextureBindingEntry.externalTexture = externalTexture;
-}
 
 BindingInitializationHelper::BindingInitializationHelper(uint32_t binding,
                                                          const wgpu::Buffer& buffer,
@@ -384,9 +392,11 @@ wgpu::BindGroupEntry BindingInitializationHelper::GetAsBinding() const {
     result.buffer = buffer;
     result.offset = offset;
     result.size = size;
+#ifndef __EMSCRIPTEN__
     if (externalTextureBindingEntry.externalTexture != nullptr) {
         result.nextInChain = &externalTextureBindingEntry;
     }
+#endif  // __EMSCRIPTEN__
 
     return result;
 }
@@ -410,12 +420,57 @@ wgpu::BindGroup MakeBindGroup(
 
 ColorSpaceConversionInfo GetYUVBT709ToRGBSRGBColorSpaceConversionInfo() {
     ColorSpaceConversionInfo info;
-    info.yuvToRgbConversionMatrix = kYuvToRGBMatrixBT709;
-    info.gamutConversionMatrix = kGamutConversionMatrixBT709ToSrgb;
-    info.srcTransferFunctionParameters = kGammaDecodeBT709;
-    info.dstTransferFunctionParameters = kGammaEncodeSrgb;
+    info.yuvToRgbConversionMatrix = {1.164384f, 0.0f,       1.792741f,  -0.972945f,
+                                     1.164384f, -0.213249f, -0.532909f, 0.301483f,
+                                     1.164384f, 2.112402f,  0.0f,       -1.133402f};
+    info.gamutConversionMatrix = {1.0f, 0.0f, 0.0f,  //
+                                  0.0f, 1.0f, 0.0f,  //
+                                  0.0f, 0.0f, 1.0f};
+    info.srcTransferFunctionParameters = {2.2, 1.0 / 1.099, 0.099 / 1.099, 1 / 4.5, 0.081,
+                                          0.0, 0.0};
+    info.dstTransferFunctionParameters = {1 / 2.4, 1.137119, 0.0, 12.92, 0.0031308, -0.055, 0.0};
+    return info;
+}
+
+ColorSpaceConversionInfo GetNoopRGBColorSpaceConversionInfo() {
+    ColorSpaceConversionInfo info;
+
+    // YUV to RGB is not used as the data is RGB.
+    info.yuvToRgbConversionMatrix = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    // Identity gamut conversion matrix.
+    info.gamutConversionMatrix = {1.0f, 0.0f, 0.0f,  //
+                                  0.0f, 1.0f, 0.0f,  //
+                                  0.0f, 0.0f, 1.0f};
+
+    // Set A = G = 1 and everything else to 0 to turn the code below into pow(x, 1) which is x
+    //
+    //    if (abs(v) < params.D) {
+    //        return sign(v) * (params.C * abs(v) + params.F);
+    //    }
+    //    return pow(A * x + B, G) + E
+    //
+    // Note that for some reason the order of the data is G A B C D E F
+    info.srcTransferFunctionParameters = {1, 1, 0, 0, 0, 0, 0};
+    info.dstTransferFunctionParameters = {1, 1, 0, 0, 0, 0, 0};
 
     return info;
 }
 
-}  // namespace utils
+bool BackendRequiresCompat(wgpu::BackendType backend) {
+    switch (backend) {
+        case wgpu::BackendType::D3D12:
+        case wgpu::BackendType::Metal:
+        case wgpu::BackendType::Vulkan:
+        case wgpu::BackendType::WebGPU:
+        case wgpu::BackendType::Null:
+            return false;
+        case wgpu::BackendType::D3D11:
+        case wgpu::BackendType::OpenGL:
+        case wgpu::BackendType::OpenGLES:
+            return true;
+        case wgpu::BackendType::Undefined:
+            DAWN_UNREACHABLE();
+    }
+}
+
+}  // namespace dawn::utils

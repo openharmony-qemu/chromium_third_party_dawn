@@ -1,31 +1,44 @@
-// Copyright 2021 The Dawn Authors
+// Copyright 2021 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <utility>
 
 #include "dawn/common/Math.h"
-#include "dawn/native/vulkan/AdapterVk.h"
+#include "dawn/native/Adapter.h"
 #include "dawn/native/vulkan/DeviceVk.h"
 #include "dawn/tests/DawnTest.h"
 #include "dawn/tests/white_box/VulkanImageWrappingTests.h"
+#include "dawn/tests/white_box/VulkanImageWrappingTests_DmaBuf.h"
+#include "dawn/tests/white_box/VulkanImageWrappingTests_OpaqueFD.h"
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
+#include "partition_alloc/pointers/raw_ptr.h"
 
 namespace dawn::native::vulkan {
-
-using ExternalTexture = VulkanImageWrappingTestBackend::ExternalTexture;
-using ExternalSemaphore = VulkanImageWrappingTestBackend::ExternalSemaphore;
 
 void VulkanImageWrappingTestBackend::SetParam(
     const VulkanImageWrappingTestBackend::TestParams& params) {
@@ -38,9 +51,18 @@ const VulkanImageWrappingTestBackend::TestParams& VulkanImageWrappingTestBackend
 
 namespace {
 
+using ExternalTexture = VulkanImageWrappingTestBackend::ExternalTexture;
+using ExternalSemaphore = VulkanImageWrappingTestBackend::ExternalSemaphore;
+
 using UseDedicatedAllocation = bool;
 using DetectDedicatedAllocation = bool;
-DAWN_TEST_PARAM_STRUCT(ImageWrappingParams, UseDedicatedAllocation, DetectDedicatedAllocation);
+
+constexpr int kTestTexturesCount = 2;
+
+DAWN_TEST_PARAM_STRUCT(ImageWrappingParams,
+                       ExternalImageType,
+                       UseDedicatedAllocation,
+                       DetectDedicatedAllocation);
 
 class VulkanImageWrappingTestBase : public DawnTestWithParams<ImageWrappingParams> {
   protected:
@@ -58,9 +80,22 @@ class VulkanImageWrappingTestBase : public DawnTestWithParams<ImageWrappingParam
         DAWN_SUPPRESS_TEST_IF(IsLinux() && IsNvidia() && GetParam().mUseDedicatedAllocation &&
                               GetParam().mDetectDedicatedAllocation);
 
-        mBackend = VulkanImageWrappingTestBackend::Create(device);
+        // TODO(crbug.com/342213634): Crashes on ChromeOS volteer devices.
+        DAWN_SUPPRESS_TEST_IF(IsChromeOS() && IsIntel() && IsBackendValidationEnabled());
+
+        switch (GetParam().mExternalImageType) {
+            case ExternalImageType::OpaqueFD:
+                mBackend = CreateOpaqueFDBackend(device);
+                break;
+            case ExternalImageType::DmaBuf:
+                mBackend = CreateDMABufBackend(device);
+                break;
+            default:
+                DAWN_UNREACHABLE();
+        }
 
         VulkanImageWrappingTestBackend::TestParams params;
+        params.externalImageType = GetParam().mExternalImageType;
         params.useDedicatedAllocation = GetParam().mUseDedicatedAllocation;
         params.detectDedicatedAllocation = GetParam().mDetectDedicatedAllocation;
         DAWN_TEST_UNSUPPORTED_IF(!mBackend->SupportsTestParams(params));
@@ -74,8 +109,11 @@ class VulkanImageWrappingTestBase : public DawnTestWithParams<ImageWrappingParam
         defaultDescriptor.usage = wgpu::TextureUsage::RenderAttachment |
                                   wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst;
 
-        defaultTexture =
-            mBackend->CreateTexture(1, 1, defaultDescriptor.format, defaultDescriptor.usage);
+        for (int i = 0; i < kTestTexturesCount; ++i) {
+            testTextures[i] =
+                mBackend->CreateTexture(1, 1, defaultDescriptor.format, defaultDescriptor.usage);
+        }
+        defaultTexture = testTextures[0].get();
     }
 
     void TearDown() override {
@@ -85,8 +123,17 @@ class VulkanImageWrappingTestBase : public DawnTestWithParams<ImageWrappingParam
         }
 
         defaultTexture = nullptr;
+        testTextures = {};
         mBackend = nullptr;
         DawnTestWithParams::TearDown();
+    }
+
+    ExternalImageDescriptorVkForTesting GetExternalImageDescriptor() {
+        return ExternalImageDescriptorVkForTesting(GetParam().mExternalImageType);
+    }
+
+    ExternalImageExportInfoVkForTesting GetExternalImageExportInfo() {
+        return ExternalImageExportInfoVkForTesting(GetParam().mExternalImageType);
     }
 
     wgpu::Texture WrapVulkanImage(wgpu::Device dawnDevice,
@@ -95,7 +142,7 @@ class VulkanImageWrappingTestBase : public DawnTestWithParams<ImageWrappingParam
                                   std::vector<std::unique_ptr<ExternalSemaphore>> semaphores,
                                   bool isInitialized = true,
                                   bool expectValid = true) {
-        ExternalImageDescriptorVkForTesting descriptor;
+        ExternalImageDescriptorVkForTesting descriptor = GetExternalImageDescriptor();
         return WrapVulkanImage(dawnDevice, textureDescriptor, externalTexture,
                                std::move(semaphores), descriptor.releasedOldLayout,
                                descriptor.releasedNewLayout, isInitialized, expectValid);
@@ -109,7 +156,7 @@ class VulkanImageWrappingTestBase : public DawnTestWithParams<ImageWrappingParam
                                   VkImageLayout releasedNewLayout,
                                   bool isInitialized = true,
                                   bool expectValid = true) {
-        ExternalImageDescriptorVkForTesting descriptor;
+        ExternalImageDescriptorVkForTesting descriptor = GetExternalImageDescriptor();
         descriptor.cTextureDescriptor =
             reinterpret_cast<const WGPUTextureDescriptor*>(textureDescriptor);
         descriptor.isInitialized = isInitialized;
@@ -133,26 +180,25 @@ class VulkanImageWrappingTestBase : public DawnTestWithParams<ImageWrappingParam
     // We have to export the signal before destroying the wrapped texture else it's an
     // assertion failure
     void IgnoreSignalSemaphore(wgpu::Texture wrappedTexture) {
-        ExternalImageExportInfoVkForTesting exportInfo;
+        ExternalImageExportInfoVkForTesting exportInfo = GetExternalImageExportInfo();
         bool result = mBackend->ExportImage(wrappedTexture, &exportInfo);
-        ASSERT(result);
+        DAWN_ASSERT(result);
     }
 
   protected:
     std::unique_ptr<VulkanImageWrappingTestBackend> mBackend;
 
     wgpu::TextureDescriptor defaultDescriptor;
-    std::unique_ptr<ExternalTexture> defaultTexture;
+    std::array<std::unique_ptr<ExternalTexture>, kTestTexturesCount> testTextures;
+    raw_ptr<ExternalTexture> defaultTexture;
 };
-
-}  // namespace
 
 using VulkanImageWrappingValidationTests = VulkanImageWrappingTestBase;
 
 // Test no error occurs if the import is valid
 TEST_P(VulkanImageWrappingValidationTests, SuccessfulImport) {
     wgpu::Texture texture =
-        WrapVulkanImage(device, &defaultDescriptor, defaultTexture.get(), {}, true, true);
+        WrapVulkanImage(device, &defaultDescriptor, defaultTexture, {}, true, true);
     EXPECT_NE(texture.Get(), nullptr);
     IgnoreSignalSemaphore(texture);
 }
@@ -165,7 +211,7 @@ TEST_P(VulkanImageWrappingValidationTests, SuccessfulImportWithInternalUsageDesc
     internalDesc.sType = wgpu::SType::DawnTextureInternalUsageDescriptor;
 
     wgpu::Texture texture =
-        WrapVulkanImage(device, &defaultDescriptor, defaultTexture.get(), {}, true, true);
+        WrapVulkanImage(device, &defaultDescriptor, defaultTexture, {}, true, true);
     EXPECT_NE(texture.Get(), nullptr);
     IgnoreSignalSemaphore(texture);
 }
@@ -176,8 +222,8 @@ TEST_P(VulkanImageWrappingValidationTests, InvalidTextureDescriptor) {
     chainedDescriptor.sType = wgpu::SType::SurfaceDescriptorFromWindowsSwapChainPanel;
     defaultDescriptor.nextInChain = &chainedDescriptor;
 
-    ASSERT_DEVICE_ERROR(wgpu::Texture texture = WrapVulkanImage(
-                            device, &defaultDescriptor, defaultTexture.get(), {}, true, false));
+    ASSERT_DEVICE_ERROR(wgpu::Texture texture = WrapVulkanImage(device, &defaultDescriptor,
+                                                                defaultTexture, {}, true, false));
     EXPECT_EQ(texture.Get(), nullptr);
 }
 
@@ -185,8 +231,8 @@ TEST_P(VulkanImageWrappingValidationTests, InvalidTextureDescriptor) {
 TEST_P(VulkanImageWrappingValidationTests, InvalidTextureDimension) {
     defaultDescriptor.dimension = wgpu::TextureDimension::e1D;
 
-    ASSERT_DEVICE_ERROR(wgpu::Texture texture = WrapVulkanImage(
-                            device, &defaultDescriptor, defaultTexture.get(), {}, true, false));
+    ASSERT_DEVICE_ERROR(wgpu::Texture texture = WrapVulkanImage(device, &defaultDescriptor,
+                                                                defaultTexture, {}, true, false));
     EXPECT_EQ(texture.Get(), nullptr);
 }
 
@@ -194,8 +240,8 @@ TEST_P(VulkanImageWrappingValidationTests, InvalidTextureDimension) {
 TEST_P(VulkanImageWrappingValidationTests, InvalidMipLevelCount) {
     defaultDescriptor.mipLevelCount = 2;
 
-    ASSERT_DEVICE_ERROR(wgpu::Texture texture = WrapVulkanImage(
-                            device, &defaultDescriptor, defaultTexture.get(), {}, true, false));
+    ASSERT_DEVICE_ERROR(wgpu::Texture texture = WrapVulkanImage(device, &defaultDescriptor,
+                                                                defaultTexture, {}, true, false));
     EXPECT_EQ(texture.Get(), nullptr);
 }
 
@@ -203,8 +249,8 @@ TEST_P(VulkanImageWrappingValidationTests, InvalidMipLevelCount) {
 TEST_P(VulkanImageWrappingValidationTests, InvalidDepth) {
     defaultDescriptor.size.depthOrArrayLayers = 2;
 
-    ASSERT_DEVICE_ERROR(wgpu::Texture texture = WrapVulkanImage(
-                            device, &defaultDescriptor, defaultTexture.get(), {}, true, false));
+    ASSERT_DEVICE_ERROR(wgpu::Texture texture = WrapVulkanImage(device, &defaultDescriptor,
+                                                                defaultTexture, {}, true, false));
     EXPECT_EQ(texture.Get(), nullptr);
 }
 
@@ -212,30 +258,19 @@ TEST_P(VulkanImageWrappingValidationTests, InvalidDepth) {
 TEST_P(VulkanImageWrappingValidationTests, InvalidSampleCount) {
     defaultDescriptor.sampleCount = 4;
 
-    ASSERT_DEVICE_ERROR(wgpu::Texture texture = WrapVulkanImage(
-                            device, &defaultDescriptor, defaultTexture.get(), {}, true, false));
+    ASSERT_DEVICE_ERROR(wgpu::Texture texture = WrapVulkanImage(device, &defaultDescriptor,
+                                                                defaultTexture, {}, true, false));
     EXPECT_EQ(texture.Get(), nullptr);
 }
 
 // Test an error occurs if we try to export the signal semaphore twice
 TEST_P(VulkanImageWrappingValidationTests, DoubleSignalSemaphoreExport) {
     wgpu::Texture texture =
-        WrapVulkanImage(device, &defaultDescriptor, defaultTexture.get(), {}, true, true);
+        WrapVulkanImage(device, &defaultDescriptor, defaultTexture, {}, true, true);
     ASSERT_NE(texture.Get(), nullptr);
     IgnoreSignalSemaphore(texture);
 
-    ExternalImageExportInfoVkForTesting exportInfo;
-    ASSERT_DEVICE_ERROR(bool success = mBackend->ExportImage(texture, &exportInfo));
-    ASSERT_FALSE(success);
-    ASSERT_EQ(exportInfo.semaphores.size(), 0u);
-}
-
-// Test an error occurs if we try to export the signal semaphore from a normal texture
-TEST_P(VulkanImageWrappingValidationTests, NormalTextureSignalSemaphoreExport) {
-    wgpu::Texture texture = device.CreateTexture(&defaultDescriptor);
-    ASSERT_NE(texture.Get(), nullptr);
-
-    ExternalImageExportInfoVkForTesting exportInfo;
+    ExternalImageExportInfoVkForTesting exportInfo = GetExternalImageExportInfo();
     ASSERT_DEVICE_ERROR(bool success = mBackend->ExportImage(texture, &exportInfo));
     ASSERT_FALSE(success);
     ASSERT_EQ(exportInfo.semaphores.size(), 0u);
@@ -244,11 +279,11 @@ TEST_P(VulkanImageWrappingValidationTests, NormalTextureSignalSemaphoreExport) {
 // Test an error occurs if we try to export the signal semaphore from a destroyed texture
 TEST_P(VulkanImageWrappingValidationTests, DestroyedTextureSignalSemaphoreExport) {
     wgpu::Texture texture =
-        WrapVulkanImage(device, &defaultDescriptor, defaultTexture.get(), {}, true, true);
+        WrapVulkanImage(device, &defaultDescriptor, defaultTexture, {}, true, true);
     ASSERT_NE(texture.Get(), nullptr);
     texture.Destroy();
 
-    ExternalImageExportInfoVkForTesting exportInfo;
+    ExternalImageExportInfoVkForTesting exportInfo = GetExternalImageExportInfo();
     ASSERT_DEVICE_ERROR(bool success = mBackend->ExportImage(texture, &exportInfo));
     ASSERT_FALSE(success);
     ASSERT_EQ(exportInfo.semaphores.size(), 0u);
@@ -265,26 +300,24 @@ class VulkanImageWrappingUsageTests : public VulkanImageWrappingTestBase {
         }
 
         // Create another device based on the original
-        backendAdapter =
-            dawn::native::vulkan::ToBackend(dawn::native::FromAPI(device.Get())->GetAdapter());
+        adapterBase = native::FromAPI(device.Get())->GetAdapter();
         deviceDescriptor.nextInChain = &deviceTogglesDesc;
         deviceTogglesDesc.enabledToggles = GetParam().forceEnabledWorkarounds.data();
-        deviceTogglesDesc.enabledTogglesCount = GetParam().forceEnabledWorkarounds.size();
+        deviceTogglesDesc.enabledToggleCount = GetParam().forceEnabledWorkarounds.size();
         deviceTogglesDesc.disabledToggles = GetParam().forceDisabledWorkarounds.data();
-        deviceTogglesDesc.disabledTogglesCount = GetParam().forceDisabledWorkarounds.size();
+        deviceTogglesDesc.disabledToggleCount = GetParam().forceDisabledWorkarounds.size();
 
-        secondDeviceVk =
-            dawn::native::vulkan::ToBackend(backendAdapter->APICreateDevice(&deviceDescriptor));
-        secondDevice = wgpu::Device::Acquire(dawn::native::ToAPI(secondDeviceVk));
+        secondDeviceVk = native::vulkan::ToBackend(adapterBase->APICreateDevice(&deviceDescriptor));
+        secondDevice = wgpu::Device::Acquire(native::ToAPI(secondDeviceVk));
     }
 
   protected:
-    dawn::native::vulkan::Adapter* backendAdapter;
-    dawn::native::DeviceDescriptor deviceDescriptor;
-    dawn::native::DawnTogglesDescriptor deviceTogglesDesc;
+    raw_ptr<native::AdapterBase> adapterBase;
+    native::DeviceDescriptor deviceDescriptor;
+    native::DawnTogglesDescriptor deviceTogglesDesc;
 
     wgpu::Device secondDevice;
-    dawn::native::vulkan::Device* secondDeviceVk;
+    raw_ptr<native::vulkan::Device> secondDeviceVk;
 
     // Clear a texture on a given device
     void ClearImage(wgpu::Device dawnDevice, wgpu::Texture wrappedTexture, wgpu::Color clearColor) {
@@ -302,6 +335,31 @@ class VulkanImageWrappingUsageTests : public VulkanImageWrappingTestBase {
         wgpu::CommandBuffer commands = encoder.Finish();
 
         wgpu::Queue queue = dawnDevice.GetQueue();
+
+        queue.Submit(1, &commands);
+    }
+
+    void ClearImages(wgpu::Device dawnDevice,
+                     std::vector<wgpu::Texture> wrappedTextures,
+                     wgpu::Color clearColor) {
+        wgpu::CommandEncoder encoder = dawnDevice.CreateCommandEncoder();
+
+        for (auto wrappedTexture : wrappedTextures) {
+            wgpu::TextureView wrappedView = wrappedTexture.CreateView();
+
+            // Submit a clear operation
+            utils::ComboRenderPassDescriptor renderPassDescriptor({wrappedView}, {});
+            renderPassDescriptor.cColorAttachments[0].clearValue = clearColor;
+            renderPassDescriptor.cColorAttachments[0].loadOp = wgpu::LoadOp::Clear;
+
+            wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&renderPassDescriptor);
+            pass.End();
+        }
+
+        wgpu::CommandBuffer commands = encoder.Finish();
+
+        wgpu::Queue queue = dawnDevice.GetQueue();
+
         queue.Submit(1, &commands);
     }
 
@@ -328,18 +386,18 @@ class VulkanImageWrappingUsageTests : public VulkanImageWrappingTestBase {
 TEST_P(VulkanImageWrappingUsageTests, ClearImageAcrossDevices) {
     // Import the image on |secondDevice|
     wgpu::Texture wrappedTexture =
-        WrapVulkanImage(secondDevice, &defaultDescriptor, defaultTexture.get(), {},
+        WrapVulkanImage(secondDevice, &defaultDescriptor, defaultTexture, {},
                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
     // Clear |wrappedTexture| on |secondDevice|
     ClearImage(secondDevice, wrappedTexture, {1 / 255.0f, 2 / 255.0f, 3 / 255.0f, 4 / 255.0f});
 
-    ExternalImageExportInfoVkForTesting exportInfo;
+    ExternalImageExportInfoVkForTesting exportInfo = GetExternalImageExportInfo();
     ASSERT_TRUE(mBackend->ExportImage(wrappedTexture, &exportInfo));
 
     // Import the image to |device|, making sure we wait on signalFd
     wgpu::Texture nextWrappedTexture = WrapVulkanImage(
-        device, &defaultDescriptor, defaultTexture.get(), std::move(exportInfo.semaphores),
+        device, &defaultDescriptor, defaultTexture, std::move(exportInfo.semaphores),
         exportInfo.releasedOldLayout, exportInfo.releasedNewLayout);
 
     // Verify |device| sees the changes from |secondDevice|
@@ -348,23 +406,63 @@ TEST_P(VulkanImageWrappingUsageTests, ClearImageAcrossDevices) {
     IgnoreSignalSemaphore(nextWrappedTexture);
 }
 
+// Clear two images in |secondDevice|
+// Verify clear color is visible in |device|
+// This is intended to verify that waiting on the signalFd for one external texture does not affect
+// those of other external textures.
+TEST_P(VulkanImageWrappingUsageTests, ClearTwoImagesAcrossDevices) {
+    // TODO(crbug.com/341124484): Fails on Linux/Intel UHD 770.
+    DAWN_SUPPRESS_TEST_IF(IsLinux() && IsBackendValidationEnabled() && IsIntelGen12());
+
+    // crbug.com/358408563
+    DAWN_SUPPRESS_TEST_IF(IsLinux() && IsNvidia() && IsVulkan() && IsBackendValidationEnabled());
+
+    static_assert(kTestTexturesCount >= 2);
+
+    std::vector<wgpu::Texture> wrappedTextures;
+    for (int i = 0; i < 2; ++i) {
+        // Import the images on |secondDevice|
+        wrappedTextures.push_back(
+            WrapVulkanImage(secondDevice, &defaultDescriptor, testTextures[i].get(), {},
+                            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL));
+    }
+
+    // Clear |wrappedTextures| on |secondDevice|
+    ClearImages(secondDevice, wrappedTextures, {1 / 255.0f, 2 / 255.0f, 3 / 255.0f, 4 / 255.0f});
+
+    for (int i = 0; i < 2; ++i) {
+        ExternalImageExportInfoVkForTesting exportInfo = GetExternalImageExportInfo();
+        ASSERT_TRUE(mBackend->ExportImage(wrappedTextures[i], &exportInfo));
+
+        // Import the image to |device|, making sure we wait on signalFd
+        wgpu::Texture nextWrappedTexture = WrapVulkanImage(
+            device, &defaultDescriptor, testTextures[i].get(), std::move(exportInfo.semaphores),
+            exportInfo.releasedOldLayout, exportInfo.releasedNewLayout);
+
+        // Verify |device| sees the changes from |secondDevice|
+        EXPECT_PIXEL_RGBA8_EQ(utils::RGBA8(1, 2, 3, 4), nextWrappedTexture, 0, 0);
+
+        IgnoreSignalSemaphore(nextWrappedTexture);
+    }
+}
+
 // Clear an image in |secondDevice|
 // Verify clear color is not visible in |device| if we import the texture as not cleared
 TEST_P(VulkanImageWrappingUsageTests, UninitializedTextureIsCleared) {
     // Import the image on |secondDevice|
     wgpu::Texture wrappedTexture =
-        WrapVulkanImage(secondDevice, &defaultDescriptor, defaultTexture.get(), {},
+        WrapVulkanImage(secondDevice, &defaultDescriptor, defaultTexture, {},
                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
     // Clear |wrappedTexture| on |secondDevice|
     ClearImage(secondDevice, wrappedTexture, {1 / 255.0f, 2 / 255.0f, 3 / 255.0f, 4 / 255.0f});
 
-    ExternalImageExportInfoVkForTesting exportInfo;
+    ExternalImageExportInfoVkForTesting exportInfo = GetExternalImageExportInfo();
     ASSERT_TRUE(mBackend->ExportImage(wrappedTexture, &exportInfo));
 
     // Import the image to |device|, making sure we wait on signalFd
     wgpu::Texture nextWrappedTexture = WrapVulkanImage(
-        device, &defaultDescriptor, defaultTexture.get(), std::move(exportInfo.semaphores),
+        device, &defaultDescriptor, defaultTexture, std::move(exportInfo.semaphores),
         exportInfo.releasedOldLayout, exportInfo.releasedNewLayout, false);
 
     // Verify |device| doesn't see the changes from |secondDevice|
@@ -380,18 +478,18 @@ TEST_P(VulkanImageWrappingUsageTests, UninitializedTextureIsCleared) {
 TEST_P(VulkanImageWrappingUsageTests, CopyTextureToTextureSrcSync) {
     // Import the image on |secondDevice|
     wgpu::Texture wrappedTexture =
-        WrapVulkanImage(secondDevice, &defaultDescriptor, defaultTexture.get(), {},
+        WrapVulkanImage(secondDevice, &defaultDescriptor, defaultTexture, {},
                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
     // Clear |wrappedTexture| on |secondDevice|
     ClearImage(secondDevice, wrappedTexture, {1 / 255.0f, 2 / 255.0f, 3 / 255.0f, 4 / 255.0f});
 
-    ExternalImageExportInfoVkForTesting exportInfo;
+    ExternalImageExportInfoVkForTesting exportInfo = GetExternalImageExportInfo();
     ASSERT_TRUE(mBackend->ExportImage(wrappedTexture, &exportInfo));
 
     // Import the image to |device|, making sure we wait on |signalFd|
     wgpu::Texture deviceWrappedTexture = WrapVulkanImage(
-        device, &defaultDescriptor, defaultTexture.get(), std::move(exportInfo.semaphores),
+        device, &defaultDescriptor, defaultTexture, std::move(exportInfo.semaphores),
         exportInfo.releasedOldLayout, exportInfo.releasedNewLayout);
 
     // Create a second texture on |device|
@@ -418,18 +516,18 @@ TEST_P(VulkanImageWrappingUsageTests, CopyTextureToTextureSrcSync) {
 TEST_P(VulkanImageWrappingUsageTests, CopyTextureToTextureDstSync) {
     // Import the image on |device|
     wgpu::Texture wrappedTexture =
-        WrapVulkanImage(device, &defaultDescriptor, defaultTexture.get(), {},
-                        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        WrapVulkanImage(device, &defaultDescriptor, defaultTexture, {}, VK_IMAGE_LAYOUT_UNDEFINED,
+                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
     // Clear |wrappedTexture| on |device|
     ClearImage(device, wrappedTexture, {5 / 255.0f, 6 / 255.0f, 7 / 255.0f, 8 / 255.0f});
 
-    ExternalImageExportInfoVkForTesting exportInfo;
+    ExternalImageExportInfoVkForTesting exportInfo = GetExternalImageExportInfo();
     ASSERT_TRUE(mBackend->ExportImage(wrappedTexture, &exportInfo));
 
     // Import the image to |secondDevice|, making sure we wait on |signalFd|
     wgpu::Texture secondDeviceWrappedTexture = WrapVulkanImage(
-        secondDevice, &defaultDescriptor, defaultTexture.get(), std::move(exportInfo.semaphores),
+        secondDevice, &defaultDescriptor, defaultTexture, std::move(exportInfo.semaphores),
         exportInfo.releasedOldLayout, exportInfo.releasedNewLayout);
 
     // Create a texture with color B on |secondDevice|
@@ -442,11 +540,11 @@ TEST_P(VulkanImageWrappingUsageTests, CopyTextureToTextureDstSync) {
                                secondDeviceWrappedTexture);
 
     // Re-import back into |device|, waiting on |secondDevice|'s signal
-    ExternalImageExportInfoVkForTesting secondExportInfo;
+    ExternalImageExportInfoVkForTesting secondExportInfo = GetExternalImageExportInfo();
     ASSERT_TRUE(mBackend->ExportImage(secondDeviceWrappedTexture, &secondExportInfo));
 
     wgpu::Texture nextWrappedTexture = WrapVulkanImage(
-        device, &defaultDescriptor, defaultTexture.get(), std::move(secondExportInfo.semaphores),
+        device, &defaultDescriptor, defaultTexture, std::move(secondExportInfo.semaphores),
         secondExportInfo.releasedOldLayout, secondExportInfo.releasedNewLayout);
 
     // Verify |nextWrappedTexture| contains the color from our copy
@@ -462,18 +560,18 @@ TEST_P(VulkanImageWrappingUsageTests, CopyTextureToTextureDstSync) {
 TEST_P(VulkanImageWrappingUsageTests, CopyTextureToBufferSrcSync) {
     // Import the image on |secondDevice|
     wgpu::Texture wrappedTexture =
-        WrapVulkanImage(secondDevice, &defaultDescriptor, defaultTexture.get(), {},
+        WrapVulkanImage(secondDevice, &defaultDescriptor, defaultTexture, {},
                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
     // Clear |wrappedTexture| on |secondDevice|
     ClearImage(secondDevice, wrappedTexture, {1 / 255.0f, 2 / 255.0f, 3 / 255.0f, 4 / 255.0f});
 
-    ExternalImageExportInfoVkForTesting exportInfo;
+    ExternalImageExportInfoVkForTesting exportInfo = GetExternalImageExportInfo();
     ASSERT_TRUE(mBackend->ExportImage(wrappedTexture, &exportInfo));
 
     // Import the image to |device|, making sure we wait on |signalFd|
     wgpu::Texture deviceWrappedTexture = WrapVulkanImage(
-        device, &defaultDescriptor, defaultTexture.get(), std::move(exportInfo.semaphores),
+        device, &defaultDescriptor, defaultTexture, std::move(exportInfo.semaphores),
         exportInfo.releasedOldLayout, exportInfo.releasedNewLayout);
 
     // Create a destination buffer on |device|
@@ -512,18 +610,18 @@ TEST_P(VulkanImageWrappingUsageTests, CopyTextureToBufferSrcSync) {
 TEST_P(VulkanImageWrappingUsageTests, CopyBufferToTextureDstSync) {
     // Import the image on |device|
     wgpu::Texture wrappedTexture =
-        WrapVulkanImage(device, &defaultDescriptor, defaultTexture.get(), {},
-                        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        WrapVulkanImage(device, &defaultDescriptor, defaultTexture, {}, VK_IMAGE_LAYOUT_UNDEFINED,
+                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
     // Clear |wrappedTexture| on |device|
     ClearImage(device, wrappedTexture, {5 / 255.0f, 6 / 255.0f, 7 / 255.0f, 8 / 255.0f});
 
-    ExternalImageExportInfoVkForTesting exportInfo;
+    ExternalImageExportInfoVkForTesting exportInfo = GetExternalImageExportInfo();
     ASSERT_TRUE(mBackend->ExportImage(wrappedTexture, &exportInfo));
 
     // Import the image to |secondDevice|, making sure we wait on |signalFd|
     wgpu::Texture secondDeviceWrappedTexture = WrapVulkanImage(
-        secondDevice, &defaultDescriptor, defaultTexture.get(), std::move(exportInfo.semaphores),
+        secondDevice, &defaultDescriptor, defaultTexture, std::move(exportInfo.semaphores),
         exportInfo.releasedOldLayout, exportInfo.releasedNewLayout);
 
     // Copy color B on |secondDevice|
@@ -546,11 +644,11 @@ TEST_P(VulkanImageWrappingUsageTests, CopyBufferToTextureDstSync) {
     secondDeviceQueue.Submit(1, &commands);
 
     // Re-import back into |device|, waiting on |secondDevice|'s signal
-    ExternalImageExportInfoVkForTesting secondExportInfo;
+    ExternalImageExportInfoVkForTesting secondExportInfo = GetExternalImageExportInfo();
     ASSERT_TRUE(mBackend->ExportImage(secondDeviceWrappedTexture, &secondExportInfo));
 
     wgpu::Texture nextWrappedTexture = WrapVulkanImage(
-        device, &defaultDescriptor, defaultTexture.get(), std::move(secondExportInfo.semaphores),
+        device, &defaultDescriptor, defaultTexture, std::move(secondExportInfo.semaphores),
         secondExportInfo.releasedOldLayout, secondExportInfo.releasedNewLayout);
 
     // Verify |nextWrappedTexture| contains the color from our copy
@@ -567,18 +665,18 @@ TEST_P(VulkanImageWrappingUsageTests, CopyBufferToTextureDstSync) {
 TEST_P(VulkanImageWrappingUsageTests, DoubleTextureUsage) {
     // Import the image on |secondDevice|
     wgpu::Texture wrappedTexture =
-        WrapVulkanImage(secondDevice, &defaultDescriptor, defaultTexture.get(), {},
+        WrapVulkanImage(secondDevice, &defaultDescriptor, defaultTexture, {},
                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
     // Clear |wrappedTexture| on |secondDevice|
     ClearImage(secondDevice, wrappedTexture, {1 / 255.0f, 2 / 255.0f, 3 / 255.0f, 4 / 255.0f});
 
-    ExternalImageExportInfoVkForTesting exportInfo;
+    ExternalImageExportInfoVkForTesting exportInfo = GetExternalImageExportInfo();
     ASSERT_TRUE(mBackend->ExportImage(wrappedTexture, &exportInfo));
 
     // Import the image to |device|, making sure we wait on |signalFd|
     wgpu::Texture deviceWrappedTexture = WrapVulkanImage(
-        device, &defaultDescriptor, defaultTexture.get(), std::move(exportInfo.semaphores),
+        device, &defaultDescriptor, defaultTexture, std::move(exportInfo.semaphores),
         exportInfo.releasedOldLayout, exportInfo.releasedNewLayout);
 
     // Create a second texture on |device|
@@ -614,9 +712,9 @@ TEST_P(VulkanImageWrappingUsageTests, ChainTextureCopy) {
     // device 1 = |device|
     // device 2 = |secondDevice|
     // Create device 3
-    dawn::native::vulkan::Device* thirdDeviceVk =
-        dawn::native::vulkan::ToBackend(backendAdapter->APICreateDevice(&deviceDescriptor));
-    wgpu::Device thirdDevice = wgpu::Device::Acquire(dawn::native::ToAPI(thirdDeviceVk));
+    native::vulkan::Device* thirdDeviceVk =
+        native::vulkan::ToBackend(adapterBase->APICreateDevice(&deviceDescriptor));
+    wgpu::Device thirdDevice = wgpu::Device::Acquire(native::ToAPI(thirdDeviceVk));
 
     // Make queue for device 2 and 3
     wgpu::Queue secondDeviceQueue = secondDevice.GetQueue();
@@ -646,7 +744,7 @@ TEST_P(VulkanImageWrappingUsageTests, ChainTextureCopy) {
     SimpleCopyTextureToTexture(thirdDevice, thirdDeviceQueue, wrappedTexADevice3,
                                wrappedTexBDevice3);
 
-    ExternalImageExportInfoVkForTesting exportInfoTexBDevice3;
+    ExternalImageExportInfoVkForTesting exportInfoTexBDevice3 = GetExternalImageExportInfo();
     ASSERT_TRUE(mBackend->ExportImage(wrappedTexBDevice3, &exportInfoTexBDevice3));
     IgnoreSignalSemaphore(wrappedTexADevice3);
 
@@ -664,7 +762,7 @@ TEST_P(VulkanImageWrappingUsageTests, ChainTextureCopy) {
     SimpleCopyTextureToTexture(secondDevice, secondDeviceQueue, wrappedTexBDevice2,
                                wrappedTexCDevice2);
 
-    ExternalImageExportInfoVkForTesting exportInfoTexCDevice2;
+    ExternalImageExportInfoVkForTesting exportInfoTexCDevice2 = GetExternalImageExportInfo();
     ASSERT_TRUE(mBackend->ExportImage(wrappedTexCDevice2, &exportInfoTexCDevice2));
     IgnoreSignalSemaphore(wrappedTexBDevice2);
 
@@ -746,7 +844,7 @@ TEST_P(VulkanImageWrappingUsageTests, LargerImage) {
         wgpu::CommandBuffer commands = encoder.Finish();
         secondDeviceQueue.Submit(1, &commands);
     }
-    ExternalImageExportInfoVkForTesting exportInfo;
+    ExternalImageExportInfoVkForTesting exportInfo = GetExternalImageExportInfo();
     ASSERT_TRUE(mBackend->ExportImage(wrappedTexture, &exportInfo));
 
     // Import the image on |device|
@@ -877,16 +975,83 @@ TEST_P(VulkanImageWrappingUsageTests, SRGBReinterpretation) {
 
     IgnoreSignalSemaphore(texture);
 }
+class VulkanImageWrappingMultithreadTests : public VulkanImageWrappingUsageTests {
+  protected:
+    std::vector<wgpu::FeatureName> GetRequiredFeatures() override {
+        std::vector<wgpu::FeatureName> features;
+        // TODO(crbug.com/dawn/1678): DawnWire doesn't support thread safe API yet.
+        if (!UsesWire()) {
+            features.push_back(wgpu::FeatureName::ImplicitDeviceSynchronization);
+        }
+        return features;
+    }
+
+    void SetUp() override {
+        VulkanImageWrappingUsageTests::SetUp();
+        // TODO(crbug.com/dawn/1678): DawnWire doesn't support thread safe API yet.
+        DAWN_TEST_UNSUPPORTED_IF(UsesWire());
+    }
+};
+
+// Test that wrapping multiple VulkanImage and clear them on multiple threads work.
+TEST_P(VulkanImageWrappingMultithreadTests, WrapAndClear_OnMultipleThreads) {
+    // TODO(crbug.com/341124484): Crashes on Linux/Intel UHD 770.
+    DAWN_SUPPRESS_TEST_IF(IsLinux() && IsBackendValidationEnabled() && IsIntelGen12());
+
+    // crbug.com/358408563
+    DAWN_SUPPRESS_TEST_IF(IsLinux() && IsNvidia() && IsVulkan() && IsBackendValidationEnabled());
+
+    std::vector<std::unique_ptr<ExternalTexture>> testTextures(10);
+    for (auto& testTexture : testTextures) {
+        testTexture =
+            mBackend->CreateTexture(1, 1, defaultDescriptor.format, defaultDescriptor.usage);
+    }
+
+    wgpu::Device writeDevice = CreateDevice();
+
+    utils::RunInParallel(testTextures.size(), [&](uint32_t idx) {
+        // Import the image on |writeDevice|
+        wgpu::Texture wrappedTexture =
+            WrapVulkanImage(writeDevice, &defaultDescriptor, testTextures[idx].get(), {},
+                            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+        // Clear |wrappedTexture| on |writeDevice|
+        ClearImage(writeDevice, wrappedTexture, {1 / 255.0f, 2 / 255.0f, 3 / 255.0f, 4 / 255.0f});
+
+        ExternalImageExportInfoVkForTesting exportInfo = GetExternalImageExportInfo();
+        ASSERT_TRUE(mBackend->ExportImage(wrappedTexture, &exportInfo));
+
+        // Import the image to |device|, making sure we wait on signalFd
+        wgpu::Texture nextWrappedTexture = WrapVulkanImage(
+            device, &defaultDescriptor, testTextures[idx].get(), std::move(exportInfo.semaphores),
+            exportInfo.releasedOldLayout, exportInfo.releasedNewLayout);
+
+        // Verify |device| sees the changes from |secondDevice|
+        EXPECT_PIXEL_RGBA8_EQ(utils::RGBA8(1, 2, 3, 4), nextWrappedTexture, 0, 0);
+
+        IgnoreSignalSemaphore(nextWrappedTexture);
+    });
+}
 
 DAWN_INSTANTIATE_TEST_P(VulkanImageWrappingValidationTests,
                         {VulkanBackend()},
+                        {ExternalImageType::OpaqueFD, ExternalImageType::DmaBuf},
                         {true, false},  // UseDedicatedAllocation
                         {true, false}   // DetectDedicatedAllocation
 );
 DAWN_INSTANTIATE_TEST_P(VulkanImageWrappingUsageTests,
                         {VulkanBackend()},
+                        {ExternalImageType::OpaqueFD, ExternalImageType::DmaBuf},
                         {true, false},  // UseDedicatedAllocation
                         {true, false}   // DetectDedicatedAllocation
 );
 
+DAWN_INSTANTIATE_TEST_P(VulkanImageWrappingMultithreadTests,
+                        {VulkanBackend()},
+                        {ExternalImageType::OpaqueFD, ExternalImageType::DmaBuf},
+                        {true, false},  // UseDedicatedAllocation
+                        {true, false}   // DetectDedicatedAllocation
+);
+
+}  // anonymous namespace
 }  // namespace dawn::native::vulkan

@@ -29,6 +29,7 @@ values should be referred to through a pointer.`
 var Analyzer = &analysis.Analyzer{
 	Name:             "copylocks",
 	Doc:              Doc,
+	URL:              "https://pkg.go.dev/golang.org/x/tools/go/analysis/passes/copylocks",
 	Requires:         []*analysis.Analyzer{inspect.Analyzer},
 	RunDespiteErrors: true,
 	Run:              run,
@@ -128,7 +129,7 @@ func checkCopyLocksCallExpr(pass *analysis.Pass, ce *ast.CallExpr) {
 	}
 	if fun, ok := pass.TypesInfo.Uses[id].(*types.Builtin); ok {
 		switch fun.Name() {
-		case "new", "len", "cap", "Sizeof":
+		case "new", "len", "cap", "Sizeof", "Offsetof", "Alignof":
 			return
 		}
 	}

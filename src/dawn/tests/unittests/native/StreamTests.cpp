@@ -1,28 +1,43 @@
-// Copyright 2022 The Dawn Authors
+// Copyright 2022 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <cstring>
 #include <iomanip>
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "dawn/common/TypedInteger.h"
 #include "dawn/native/Blob.h"
 #include "dawn/native/Serializable.h"
+#include "dawn/native/TintUtils.h"
 #include "dawn/native/stream/BlobSource.h"
 #include "dawn/native/stream/ByteVectorSink.h"
 #include "dawn/native/stream/Stream.h"
@@ -31,23 +46,28 @@
 #include "tint/tint.h"
 
 namespace dawn::native::stream {
+namespace {
 
 // Testing classes with mock serializing implemented for testing.
 class A {
   public:
-    MOCK_METHOD(void, WriteMock, (stream::Sink*, const A&), (const));
+    MOCK_METHOD(void, WriteMock, (Sink*, const A&), (const));
 };
-template <>
-void stream::Stream<A>::Write(stream::Sink* s, const A& t) {
-    t.WriteMock(s, t);
-}
 
 struct Nested {
     A a1;
     A a2;
 };
+
+}  // anonymous namespace
+
 template <>
-void stream::Stream<Nested>::Write(stream::Sink* s, const Nested& t) {
+void Stream<A>::Write(Sink* s, const A& t) {
+    t.WriteMock(s, t);
+}
+
+template <>
+void Stream<Nested>::Write(Sink* s, const Nested& t) {
     StreamIn(s, t.a1);
     StreamIn(s, t.a2);
 }
@@ -96,7 +116,7 @@ TEST(SerializeTests, StreamInIterable) {
     constexpr size_t kIterableSize = 100;
 
     std::vector<A> vec(kIterableSize);
-    auto iterable = stream::Iterable(vec.data(), kIterableSize);
+    auto iterable = Iterable(vec.data(), kIterableSize);
 
     // Expect write to be called for each element
     for (const auto& a : vec) {
@@ -189,7 +209,7 @@ TEST(SerializeTests, StdWStringViews) {
 // Test that ByteVectorSink serializes Blobs as expected.
 TEST(SerializeTests, Blob) {
     uint8_t data[] = "dawn native Blob";
-    Blob blob = Blob::UnsafeCreateWithDeleter(data, sizeof(data), []() {});
+    Blob blob = Blob::UnsafeCreateWithDeleter(data, sizeof(data), [] {});
 
     ByteVectorSink expected;
     StreamIn(&expected, sizeof(data));
@@ -253,28 +273,25 @@ TEST(SerializeTests, StdUnorderedMap) {
     EXPECT_CACHE_KEY_EQ(m, expected);
 }
 
-// Test that ByteVectorSink serializes tint::writer::BindingPoint as expected.
+// Test that ByteVectorSink serializes std::unordered_set as expected.
+TEST(SerializeTests, StdUnorderedSet) {
+    const std::unordered_set<int> input = {99, 4, 6, 1};
+
+    // Expect the number of entries, followed by values sorted in order of key.
+    ByteVectorSink expected;
+    StreamIn(&expected, size_t(4), 1, 4, 6, 99);
+
+    EXPECT_CACHE_KEY_EQ(input, expected);
+}
+
+// Test that ByteVectorSink serializes tint::BindingPoint as expected.
 TEST(SerializeTests, TintSemBindingPoint) {
-    tint::writer::BindingPoint bp{3, 6};
+    tint::BindingPoint bp{3, 6};
 
     ByteVectorSink expected;
     StreamIn(&expected, uint32_t(3), uint32_t(6));
 
     EXPECT_CACHE_KEY_EQ(bp, expected);
-}
-
-// Test that ByteVectorSink serializes tint::writer::ExternalTextureOptions::BindingPoints
-// as expected.
-TEST(SerializeTests, TintTransformBindingPoints) {
-    tint::writer::ExternalTextureOptions::BindingPoints points{
-        tint::writer::BindingPoint{1, 4},
-        tint::writer::BindingPoint{3, 7},
-    };
-
-    ByteVectorSink expected;
-    StreamIn(&expected, uint32_t(1), uint32_t(4), uint32_t(3), uint32_t(7));
-
-    EXPECT_CACHE_KEY_EQ(points, expected);
 }
 
 // Test that serializing then deserializing a param pack yields the same values.
@@ -394,6 +411,8 @@ static auto kStreamValueVectorParams = std::make_tuple(
         BitsetFromBitString("100110010101011001100110101011001100101010110011001011011"),
         BitsetFromBitString("000110010101011000100110101011001100101010010011001010100"),
         BitsetFromBitString("111111111111111111111111111111111111111111111111111111111"), 0},
+    // Test unordered_sets.
+    std::vector<std::unordered_set<int>>{{}, {4, 6, 99, 0}, {100, 300, 300}},
     // Test vectors.
     std::vector<std::vector<int>>{{}, {1, 5, 2, 7, 4}, {3, 3, 3, 3, 3, 3, 3}});
 
@@ -483,6 +502,5 @@ REGISTER_TYPED_TEST_SUITE_P(StreamParameterizedTests,
                             DeserializeEmpty);
 INSTANTIATE_TYPED_TEST_SUITE_P(DawnUnittests, StreamParameterizedTests, StreamValueTestTypes, );
 
-}  // namespace
-
+}  // anonymous namespace
 }  // namespace dawn::native::stream

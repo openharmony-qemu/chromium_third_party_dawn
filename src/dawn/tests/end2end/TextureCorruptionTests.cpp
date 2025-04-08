@@ -1,16 +1,29 @@
-// Copyright 2022 The Dawn Authors
+// Copyright 2022 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <algorithm>
 #include <vector>
@@ -20,12 +33,14 @@
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
 
+namespace dawn {
+namespace {
+
 // 2D array textures with particular dimensions may corrupt on some devices. This test creates some
 // 2d-array textures with different dimensions, and test them one by one. For each sub-test, the
 // tested texture is written via different methods, then read back from the texture and verify the
 // data.
 
-namespace {
 enum class WriteType {
     ClearTexture,
     WriteTexture,    // Write the tested texture via writeTexture API
@@ -85,8 +100,6 @@ DAWN_TEST_PARAM_STRUCT(TextureCorruptionTestsParams,
                        SampleCount,
                        WriteType);
 
-}  // namespace
-
 class TextureCorruptionTests : public DawnTestWithParams<TextureCorruptionTestsParams> {
   protected:
     virtual std::ostringstream& DoSingleTest(wgpu::Texture texture,
@@ -144,7 +157,7 @@ class TextureCorruptionTests : public DawnTestWithParams<TextureCorruptionTestsP
                         // texture sampling and rendering because either sampling operation will
                         // lead to precision loss or rendering a solid color is easier to implement
                         // and compare.
-                        ASSERT(elementNumPerTexel == 1);
+                        DAWN_ASSERT(elementNumPerTexel == 1);
                         data[i * elementNumPerRow + j] = 0xFFFFFFFF;
                     } else if (type != WriteType::ClearTexture) {
                         data[i * elementNumPerRow + j * elementNumPerTexel + k] = srcValue;
@@ -173,7 +186,7 @@ class TextureCorruptionTests : public DawnTestWithParams<TextureCorruptionTestsP
             case WriteType::RenderFromTextureSample:
             case WriteType::RenderFromTextureLoad: {
                 // Write data into a single layer temp texture and read from this texture if needed
-                ASSERT(format == wgpu::TextureFormat::RGBA8Unorm);
+                DAWN_ASSERT(format == wgpu::TextureFormat::RGBA8Unorm);
                 wgpu::TextureView tempView;
                 if (type != WriteType::RenderConstant) {
                     wgpu::Texture tempTexture = Create2DTexture(copySize, format, 1, 1);
@@ -293,6 +306,9 @@ class TextureCorruptionTests : public DawnTestWithParams<TextureCorruptionTestsP
 
     void DoTest() {
         DAWN_SUPPRESS_TEST_IF(IsWARP());
+        // TODO(dawn:1859): Fix it on D3D11 Intel.
+        DAWN_SUPPRESS_TEST_IF(IsD3D11() && IsIntel() && GetParam().mArrayLayerCount > 12);
+
         uint32_t width = GetParam().mTextureWidth;
         uint32_t height = GetParam().mTextureHeight;
         uint32_t depthOrArrayLayerCount = GetParam().mArrayLayerCount;
@@ -319,7 +335,7 @@ class TextureCorruptionTests : public DawnTestWithParams<TextureCorruptionTestsP
         // Most 2d-array textures being tested have only 2 layers. But if the texture has a lot of
         // layers, select a few layers to test.
         if (depthOrArrayLayerCount > 2) {
-            ASSERT(sampleCount == 1);
+            DAWN_ASSERT(sampleCount == 1);
             uint32_t divider = 4;
             for (uint32_t i = 1; i <= divider; ++i) {
                 int32_t testedLayer = depthOrArrayLayerCount * i / divider - 1;
@@ -351,7 +367,7 @@ TEST_P(TextureCorruptionTests_Format, Tests) {
 }
 
 DAWN_INSTANTIATE_TEST_P(TextureCorruptionTests_Format,
-                        {D3D12Backend()},
+                        {D3D11Backend(), D3D12Backend()},
                         {wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::RG8Unorm,
                          wgpu::TextureFormat::RGBA8Unorm, wgpu::TextureFormat::RGBA16Uint,
                          wgpu::TextureFormat::RGBA32Uint, wgpu::TextureFormat::Depth16Unorm,
@@ -370,7 +386,7 @@ TEST_P(TextureCorruptionTests_WidthAndHeight, Tests) {
 }
 
 DAWN_INSTANTIATE_TEST_P(TextureCorruptionTests_WidthAndHeight,
-                        {D3D12Backend()},
+                        {D3D11Backend(), D3D12Backend()},
                         {kDefaultFormat},
                         {100u, 200u, 300u, 400u, 500u, 600u, 700u, 800u, 900u, 1000u, 1200u},
                         {100u, 200u},
@@ -386,7 +402,7 @@ TEST_P(TextureCorruptionTests_ArrayLayer, Tests) {
 }
 
 DAWN_INSTANTIATE_TEST_P(TextureCorruptionTests_ArrayLayer,
-                        {D3D12Backend()},
+                        {D3D11Backend(), D3D12Backend()},
                         {kDefaultFormat},
                         {100u, 600u, 1200u},
                         {kDefaultHeight},
@@ -402,7 +418,7 @@ TEST_P(TextureCorruptionTests_Mipmap, Tests) {
 }
 
 DAWN_INSTANTIATE_TEST_P(TextureCorruptionTests_Mipmap,
-                        {D3D12Backend()},
+                        {D3D11Backend(), D3D12Backend()},
                         {kDefaultFormat},
                         {100u, 600u, 1200u},
                         {kDefaultHeight},
@@ -420,8 +436,8 @@ class TextureCorruptionTests_Multisample : public TextureCorruptionTests {
                                      uint32_t sampleCount,
                                      uint32_t srcValue,
                                      wgpu::TextureFormat format) override {
-        ASSERT(depthOrArrayLayer == 0);
-        ASSERT(mipLevel == 0);
+        DAWN_ASSERT(depthOrArrayLayer == 0);
+        DAWN_ASSERT(mipLevel == 0);
         uint32_t bytesPerTexel = utils::GetTexelBlockSizeInBytes(format);
 
         return ExpectMultisampledFloatData(texture, textureSize.width, textureSize.height,
@@ -435,7 +451,7 @@ TEST_P(TextureCorruptionTests_Multisample, Tests) {
 }
 
 DAWN_INSTANTIATE_TEST_P(TextureCorruptionTests_Multisample,
-                        {D3D12Backend()},
+                        {D3D11Backend(), D3D12Backend()},
                         {kDefaultFormat},
                         {100u, 200u, 300u, 400u, 500u, 600u, 700u, 800u, 900u, 1000u, 1200u},
                         {100u, 200u},
@@ -451,7 +467,7 @@ TEST_P(TextureCorruptionTests_WriteType, Tests) {
 }
 
 DAWN_INSTANTIATE_TEST_P(TextureCorruptionTests_WriteType,
-                        {D3D12Backend()},
+                        {D3D11Backend(), D3D12Backend()},
                         {kDefaultFormat},
                         {100u, 600u, 1200u},
                         {kDefaultHeight},
@@ -461,3 +477,6 @@ DAWN_INSTANTIATE_TEST_P(TextureCorruptionTests_WriteType,
                         {WriteType::ClearTexture, WriteType::WriteTexture, WriteType::B2TCopy,
                          WriteType::RenderConstant, WriteType::RenderFromTextureSample,
                          WriteType::RenderFromTextureLoad});
+
+}  // anonymous namespace
+}  // namespace dawn

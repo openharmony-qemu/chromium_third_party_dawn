@@ -1,22 +1,34 @@
-// Copyright 2019 The Dawn Authors
+// Copyright 2019 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/native/RenderBundleEncoder.h"
 
 #include <utility>
 
-#include "dawn/common/StackContainer.h"
 #include "dawn/native/CommandValidation.h"
 #include "dawn/native/Commands.h"
 #include "dawn/native/Device.h"
@@ -48,13 +60,6 @@ MaybeError ValidateDepthStencilAttachmentFormat(const DeviceBase* device,
     DAWN_TRY_ASSIGN(format, device->GetInternalFormat(textureFormat));
     DAWN_INVALID_IF(!format->HasDepthOrStencil() || !format->isRenderable,
                     "Texture format %s is not depth/stencil renderable.", textureFormat);
-
-    DAWN_INVALID_IF(
-        format->HasDepth() && format->HasStencil() && depthReadOnly != stencilReadOnly,
-        "depthReadOnly (%u) and stencilReadOnly (%u) must be the same when format %s has "
-        "both depth and stencil aspects.",
-        depthReadOnly, stencilReadOnly, textureFormat);
-
     return {};
 }
 
@@ -64,18 +69,18 @@ MaybeError ValidateRenderBundleEncoderDescriptor(DeviceBase* device,
                     "Sample count (%u) is not supported.", descriptor->sampleCount);
 
     uint32_t maxColorAttachments = device->GetLimits().v1.maxColorAttachments;
-    DAWN_INVALID_IF(descriptor->colorFormatsCount > maxColorAttachments,
+    DAWN_INVALID_IF(descriptor->colorFormatCount > maxColorAttachments,
                     "Color formats count (%u) exceeds maximum number of color attachements (%u).",
-                    descriptor->colorFormatsCount, maxColorAttachments);
+                    descriptor->colorFormatCount, maxColorAttachments);
 
     bool allColorFormatsUndefined = true;
     ColorAttachmentFormats colorAttachmentFormats;
-    for (uint32_t i = 0; i < descriptor->colorFormatsCount; ++i) {
+    for (uint32_t i = 0; i < descriptor->colorFormatCount; ++i) {
         wgpu::TextureFormat format = descriptor->colorFormats[i];
         if (format != wgpu::TextureFormat::Undefined) {
             DAWN_TRY_CONTEXT(ValidateColorAttachmentFormat(device, format),
                              "validating colorFormats[%u]", i);
-            colorAttachmentFormats->push_back(&device->GetValidInternalFormat(format));
+            colorAttachmentFormats.push_back(&device->GetValidInternalFormat(format));
             allColorFormatsUndefined = false;
         }
     }
@@ -108,11 +113,17 @@ RenderBundleEncoder::RenderBundleEncoder(DeviceBase* device,
     GetObjectTrackingList()->Track(this);
 }
 
-RenderBundleEncoder::RenderBundleEncoder(DeviceBase* device, ErrorTag errorTag, const char* label)
+RenderBundleEncoder::RenderBundleEncoder(DeviceBase* device, ErrorTag errorTag, StringView label)
     : RenderEncoderBase(device, &mBundleEncodingContext, errorTag, label),
-      mBundleEncodingContext(device, this) {}
+      mBundleEncodingContext(device, errorTag) {}
+
+RenderBundleEncoder::~RenderBundleEncoder() {
+    mEncodingContext = nullptr;
+}
 
 void RenderBundleEncoder::DestroyImpl() {
+    mIndirectDrawMetadata.ClearIndexedIndirectBufferValidationInfo();
+    mCommandBufferState.End();
     RenderEncoderBase::DestroyImpl();
     mBundleEncodingContext.Destroy();
 }
@@ -125,8 +136,8 @@ Ref<RenderBundleEncoder> RenderBundleEncoder::Create(
 }
 
 // static
-RenderBundleEncoder* RenderBundleEncoder::MakeError(DeviceBase* device, const char* label) {
-    return new RenderBundleEncoder(device, ObjectBase::kError, label);
+Ref<RenderBundleEncoder> RenderBundleEncoder::MakeError(DeviceBase* device, StringView label) {
+    return AcquireRef(new RenderBundleEncoder(device, ObjectBase::kError, label));
 }
 
 ObjectType RenderBundleEncoder::GetType() const {
@@ -138,38 +149,40 @@ CommandIterator RenderBundleEncoder::AcquireCommands() {
 }
 
 RenderBundleBase* RenderBundleEncoder::APIFinish(const RenderBundleDescriptor* descriptor) {
-    RenderBundleBase* result = nullptr;
+    Ref<RenderBundleBase> result;
 
-    if (GetDevice()->ConsumedError(FinishImpl(descriptor), &result, "calling %s.Finish(%s).", this,
+    if (GetDevice()->ConsumedError(Finish(descriptor), &result, "calling %s.Finish(%s).", this,
                                    descriptor)) {
-        return RenderBundleBase::MakeError(GetDevice(), descriptor ? descriptor->label : nullptr);
+        result = RenderBundleBase::MakeError(GetDevice(), descriptor ? descriptor->label : nullptr);
+        result->SetEncoderLabel(this->GetLabel());
     }
 
-    return result;
+    return ReturnToAPI(std::move(result));
 }
 
-ResultOrError<RenderBundleBase*> RenderBundleEncoder::FinishImpl(
+ResultOrError<Ref<RenderBundleBase>> RenderBundleEncoder::Finish(
     const RenderBundleDescriptor* descriptor) {
+    mCommandBufferState.End();
     // Even if mBundleEncodingContext.Finish() validation fails, calling it will mutate the
     // internal state of the encoding context. Subsequent calls to encode commands will generate
     // errors.
     DAWN_TRY(mBundleEncodingContext.Finish());
+    DAWN_TRY(GetDevice()->ValidateIsAlive());
 
     RenderPassResourceUsage usages = mUsageTracker.AcquireResourceUsage();
     if (IsValidationEnabled()) {
-        DAWN_TRY(GetDevice()->ValidateObject(this));
-        DAWN_TRY(ValidateProgrammableEncoderEnd());
         DAWN_TRY(ValidateFinish(usages));
     }
 
-    return new RenderBundleBase(this, descriptor, AcquireAttachmentState(), IsDepthReadOnly(),
-                                IsStencilReadOnly(), std::move(usages),
-                                std::move(mIndirectDrawMetadata));
+    return AcquireRef(new RenderBundleBase(this, descriptor, AcquireAttachmentState(),
+                                           IsDepthReadOnly(), IsStencilReadOnly(),
+                                           std::move(usages), std::move(mIndirectDrawMetadata)));
 }
 
 MaybeError RenderBundleEncoder::ValidateFinish(const RenderPassResourceUsage& usages) const {
     TRACE_EVENT0(GetDevice()->GetPlatform(), Validation, "RenderBundleEncoder::ValidateFinish");
     DAWN_TRY(GetDevice()->ValidateObject(this));
+    DAWN_TRY(ValidateProgrammableEncoderEnd());
     DAWN_TRY(ValidateSyncScopeResourceUsage(usages));
     return {};
 }

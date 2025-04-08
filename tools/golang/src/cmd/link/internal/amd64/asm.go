@@ -88,9 +88,7 @@ func adddynrel(target *ld.Target, ldr *loader.Loader, syms *ld.ArchSyms, s loade
 		if targType == sym.SDYNIMPORT {
 			ldr.Errorf(s, "unexpected R_X86_64_PC32 relocation for dynamic symbol %s", ldr.SymName(targ))
 		}
-		// TODO(mwhudson): the test of VisibilityHidden here probably doesn't make
-		// sense and should be removed when someone has thought about it properly.
-		if (targType == 0 || targType == sym.SXREF) && !ldr.AttrVisibilityHidden(targ) {
+		if targType == 0 || targType == sym.SXREF {
 			ldr.Errorf(s, "unknown symbol %s in pcrel", ldr.SymName(targ))
 		}
 		su := ldr.MakeSymbolUpdater(s)
@@ -448,7 +446,7 @@ func machoreloc1(arch *sys.Arch, out *ld.OutBuf, ldr *loader.Loader, s loader.Sy
 	rs := r.Xsym
 	rt := r.Type
 
-	if ldr.SymType(rs) == sym.SHOSTOBJ || rt == objabi.R_PCREL || rt == objabi.R_GOTPCREL || rt == objabi.R_CALL {
+	if rt == objabi.R_PCREL || rt == objabi.R_GOTPCREL || rt == objabi.R_CALL || ldr.SymType(rs) == sym.SHOSTOBJ || ldr.SymType(s) == sym.SINITARR {
 		if ldr.SymDynid(rs) < 0 {
 			ldr.Errorf(s, "reloc %d (%s) to non-macho symbol %s type=%d (%s)", rt, sym.RelocName(arch, rt), ldr.SymName(rs), ldr.SymType(rs), ldr.SymType(rs))
 			return false
@@ -533,6 +531,9 @@ func pereloc1(arch *sys.Arch, out *ld.OutBuf, ldr *loader.Loader, s loader.Sym, 
 		} else {
 			v = ld.IMAGE_REL_AMD64_ADDR32
 		}
+
+	case objabi.R_PEIMAGEOFF:
+		v = ld.IMAGE_REL_AMD64_ADDR32NB
 
 	case objabi.R_CALL,
 		objabi.R_PCREL:

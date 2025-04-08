@@ -18,25 +18,13 @@ float4x4 x_14_load_1(uint offset) {
 void main_1() {
   float4 q = float4(0.0f, 0.0f, 0.0f, 0.0f);
   float3 p = float3(0.0f, 0.0f, 0.0f);
-  const float3 x_13 = position_1;
-  q = float4(x_13.x, x_13.y, x_13.z, 1.0f);
-  const float4 x_21 = q;
-  p = float3(x_21.x, x_21.y, x_21.z);
-  const float x_27 = p.x;
-  const float x_41 = asfloat(x_14[13].x);
-  const float x_45 = position_1.y;
-  const float x_49 = asfloat(x_14[4].x);
-  p.x = (x_27 + sin(((x_41 * x_45) + x_49)));
-  const float x_55 = p.y;
-  const float x_57 = asfloat(x_14[4].x);
-  p.y = (x_55 + sin((x_57 + 4.0f)));
-  const float4x4 x_69 = x_14_load_1(0u);
-  const float3 x_70 = p;
-  gl_Position = mul(float4(x_70.x, x_70.y, x_70.z, 1.0f), x_69);
-  const float2 x_83 = uv;
-  vUV = x_83;
-  const float x_87 = gl_Position.y;
-  gl_Position.y = (x_87 * -1.0f);
+  q = float4(position_1.x, position_1.y, position_1.z, 1.0f);
+  p = q.xyz;
+  p.x = (p.x + sin(((asfloat(x_14[13].x) * position_1.y) + asfloat(x_14[4].x))));
+  p.y = (p.y + sin((asfloat(x_14[4].x) + 4.0f)));
+  gl_Position = mul(float4(p.x, p.y, p.z, 1.0f), x_14_load_1(0u));
+  vUV = uv;
+  gl_Position.y = (gl_Position.y * -1.0f);
   return;
 }
 
@@ -59,12 +47,12 @@ main_out main_inner(float3 position_1_param, float2 uv_param, float3 normal_para
   uv = uv_param;
   normal = normal_param;
   main_1();
-  const main_out tint_symbol_3 = {gl_Position, vUV};
+  main_out tint_symbol_3 = {gl_Position, vUV};
   return tint_symbol_3;
 }
 
 tint_symbol_2 main(tint_symbol_1 tint_symbol) {
-  const main_out inner_result = main_inner(tint_symbol.position_1_param, tint_symbol.uv_param, tint_symbol.normal_param);
+  main_out inner_result = main_inner(tint_symbol.position_1_param, tint_symbol.uv_param, tint_symbol.normal_param);
   tint_symbol_2 wrapper_result = (tint_symbol_2)0;
   wrapper_result.gl_Position = inner_result.gl_Position;
   wrapper_result.vUV_1 = inner_result.vUV_1;

@@ -1,65 +1,98 @@
-// Copyright 2021 The Dawn Authors
+// Copyright 2021 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <vector>
 
+#include "dawn/common/StringViewUtils.h"
 #include "dawn/wire/SupportedFeatures.h"
+#include "dawn/wire/WireResult.h"
+#include "dawn/wire/server/ObjectStorage.h"
 #include "dawn/wire/server/Server.h"
 
 namespace dawn::wire::server {
 
-bool Server::DoAdapterRequestDevice(ObjectId adapterId,
-                                    uint64_t requestSerial,
-                                    ObjectHandle deviceHandle,
-                                    const WGPUDeviceDescriptor* descriptor) {
-    auto* adapter = AdapterObjects().Get(adapterId);
-    if (adapter == nullptr) {
-        return false;
-    }
-
-    auto* resultData = DeviceObjects().Allocate(deviceHandle, AllocationState::Reserved);
-    if (resultData == nullptr) {
-        return false;
-    }
-
-    resultData->generation = deviceHandle.generation;
+WireResult Server::DoAdapterRequestDevice(Known<WGPUAdapter> adapter,
+                                          ObjectHandle eventManager,
+                                          WGPUFuture future,
+                                          ObjectHandle deviceHandle,
+                                          WGPUFuture deviceLostFuture,
+                                          const WGPUDeviceDescriptor* descriptor,
+                                          uint8_t userdataCount) {
+    Reserved<WGPUDevice> device;
+    WIRE_TRY(Objects<WGPUDevice>().Allocate(&device, deviceHandle, AllocationState::Reserved));
 
     auto userdata = MakeUserdata<RequestDeviceUserdata>();
-    userdata->adapter = ObjectHandle{adapterId, adapter->generation};
-    userdata->requestSerial = requestSerial;
-    userdata->deviceObjectId = deviceHandle.id;
+    userdata->eventManager = eventManager;
+    userdata->future = future;
+    userdata->deviceObjectId = device.id;
+    userdata->deviceLostFuture = deviceLostFuture;
 
-    mProcs.adapterRequestDevice(adapter->handle, descriptor,
-                                ForwardToServer<&Server::OnRequestDeviceCallback>,
-                                userdata.release());
-    return true;
+    // Update the descriptor with the device lost callback associated with this request.
+    auto deviceLostUserdata = MakeUserdata<DeviceLostUserdata>();
+    deviceLostUserdata->eventManager = eventManager;
+    deviceLostUserdata->future = deviceLostFuture;
+
+    WGPUDeviceDescriptor desc = *descriptor;
+    desc.deviceLostCallbackInfo2 = {nullptr, WGPUCallbackMode_AllowProcessEvents,
+                                    ForwardToServer2<&Server::OnDeviceLost>,
+                                    deviceLostUserdata.release(), nullptr};
+    desc.uncapturedErrorCallbackInfo2 = {
+        nullptr,
+        [](WGPUDevice const*, WGPUErrorType type, WGPUStringView message, void*, void* userdata) {
+            DeviceInfo* info = static_cast<DeviceInfo*>(userdata);
+            info->server->OnUncapturedError(info->self, type, message);
+        },
+        nullptr, device->info.get()};
+
+    if (userdataCount == 1) {
+        mProcs.adapterRequestDevice(adapter->handle, &desc,
+                                    ForwardToServer<&Server::OnRequestDeviceCallback>,
+                                    userdata.release());
+    } else {
+        mProcs.adapterRequestDevice2(
+            adapter->handle, &desc,
+            {nullptr, WGPUCallbackMode_AllowSpontaneous,
+             ForwardToServer2<&Server::OnRequestDeviceCallback>, userdata.release(), nullptr});
+    }
+    return WireResult::Success;
 }
 
 void Server::OnRequestDeviceCallback(RequestDeviceUserdata* data,
                                      WGPURequestDeviceStatus status,
                                      WGPUDevice device,
-                                     const char* message) {
+                                     WGPUStringView message) {
     ReturnAdapterRequestDeviceCallbackCmd cmd = {};
-    cmd.adapter = data->adapter;
-    cmd.requestSerial = data->requestSerial;
+    cmd.eventManager = data->eventManager;
+    cmd.future = data->future;
     cmd.status = status;
     cmd.message = message;
 
     if (status != WGPURequestDeviceStatus_Success) {
-        // Free the ObjectId which will make it unusable.
-        DeviceObjects().Free(data->deviceObjectId);
-        ASSERT(device == nullptr);
+        DAWN_ASSERT(device == nullptr);
         SerializeCommand(cmd);
         return;
     }
@@ -78,30 +111,47 @@ void Server::OnRequestDeviceCallback(RequestDeviceUserdata* data,
         if (!IsFeatureSupported(f)) {
             // Release the device.
             mProcs.deviceRelease(device);
-            // Free the ObjectId which will make it unusable.
-            DeviceObjects().Free(data->deviceObjectId);
+            device = nullptr;
 
             cmd.status = WGPURequestDeviceStatus_Error;
-            cmd.message = "Requested feature not supported.";
+            cmd.message = ToOutputStringView("Requested feature not supported.");
             SerializeCommand(cmd);
             return;
         }
     }
 
-    cmd.featuresCount = static_cast<uint32_t>(features.size());
+    cmd.featuresCount = features.size();
     cmd.features = features.data();
 
+    // Query and report the adapter limits, including DawnExperimentalSubgroupLimits and
+    // DawnExperimentalImmediateDataLimits. Reporting to client.
     WGPUSupportedLimits limits = {};
+
+    // Chained DawnExperimentalSubgroupLimits.
+    WGPUDawnExperimentalSubgroupLimits experimentalSubgroupLimits = {};
+    experimentalSubgroupLimits.chain.sType = WGPUSType_DawnExperimentalSubgroupLimits;
+    limits.nextInChain = &experimentalSubgroupLimits.chain;
+
+    // Chained DawnExperimentalImmediateDataLimits.
+    WGPUDawnExperimentalImmediateDataLimits experimentalImmediateDataLimits = {};
+    experimentalImmediateDataLimits.chain.sType = WGPUSType_DawnExperimentalImmediateDataLimits;
+    experimentalSubgroupLimits.chain.next = &experimentalImmediateDataLimits.chain;
+
     mProcs.deviceGetLimits(device, &limits);
     cmd.limits = &limits;
 
     // Assign the handle and allocated status if the device is created successfully.
-    auto* deviceObject = DeviceObjects().FillReservation(data->deviceObjectId, device);
-    ASSERT(deviceObject != nullptr);
-    deviceObject->info->server = this;
-    deviceObject->info->self = ObjectHandle{data->deviceObjectId, deviceObject->generation};
-    SetForwardingDeviceCallbacks(deviceObject);
-
+    Known<WGPUDevice> reservation;
+    if (FillReservation(data->deviceObjectId, device, &reservation) == WireResult::FatalError) {
+        cmd.status = WGPURequestDeviceStatus_Unknown;
+        cmd.message = ToOutputStringView("Destroyed before request was fulfilled.");
+        SerializeCommand(cmd);
+        return;
+    }
+    DAWN_ASSERT(reservation.data != nullptr);
+    reservation->info->server = this;
+    reservation->info->self = reservation.AsHandle();
+    SetForwardingDeviceCallbacks(reservation);
     SerializeCommand(cmd);
 }
 

@@ -1,43 +1,59 @@
-// Copyright 2023 The Dawn Authors
+// Copyright 2023 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/native/d3d11/CommandBufferD3D11.h"
 
 #include <algorithm>
 #include <array>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "dawn/common/WindowsUtils.h"
-#include "dawn/native/BindGroup.h"
-#include "dawn/native/BindGroupTracker.h"
+#include "dawn/native/ApplyClearColorValueWithDrawHelper.h"
+#include "dawn/native/ChainUtils.h"
 #include "dawn/native/CommandEncoder.h"
 #include "dawn/native/CommandValidation.h"
 #include "dawn/native/Commands.h"
 #include "dawn/native/ExternalTexture.h"
 #include "dawn/native/RenderBundle.h"
-#include "dawn/native/VertexFormat.h"
 #include "dawn/native/d3d/D3DError.h"
+#include "dawn/native/d3d11/BindGroupTrackerD3D11.h"
 #include "dawn/native/d3d11/BufferD3D11.h"
+#include "dawn/native/d3d11/CommandRecordingContextD3D11.h"
 #include "dawn/native/d3d11/ComputePipelineD3D11.h"
 #include "dawn/native/d3d11/DeviceD3D11.h"
 #include "dawn/native/d3d11/Forward.h"
 #include "dawn/native/d3d11/PipelineLayoutD3D11.h"
+#include "dawn/native/d3d11/QuerySetD3D11.h"
 #include "dawn/native/d3d11/RenderPipelineD3D11.h"
-#include "dawn/native/d3d11/SamplerD3D11.h"
 #include "dawn/native/d3d11/TextureD3D11.h"
 #include "dawn/native/d3d11/UtilsD3D11.h"
+#include "partition_alloc/pointers/raw_ptr.h"
 
 namespace dawn::native::d3d11 {
 namespace {
@@ -49,175 +65,137 @@ DXGI_FORMAT DXGIIndexFormat(wgpu::IndexFormat format) {
         case wgpu::IndexFormat::Uint32:
             return DXGI_FORMAT_R32_UINT;
         default:
-            UNREACHABLE();
+            DAWN_UNREACHABLE();
     }
 }
 
-class BindGroupTracker : public BindGroupTrackerBase<false, uint64_t> {
+class VertexBufferTracker {
   public:
-    MaybeError Apply(CommandRecordingContext* commandContext) {
-        BeforeApply();
-        for (BindGroupIndex index : IterateBitSet(mDirtyBindGroupsObjectChangedOrIsDynamic)) {
-            DAWN_TRY(
-                ApplyBindGroup(commandContext, index, mBindGroups[index], mDynamicOffsets[index]));
-        }
-        AfterApply();
-        return {};
+    explicit VertexBufferTracker(const ScopedSwapStateCommandRecordingContext* commandContext)
+        : mCommandContext(commandContext) {}
+
+    ~VertexBufferTracker() {
+        mD3D11Buffers = {};
+        mStrides = {};
+        mOffsets = {};
+        mCommandContext->GetD3D11DeviceContext4()->IASetVertexBuffers(
+            0, kMaxVertexBuffers, mD3D11Buffers.data(), mStrides.data(), mOffsets.data());
     }
 
-    void AfterDispatch(CommandRecordingContext* commandContext) {
-        // Clear the UAVs after the dispatch, otherwise the buffer cannot be used as input in vertex
-        // or pixel stage.
-        for (UINT uav : mUnorderedAccessViews) {
-            ID3D11UnorderedAccessView* nullUAV = nullptr;
-            commandContext->GetD3D11DeviceContext1()->CSSetUnorderedAccessViews(uav, 1, &nullUAV,
-                                                                                nullptr);
+    void OnSetVertexBuffer(VertexBufferSlot slot, ID3D11Buffer* buffer, uint64_t offset) {
+        mD3D11Buffers[slot] = buffer;
+        mOffsets[slot] = offset;
+    }
+
+    void Apply(const RenderPipeline* renderPipeline) {
+        DAWN_ASSERT(renderPipeline != nullptr);
+
+        // If the vertex state has changed, we need to update the strides.
+        if (mLastAppliedRenderPipeline != renderPipeline) {
+            mLastAppliedRenderPipeline = renderPipeline;
+            for (VertexBufferSlot slot : IterateBitSet(renderPipeline->GetVertexBuffersUsed())) {
+                mStrides[slot] = renderPipeline->GetVertexBuffer(slot).arrayStride;
+            }
         }
-        mUnorderedAccessViews.clear();
+
+        mCommandContext->GetD3D11DeviceContext4()->IASetVertexBuffers(
+            0, kMaxVertexBuffers, mD3D11Buffers.data(), mStrides.data(), mOffsets.data());
     }
 
   private:
-    MaybeError ApplyBindGroup(CommandRecordingContext* commandContext,
-                              BindGroupIndex index,
-                              BindGroupBase* group,
-                              const ityp::vector<BindingIndex, uint64_t>& dynamicOffsets) {
-        const auto& indices = ToBackend(mPipelineLayout)->GetBindingIndexInfo()[index];
-        for (BindingIndex bindingIndex{0}; bindingIndex < group->GetLayout()->GetBindingCount();
-             ++bindingIndex) {
-            const BindingInfo& bindingInfo = group->GetLayout()->GetBindingInfo(bindingIndex);
-            const uint32_t bindingSlot = indices[bindingIndex];
+    raw_ptr<const ScopedSwapStateCommandRecordingContext> mCommandContext;
+    raw_ptr<const RenderPipeline> mLastAppliedRenderPipeline = nullptr;
+    PerVertexBuffer<ID3D11Buffer*> mD3D11Buffers = {};
+    PerVertexBuffer<UINT> mStrides = {};
+    PerVertexBuffer<UINT> mOffsets = {};
+};
 
-            switch (bindingInfo.bindingType) {
-                case BindingInfoType::Buffer: {
-                    BufferBinding binding = group->GetBindingAsBufferBinding(bindingIndex);
-                    ID3D11Buffer* d3d11Buffer = ToBackend(binding.buffer)->GetD3D11Buffer();
-                    auto offset = binding.offset;
-                    if (bindingInfo.buffer.hasDynamicOffset) {
-                        // Dynamic buffers are packed at the front of BindingIndices.
-                        offset += dynamicOffsets[bindingIndex];
-                    }
+// Handle pixel local storage attachments and return a vector of all pixel local storage UAVs.
+// - For implicit attachments, create the texture and clear it to 0.
+// - For explicit attachments, clear them to the specified clear color if their load operation is
+//   `clear`
+ResultOrError<std::vector<ComPtr<ID3D11UnorderedAccessView>>>
+HandlePixelLocalStorageAndGetPixelLocalStorageUAVs(
+    DeviceBase* device,
+    const BeginRenderPassCmd* renderPass,
+    const ScopedSwapStateCommandRecordingContext* commandContext) {
+    std::vector<ComPtr<ID3D11UnorderedAccessView>> pixelLocalStorageUAVs;
+    auto d3d11DeviceContext = commandContext->GetD3D11DeviceContext4();
 
-                    auto* deviceContext = commandContext->GetD3D11DeviceContext1();
+    const std::vector<wgpu::TextureFormat>& storageAttachmentSlots =
+        renderPass->attachmentState->GetStorageAttachmentSlots();
+    uint32_t nextImplicitAttachmentIndex = 0;
+    for (size_t attachment = 0; attachment < storageAttachmentSlots.size(); attachment++) {
+        ComPtr<ID3D11UnorderedAccessView> pixelLocalStorageUAV;
+        if (storageAttachmentSlots[attachment] == wgpu::TextureFormat::Undefined) {
+            // Get implicit pixel local storage attachment
+            TextureViewBase* implicitPixelLocalStorageTextureView = nullptr;
+            DAWN_TRY_ASSIGN(
+                implicitPixelLocalStorageTextureView,
+                ToBackend(device)->GetOrCreateCachedImplicitPixelLocalStorageAttachment(
+                    renderPass->width, renderPass->height, nextImplicitAttachmentIndex));
+            ++nextImplicitAttachmentIndex;
 
-                    switch (bindingInfo.buffer.type) {
-                        case wgpu::BufferBindingType::Uniform: {
-                            // https://learn.microsoft.com/en-us/windows/win32/api/d3d11_1/nf-d3d11_1-id3d11devicecontext1-vssetconstantbuffers1
-                            // Offset and size are measured in shader constants, which are 16 bytes
-                            // (4*32-bit components). And the offsets and counts must be multiples
-                            // of 16.
-                            ASSERT(IsAligned(offset, 256));
-                            UINT firstConstant = static_cast<UINT>(offset / 16);
-                            UINT size = static_cast<UINT>(binding.size / 16);
-                            UINT numConstants = Align(size, 16);
+            // Get and clear the UAV of the implicit pixel local storage attachment
+            DAWN_TRY_ASSIGN(pixelLocalStorageUAV, ToBackend(implicitPixelLocalStorageTextureView)
+                                                      ->GetOrCreateD3D11UnorderedAccessView());
 
-                            if (bindingInfo.visibility & wgpu::ShaderStage::Vertex) {
-                                deviceContext->VSSetConstantBuffers1(bindingSlot, 1, &d3d11Buffer,
-                                                                     &firstConstant, &numConstants);
-                            }
-                            if (bindingInfo.visibility & wgpu::ShaderStage::Fragment) {
-                                deviceContext->PSSetConstantBuffers1(bindingSlot, 1, &d3d11Buffer,
-                                                                     &firstConstant, &numConstants);
-                            }
-                            if (bindingInfo.visibility & wgpu::ShaderStage::Compute) {
-                                deviceContext->CSSetConstantBuffers1(bindingSlot, 1, &d3d11Buffer,
-                                                                     &firstConstant, &numConstants);
-                            }
+            // TODO(dawn:1704): investigate if we can only clear it when necessary.
+            uint32_t clearValue[4] = {0, 0, 0, 0};
+            d3d11DeviceContext->ClearUnorderedAccessViewUint(pixelLocalStorageUAV.Get(),
+                                                             clearValue);
+        } else {
+            // Get the UAV of the explicit pixel local storage attachment
+            auto& attachmentInfo = renderPass->storageAttachments[attachment];
+            DAWN_TRY_ASSIGN(
+                pixelLocalStorageUAV,
+                ToBackend(attachmentInfo.storage.Get())->GetOrCreateD3D11UnorderedAccessView());
+
+            // Execute the load operation of the pixel local storage attachment
+            switch (attachmentInfo.loadOp) {
+                case wgpu::LoadOp::Clear: {
+                    switch (attachmentInfo.storage->GetFormat().format) {
+                        case wgpu::TextureFormat::R32Float: {
+                            float clearValue[4] = {static_cast<float>(attachmentInfo.clearColor.r),
+                                                   0, 0, 0};
+                            d3d11DeviceContext->ClearUnorderedAccessViewFloat(
+                                pixelLocalStorageUAV.Get(), clearValue);
                             break;
                         }
-                        case wgpu::BufferBindingType::Storage: {
-                            ComPtr<ID3D11UnorderedAccessView> d3d11UAV;
-                            DAWN_TRY_ASSIGN(d3d11UAV, ToBackend(binding.buffer)
-                                                          ->CreateD3D11UnorderedAccessView1(
-                                                              0, binding.buffer->GetSize()));
-                            UINT firstElement = offset / 4;
-                            if (bindingInfo.visibility & wgpu::ShaderStage::Compute) {
-                                deviceContext->CSSetUnorderedAccessViews(
-                                    bindingSlot, 1, d3d11UAV.GetAddressOf(), &firstElement);
-                                // Record the bounded UAVs so that we can clear them after the
-                                // dispatch.
-                                mUnorderedAccessViews.emplace_back(bindingSlot);
-                            } else {
-                                return DAWN_INTERNAL_ERROR(
-                                    "Storage buffers are only supported in compute shaders");
-                            }
+                        case wgpu::TextureFormat::R32Sint: {
+                            uint32_t clearValue[4] = {static_cast<uint32_t>(static_cast<int32_t>(
+                                                          attachmentInfo.clearColor.r)),
+                                                      0, 0, 0};
+                            d3d11DeviceContext->ClearUnorderedAccessViewUint(
+                                pixelLocalStorageUAV.Get(), clearValue);
                             break;
                         }
-                        case wgpu::BufferBindingType::ReadOnlyStorage: {
-                            ComPtr<ID3D11ShaderResourceView> d3d11SRV;
-                            DAWN_TRY_ASSIGN(d3d11SRV, ToBackend(binding.buffer)
-                                                          ->CreateD3D11ShaderResourceView(
-                                                              binding.offset, binding.size));
-                            if (bindingInfo.visibility & wgpu::ShaderStage::Vertex) {
-                                deviceContext->VSSetShaderResources(bindingSlot, 1,
-                                                                    d3d11SRV.GetAddressOf());
-                            }
-                            if (bindingInfo.visibility & wgpu::ShaderStage::Fragment) {
-                                deviceContext->PSSetShaderResources(bindingSlot, 1,
-                                                                    d3d11SRV.GetAddressOf());
-                            }
-                            if (bindingInfo.visibility & wgpu::ShaderStage::Compute) {
-                                deviceContext->CSSetShaderResources(bindingSlot, 1,
-                                                                    d3d11SRV.GetAddressOf());
-                            }
+                        case wgpu::TextureFormat::R32Uint: {
+                            uint32_t clearValue[4] = {
+                                static_cast<uint32_t>(attachmentInfo.clearColor.r), 0, 0, 0};
+                            d3d11DeviceContext->ClearUnorderedAccessViewUint(
+                                pixelLocalStorageUAV.Get(), clearValue);
                             break;
                         }
-                        case wgpu::BufferBindingType::Undefined:
-                            UNREACHABLE();
+                        default:
+                            DAWN_UNREACHABLE();
+                            break;
                     }
                     break;
                 }
-
-                case BindingInfoType::Sampler: {
-                    Sampler* sampler = ToBackend(group->GetBindingAsSampler(bindingIndex));
-                    ID3D11SamplerState* d3d11SamplerState = sampler->GetD3D11SamplerState();
-                    if (bindingInfo.visibility & wgpu::ShaderStage::Vertex) {
-                        commandContext->GetD3D11DeviceContext1()->VSSetSamplers(bindingSlot, 1,
-                                                                                &d3d11SamplerState);
-                    }
-                    if (bindingInfo.visibility & wgpu::ShaderStage::Fragment) {
-                        commandContext->GetD3D11DeviceContext1()->PSSetSamplers(bindingSlot, 1,
-                                                                                &d3d11SamplerState);
-                    }
-                    if (bindingInfo.visibility & wgpu::ShaderStage::Compute) {
-                        commandContext->GetD3D11DeviceContext1()->CSSetSamplers(bindingSlot, 1,
-                                                                                &d3d11SamplerState);
-                    }
+                case wgpu::LoadOp::Load:
+                case wgpu::LoadOp::ExpandResolveTexture:
                     break;
-                }
-
-                case BindingInfoType::Texture: {
-                    TextureView* view = ToBackend(group->GetBindingAsTextureView(bindingIndex));
-                    ComPtr<ID3D11ShaderResourceView> srv;
-                    DAWN_TRY_ASSIGN(srv, view->CreateD3D11ShaderResourceView());
-                    if (bindingInfo.visibility & wgpu::ShaderStage::Vertex) {
-                        commandContext->GetD3D11DeviceContext1()->VSSetShaderResources(
-                            bindingSlot, 1, srv.GetAddressOf());
-                    }
-                    if (bindingInfo.visibility & wgpu::ShaderStage::Fragment) {
-                        commandContext->GetD3D11DeviceContext1()->PSSetShaderResources(
-                            bindingSlot, 1, srv.GetAddressOf());
-                    }
-                    if (bindingInfo.visibility & wgpu::ShaderStage::Compute) {
-                        commandContext->GetD3D11DeviceContext1()->CSSetShaderResources(
-                            bindingSlot, 1, srv.GetAddressOf());
-                    }
+                case wgpu::LoadOp::Undefined:
+                    DAWN_UNREACHABLE();
                     break;
-                }
-
-                case BindingInfoType::StorageTexture: {
-                    return DAWN_UNIMPLEMENTED_ERROR("Storage textures are not supported");
-                }
-
-                case BindingInfoType::ExternalTexture: {
-                    return DAWN_UNIMPLEMENTED_ERROR("External textures are not supported");
-                }
             }
         }
-        return {};
+        pixelLocalStorageUAVs.push_back(pixelLocalStorageUAV);
     }
 
-    std::vector<UINT> mUnorderedAccessViews;
-};
+    return pixelLocalStorageUAVs;
+}
 
 }  // namespace
 
@@ -227,21 +205,21 @@ Ref<CommandBuffer> CommandBuffer::Create(CommandEncoder* encoder,
     return AcquireRef(new CommandBuffer(encoder, descriptor));
 }
 
-MaybeError CommandBuffer::Execute() {
-    CommandRecordingContext* commandContext = ToBackend(GetDevice())->GetPendingCommandContext();
-
-    ID3D11DeviceContext1* d3d11DeviceContext1 = commandContext->GetD3D11DeviceContext1();
-
-    auto LazyClearSyncScope = [commandContext](const SyncScopeResourceUsage& scope) -> MaybeError {
+MaybeError CommandBuffer::Execute(const ScopedSwapStateCommandRecordingContext* commandContext) {
+    auto LazyClearSyncScope = [&commandContext](const SyncScopeResourceUsage& scope) -> MaybeError {
         for (size_t i = 0; i < scope.textures.size(); i++) {
             Texture* texture = ToBackend(scope.textures[i]);
 
-            // Clear subresources that are not render attachments. Render attachments will be
-            // cleared in RecordBeginRenderPass by setting the loadop to clear when the texture
-            // subresource has not been initialized before the render pass.
-            DAWN_TRY(scope.textureUsages[i].Iterate([&](const SubresourceRange& range,
-                                                        wgpu::TextureUsage usage) -> MaybeError {
-                if (usage & ~wgpu::TextureUsage::RenderAttachment) {
+            // Clear subresources that are not render attachments or storage attachment. Render
+            // attachments will be cleared in RecordBeginRenderPass by setting the loadop to clear
+            // when the texture subresource has not been initialized before the render pass. Storage
+            // attachments will also be cleared in RecordBeginRenderPass by
+            // ClearUnorderedAccessView*() when the texture subresource has not been initialized
+            // before the render pass.
+            DAWN_TRY(scope.textureSyncInfos[i].Iterate([&](const SubresourceRange& range,
+                                                           TextureSyncInfo syncInfo) -> MaybeError {
+                if (syncInfo.usage & ~(wgpu::TextureUsage::RenderAttachment |
+                                       wgpu::TextureUsage::StorageAttachment)) {
                     DAWN_TRY(texture->EnsureSubresourceContentInitialized(commandContext, range));
                 }
                 return {};
@@ -250,6 +228,7 @@ MaybeError CommandBuffer::Execute() {
 
         for (BufferBase* buffer : scope.buffers) {
             DAWN_TRY(ToBackend(buffer)->EnsureDataInitialized(commandContext));
+            buffer->MarkUsedInPendingCommands();
         }
 
         return {};
@@ -263,8 +242,19 @@ MaybeError CommandBuffer::Execute() {
         switch (type) {
             case Command::BeginComputePass: {
                 mCommands.NextCommand<BeginComputePassCmd>();
+                for (BufferBase* buffer :
+                     GetResourceUsages().computePasses[nextComputePassNumber].referencedBuffers) {
+                    buffer->MarkUsedInPendingCommands();
+                }
+                for (TextureBase* texture :
+                     GetResourceUsages().computePasses[nextComputePassNumber].referencedTextures) {
+                    DAWN_TRY(ToBackend(texture)->SynchronizeTextureBeforeUse(commandContext));
+                }
                 for (const SyncScopeResourceUsage& scope :
                      GetResourceUsages().computePasses[nextComputePassNumber].dispatchUsages) {
+                    for (TextureBase* texture : scope.textures) {
+                        DAWN_TRY(ToBackend(texture)->SynchronizeTextureBeforeUse(commandContext));
+                    }
                     DAWN_TRY(LazyClearSyncScope(scope));
                 }
                 DAWN_TRY(ExecuteComputePass(commandContext));
@@ -275,9 +265,21 @@ MaybeError CommandBuffer::Execute() {
 
             case Command::BeginRenderPass: {
                 auto* cmd = mCommands.NextCommand<BeginRenderPassCmd>();
+                for (TextureBase* texture :
+                     GetResourceUsages().renderPasses[nextRenderPassNumber].textures) {
+                    DAWN_TRY(ToBackend(texture)->SynchronizeTextureBeforeUse(commandContext));
+                }
+                for (ExternalTextureBase* externalTexture :
+                     GetResourceUsages().renderPasses[nextRenderPassNumber].externalTextures) {
+                    for (auto& view : externalTexture->GetTextureViews()) {
+                        if (view.Get()) {
+                            DAWN_TRY(ToBackend(view->GetTexture())
+                                         ->SynchronizeTextureBeforeUse(commandContext));
+                        }
+                    }
+                }
                 DAWN_TRY(
                     LazyClearSyncScope(GetResourceUsages().renderPasses[nextRenderPassNumber]));
-                LazyClearRenderPassAttachments(cmd);
                 DAWN_TRY(ExecuteRenderPass(cmd, commandContext));
 
                 nextRenderPassNumber++;
@@ -318,7 +320,7 @@ MaybeError CommandBuffer::Execute() {
                 Ref<BufferBase> stagingBuffer;
                 // If the buffer is not mappable, we need to create a staging buffer and copy the
                 // data from the buffer to the staging buffer.
-                if (!(buffer->GetUsage() & kMappableBufferUsages)) {
+                if (!buffer->IsCPUReadable()) {
                     const TexelBlockInfo& blockInfo =
                         ToBackend(dst.texture)->GetFormat().GetAspectInfo(dst.aspect).block;
                     // TODO(dawn:1768): use compute shader to copy data from buffer to texture.
@@ -327,7 +329,8 @@ MaybeError CommandBuffer::Execute() {
                                     ComputeRequiredBytesInCopy(blockInfo, copy->copySize,
                                                                src.bytesPerRow, src.rowsPerImage));
                     desc.usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::MapRead;
-                    DAWN_TRY_ASSIGN(stagingBuffer, GetDevice()->CreateBuffer(&desc));
+                    DAWN_TRY_ASSIGN(stagingBuffer, Buffer::Create(ToBackend(GetDevice()),
+                                                                  Unpack(&desc), commandContext));
 
                     DAWN_TRY(Buffer::Copy(commandContext, buffer, src.offset,
                                           stagingBuffer->GetSize(), ToBackend(stagingBuffer.Get()),
@@ -337,10 +340,12 @@ MaybeError CommandBuffer::Execute() {
                 }
 
                 Buffer::ScopedMap scopedMap;
-                DAWN_TRY_ASSIGN(scopedMap, Buffer::ScopedMap::Create(buffer));
+                DAWN_TRY_ASSIGN(scopedMap, Buffer::ScopedMap::Create(commandContext, buffer,
+                                                                     wgpu::MapMode::Read));
                 DAWN_TRY(buffer->EnsureDataInitialized(commandContext));
 
                 Texture* texture = ToBackend(dst.texture.Get());
+                DAWN_TRY(texture->SynchronizeTextureBeforeUse(commandContext));
                 SubresourceRange subresources = GetSubresourcesAffectedByCopy(dst, copy->copySize);
 
                 DAWN_ASSERT(scopedMap.GetMappedData());
@@ -364,81 +369,28 @@ MaybeError CommandBuffer::Execute() {
                 auto& dst = copy->destination;
 
                 SubresourceRange subresources = GetSubresourcesAffectedByCopy(src, copy->copySize);
-                DAWN_TRY(ToBackend(src.texture)
-                             ->EnsureSubresourceContentInitialized(commandContext, subresources));
-
-                TextureDescriptor desc = {};
-                desc.label = "CopyTextureToBufferStaging";
-                desc.dimension = src.texture->GetDimension();
-                desc.size.width = copy->copySize.width;
-                desc.size.height = copy->copySize.height;
-                desc.size.depthOrArrayLayers = copy->copySize.depthOrArrayLayers;
-                desc.format = src.texture->GetFormat().format;
-                desc.mipLevelCount = 1;
-                desc.sampleCount = 1;
-
-                Ref<Texture> stagingTexture;
-                DAWN_TRY_ASSIGN(stagingTexture,
-                                Texture::CreateStaging(ToBackend(GetDevice()), &desc));
-
-                CopyTextureToTextureCmd copyTextureToBufferCmd;
-                copyTextureToBufferCmd.source = src;
-                copyTextureToBufferCmd.destination.texture = stagingTexture.Get();
-                copyTextureToBufferCmd.destination.origin = {0, 0, 0};
-                copyTextureToBufferCmd.destination.mipLevel = 0;
-                copyTextureToBufferCmd.destination.aspect = src.aspect;
-                copyTextureToBufferCmd.copySize = copy->copySize;
-
-                DAWN_TRY(Texture::Copy(commandContext, &copyTextureToBufferCmd));
+                Texture* texture = ToBackend(src.texture.Get());
+                DAWN_TRY(texture->SynchronizeTextureBeforeUse(commandContext));
+                DAWN_TRY(
+                    texture->EnsureSubresourceContentInitialized(commandContext, subresources));
 
                 Buffer* buffer = ToBackend(dst.buffer.Get());
                 Buffer::ScopedMap scopedDstMap;
-                DAWN_TRY_ASSIGN(scopedDstMap, Buffer::ScopedMap::Create(buffer));
+                DAWN_TRY_ASSIGN(scopedDstMap, Buffer::ScopedMap::Create(commandContext, buffer,
+                                                                        wgpu::MapMode::Write));
 
                 DAWN_TRY(buffer->EnsureDataInitializedAsDestination(commandContext, copy));
 
-                for (uint32_t z = 0; z < copy->copySize.depthOrArrayLayers; ++z) {
-                    // Copy the staging texture to the buffer.
-                    // The Map() will block until the GPU is done with the texture.
-                    // TODO(dawn:1705): avoid blocking the CPU.
-                    D3D11_MAPPED_SUBRESOURCE mappedResource;
-                    DAWN_TRY(
-                        CheckHRESULT(d3d11DeviceContext1->Map(stagingTexture->GetD3D11Resource(), z,
-                                                              D3D11_MAP_READ, 0, &mappedResource),
-                                     "D3D11 map staging texture"));
+                Texture::ReadCallback callback = [&](const uint8_t* data, uint64_t offset,
+                                                     uint64_t size) -> MaybeError {
+                    DAWN_TRY(ToBackend(dst.buffer)
+                                 ->Write(commandContext, dst.offset + offset, data, size));
+                    return {};
+                };
 
-                    uint8_t* pSrcData = reinterpret_cast<uint8_t*>(mappedResource.pData);
-                    const TexelBlockInfo& blockInfo =
-                        ToBackend(src.texture)->GetFormat().GetAspectInfo(src.aspect).block;
-                    uint32_t bytesPerRow = blockInfo.byteSize * copy->copySize.width;
-                    if (scopedDstMap.GetMappedData()) {
-                        uint8_t* pDstData = scopedDstMap.GetMappedData() + dst.offset +
-                                            dst.bytesPerRow * dst.rowsPerImage * z;
-                        for (uint32_t y = 0; y < copy->copySize.height; ++y) {
-                            memcpy(pDstData, pSrcData, bytesPerRow);
-                            pDstData += dst.bytesPerRow;
-                            pSrcData += mappedResource.RowPitch;
-                        }
-                    } else {
-                        uint64_t dstOffset = dst.offset + dst.bytesPerRow * dst.rowsPerImage * z;
-                        if (dst.bytesPerRow == bytesPerRow &&
-                            mappedResource.RowPitch == bytesPerRow) {
-                            // If there is no padding in the rows, we can upload the whole image in
-                            // one buffer->Write() call.
-                            DAWN_TRY(buffer->Write(commandContext, dstOffset, pSrcData,
-                                                   dst.bytesPerRow * copy->copySize.height));
-                        } else {
-                            // Otherwise, we need to upload each row separately.
-                            for (uint32_t y = 0; y < copy->copySize.height; ++y) {
-                                DAWN_TRY(buffer->Write(commandContext, dstOffset, pSrcData,
-                                                       bytesPerRow));
-                                dstOffset += dst.bytesPerRow;
-                                pSrcData += mappedResource.RowPitch;
-                            }
-                        }
-                    }
-                    d3d11DeviceContext1->Unmap(stagingTexture->GetD3D11Resource(), z);
-                }
+                DAWN_TRY(ToBackend(src.texture)
+                             ->Read(commandContext, subresources, src.origin, copy->copySize,
+                                    dst.bytesPerRow, dst.rowsPerImage, callback));
 
                 dst.buffer->MarkUsedInPendingCommands();
                 break;
@@ -452,6 +404,10 @@ MaybeError CommandBuffer::Execute() {
                     continue;
                 }
 
+                DAWN_TRY(ToBackend(copy->source.texture.Get())
+                             ->SynchronizeTextureBeforeUse(commandContext));
+                DAWN_TRY(ToBackend(copy->destination.texture.Get())
+                             ->SynchronizeTextureBeforeUse(commandContext));
                 DAWN_TRY(Texture::Copy(commandContext, copy));
                 break;
             }
@@ -469,7 +425,17 @@ MaybeError CommandBuffer::Execute() {
             }
 
             case Command::ResolveQuerySet: {
-                return DAWN_UNIMPLEMENTED_ERROR("ResolveQuerySet unimplemented");
+                ResolveQuerySetCmd* cmd = mCommands.NextCommand<ResolveQuerySetCmd>();
+                QuerySet* querySet = ToBackend(cmd->querySet.Get());
+                uint32_t firstQuery = cmd->firstQuery;
+                uint32_t queryCount = cmd->queryCount;
+                Buffer* destination = ToBackend(cmd->destination.Get());
+                uint64_t destinationOffset = cmd->destinationOffset;
+
+                DAWN_TRY(querySet->Resolve(commandContext, firstQuery, queryCount, destination,
+                                           destinationOffset));
+                destination->MarkUsedInPendingCommands();
+                break;
             }
 
             case Command::WriteTimestamp: {
@@ -494,7 +460,7 @@ MaybeError CommandBuffer::Execute() {
             case Command::InsertDebugMarker:
             case Command::PopDebugGroup:
             case Command::PushDebugGroup: {
-                HandleDebugCommands(commandContext, type);
+                HandleDebugCommands(commandContext, &mCommands, type);
                 break;
             }
 
@@ -506,9 +472,10 @@ MaybeError CommandBuffer::Execute() {
     return {};
 }
 
-MaybeError CommandBuffer::ExecuteComputePass(CommandRecordingContext* commandContext) {
+MaybeError CommandBuffer::ExecuteComputePass(
+    const ScopedSwapStateCommandRecordingContext* commandContext) {
     ComputePipeline* lastPipeline = nullptr;
-    BindGroupTracker bindGroupTracker = {};
+    ComputePassBindGroupTracker bindGroupTracker(commandContext);
 
     Command type;
     while (mCommands.NextCommandId(&type)) {
@@ -521,30 +488,34 @@ MaybeError CommandBuffer::ExecuteComputePass(CommandRecordingContext* commandCon
             case Command::Dispatch: {
                 DispatchCmd* dispatch = mCommands.NextCommand<DispatchCmd>();
 
-                DAWN_TRY(bindGroupTracker.Apply(commandContext));
+                DAWN_TRY(bindGroupTracker.Apply());
 
                 DAWN_TRY(RecordNumWorkgroupsForDispatch(lastPipeline, commandContext, dispatch));
-                commandContext->GetD3D11DeviceContext()->Dispatch(dispatch->x, dispatch->y,
-                                                                  dispatch->z);
-                bindGroupTracker.AfterDispatch(commandContext);
+                commandContext->GetD3D11DeviceContext4()->Dispatch(dispatch->x, dispatch->y,
+                                                                   dispatch->z);
 
                 break;
             }
 
             case Command::DispatchIndirect: {
-                // TODO(1716): figure how to update num workgroups builtins
                 DispatchIndirectCmd* dispatch = mCommands.NextCommand<DispatchIndirectCmd>();
 
-                DAWN_TRY(bindGroupTracker.Apply(commandContext));
+                DAWN_TRY(bindGroupTracker.Apply());
 
-                uint64_t indirectBufferOffset = dispatch->indirectOffset;
-                Buffer* indirectBuffer = ToBackend(dispatch->indirectBuffer.Get());
+                auto* indirectBuffer = ToGPUUsableBuffer(dispatch->indirectBuffer.Get());
 
-                commandContext->GetD3D11DeviceContext()->DispatchIndirect(
-                    indirectBuffer->GetD3D11Buffer(), indirectBufferOffset);
+                if (lastPipeline->UsesNumWorkgroups()) {
+                    // Copy indirect args into the uniform buffer for built-in workgroup variables.
+                    DAWN_TRY(Buffer::Copy(commandContext, indirectBuffer, dispatch->indirectOffset,
+                                          sizeof(uint32_t) * 3, commandContext->GetUniformBuffer(),
+                                          0));
+                }
 
-                bindGroupTracker.AfterDispatch(commandContext);
-
+                ID3D11Buffer* d3dBuffer;
+                DAWN_TRY_ASSIGN(d3dBuffer,
+                                indirectBuffer->GetD3D11NonConstantBuffer(commandContext));
+                commandContext->GetD3D11DeviceContext4()->DispatchIndirect(
+                    d3dBuffer, dispatch->indirectOffset);
                 break;
             }
 
@@ -577,44 +548,55 @@ MaybeError CommandBuffer::ExecuteComputePass(CommandRecordingContext* commandCon
             case Command::InsertDebugMarker:
             case Command::PopDebugGroup:
             case Command::PushDebugGroup: {
-                HandleDebugCommands(commandContext, type);
+                HandleDebugCommands(commandContext, &mCommands, type);
                 break;
             }
 
             default:
-                UNREACHABLE();
+                DAWN_UNREACHABLE();
         }
     }
 
     // EndComputePass should have been called
-    UNREACHABLE();
+    DAWN_UNREACHABLE();
 }
 
-MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
-                                            CommandRecordingContext* commandContext) {
-    ID3D11DeviceContext1* d3d11DeviceContext1 = commandContext->GetD3D11DeviceContext1();
+MaybeError CommandBuffer::ExecuteRenderPass(
+    BeginRenderPassCmd* renderPass,
+    const ScopedSwapStateCommandRecordingContext* commandContext) {
+    // For the color attachments that the clear_color_with_draw workaround has applied, we can skip
+    // the clear for them.
+    for (auto i :
+         IterateBitSet(ClearWithDrawHelper::GetAppliedColorAttachments(GetDevice(), renderPass))) {
+        auto& colorAttachment = renderPass->colorAttachments[i];
+        DAWN_ASSERT(colorAttachment.loadOp == wgpu::LoadOp::Clear);
+        // Skip the clear as it will be handled by the workaround.
+        colorAttachment.loadOp = wgpu::LoadOp::Load;
+        // Mark the resource as initialized to avoid the lazy clear.
+        SubresourceRange range = colorAttachment.view->GetSubresourceRange();
+        colorAttachment.view->GetTexture()->SetIsSubresourceContentInitialized(true, range);
+    }
+    LazyClearRenderPassAttachments(renderPass);
 
+    auto* d3d11DeviceContext = commandContext->GetD3D11DeviceContext4();
     // Hold ID3D11RenderTargetView ComPtr to make attachments alive.
-    ityp::array<ColorAttachmentIndex, ComPtr<ID3D11RenderTargetView>, kMaxColorAttachments>
-        d3d11RenderTargetViews = {};
-    ityp::array<ColorAttachmentIndex, ID3D11RenderTargetView*, kMaxColorAttachments>
-        d3d11RenderTargetViewPtrs = {};
-    ColorAttachmentIndex attachmentCount(uint8_t(0));
-    for (ColorAttachmentIndex i :
-         IterateBitSet(renderPass->attachmentState->GetColorAttachmentsMask())) {
+    PerColorAttachment<ID3D11RenderTargetView*> d3d11RenderTargetViews = {};
+    ColorAttachmentIndex attachmentCount{};
+    // TODO(dawn:1815): Shrink the sparse attachments to accommodate more UAVs.
+    for (auto i : IterateBitSet(renderPass->attachmentState->GetColorAttachmentsMask())) {
         TextureView* colorTextureView = ToBackend(renderPass->colorAttachments[i].view.Get());
-        DAWN_TRY_ASSIGN(d3d11RenderTargetViews[i], colorTextureView->CreateD3D11RenderTargetView());
-        d3d11RenderTargetViewPtrs[i] = d3d11RenderTargetViews[i].Get();
+        DAWN_TRY_ASSIGN(d3d11RenderTargetViews[i],
+                        colorTextureView->GetOrCreateD3D11RenderTargetView(
+                            renderPass->colorAttachments[i].depthSlice));
         if (renderPass->colorAttachments[i].loadOp == wgpu::LoadOp::Clear) {
-            d3d11DeviceContext1->ClearRenderTargetView(
-                d3d11RenderTargetViews[i].Get(),
-                ConvertToFloatColor(renderPass->colorAttachments[i].clearColor).data());
+            std::array<float, 4> clearColor =
+                ConvertToFloatColor(renderPass->colorAttachments[i].clearColor);
+            d3d11DeviceContext->ClearRenderTargetView(d3d11RenderTargetViews[i], clearColor.data());
         }
-        attachmentCount = i;
-        attachmentCount++;
+        attachmentCount = ityp::PlusOne(i);
     }
 
-    ComPtr<ID3D11DepthStencilView> d3d11DepthStencilView;
+    ID3D11DepthStencilView* d3d11DepthStencilView = nullptr;
     if (renderPass->attachmentState->HasDepthStencilAttachment()) {
         auto* attachmentInfo = &renderPass->depthStencilAttachment;
         const Format& attachmentFormat = attachmentInfo->view->GetTexture()->GetFormat();
@@ -622,7 +604,8 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
         TextureView* depthStencilTextureView =
             ToBackend(renderPass->depthStencilAttachment.view.Get());
         DAWN_TRY_ASSIGN(d3d11DepthStencilView,
-                        depthStencilTextureView->CreateD3D11DepthStencilView(false, false));
+                        depthStencilTextureView->GetOrCreateD3D11DepthStencilView(
+                            attachmentInfo->depthReadOnly, attachmentInfo->stencilReadOnly));
         UINT clearFlags = 0;
         if (attachmentFormat.HasDepth() &&
             renderPass->depthStencilAttachment.depthLoadOp == wgpu::LoadOp::Clear) {
@@ -634,24 +617,29 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
             clearFlags |= D3D11_CLEAR_STENCIL;
         }
 
-        d3d11DeviceContext1->ClearDepthStencilView(d3d11DepthStencilView.Get(), clearFlags,
-                                                   attachmentInfo->clearDepth,
-                                                   attachmentInfo->clearStencil);
+        d3d11DeviceContext->ClearDepthStencilView(d3d11DepthStencilView, clearFlags,
+                                                  attachmentInfo->clearDepth,
+                                                  attachmentInfo->clearStencil);
     }
 
-    d3d11DeviceContext1->OMSetRenderTargets(static_cast<uint8_t>(attachmentCount),
-                                            d3d11RenderTargetViewPtrs.data(),
-                                            d3d11DepthStencilView.Get());
+    d3d11DeviceContext->OMSetRenderTargets(static_cast<uint8_t>(attachmentCount),
+                                           d3d11RenderTargetViews.data(), d3d11DepthStencilView);
+
+    std::vector<ComPtr<ID3D11UnorderedAccessView>> pixelLocalStorageUAVs;
+    if (renderPass->attachmentState->HasPixelLocalStorage()) {
+        DAWN_TRY_ASSIGN(pixelLocalStorageUAVs, HandlePixelLocalStorageAndGetPixelLocalStorageUAVs(
+                                                   GetDevice(), renderPass, commandContext));
+    }
 
     // Set viewport
-    D3D11_VIEWPORT viewport;
-    viewport.TopLeftX = 0;
-    viewport.TopLeftY = 0;
-    viewport.Width = renderPass->width;
-    viewport.Height = renderPass->height;
-    viewport.MinDepth = 0.0f;
-    viewport.MaxDepth = 1.0f;
-    d3d11DeviceContext1->RSSetViewports(1, &viewport);
+    D3D11_VIEWPORT defautViewport;
+    defautViewport.TopLeftX = 0;
+    defautViewport.TopLeftY = 0;
+    defautViewport.Width = renderPass->width;
+    defautViewport.Height = renderPass->height;
+    defautViewport.MinDepth = 0.0f;
+    defautViewport.MaxDepth = 1.0f;
+    d3d11DeviceContext->RSSetViewports(1, &defautViewport);
 
     // Set scissor
     D3D11_RECT scissor;
@@ -659,10 +647,11 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
     scissor.top = 0;
     scissor.right = renderPass->width;
     scissor.bottom = renderPass->height;
-    d3d11DeviceContext1->RSSetScissorRects(1, &scissor);
+    d3d11DeviceContext->RSSetScissorRects(1, &scissor);
 
     RenderPipeline* lastPipeline = nullptr;
-    BindGroupTracker bindGroupTracker = {};
+    RenderPassBindGroupTracker bindGroupTracker(commandContext, std::move(pixelLocalStorageUAVs));
+    VertexBufferTracker vertexBufferTracker(commandContext);
     std::array<float, 4> blendColor = {0.0f, 0.0f, 0.0f, 0.0f};
     uint32_t stencilReference = 0;
 
@@ -671,10 +660,11 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
             case Command::Draw: {
                 DrawCmd* draw = iter->NextCommand<DrawCmd>();
 
-                DAWN_TRY(bindGroupTracker.Apply(commandContext));
+                DAWN_TRY(bindGroupTracker.Apply());
+                vertexBufferTracker.Apply(lastPipeline);
                 DAWN_TRY(RecordFirstIndexOffset(lastPipeline, commandContext, draw->firstVertex,
                                                 draw->firstInstance));
-                commandContext->GetD3D11DeviceContext()->DrawInstanced(
+                commandContext->GetD3D11DeviceContext4()->DrawInstanced(
                     draw->vertexCount, draw->instanceCount, draw->firstVertex, draw->firstInstance);
 
                 break;
@@ -683,10 +673,11 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
             case Command::DrawIndexed: {
                 DrawIndexedCmd* draw = iter->NextCommand<DrawIndexedCmd>();
 
-                DAWN_TRY(bindGroupTracker.Apply(commandContext));
+                DAWN_TRY(bindGroupTracker.Apply());
+                vertexBufferTracker.Apply(lastPipeline);
                 DAWN_TRY(RecordFirstIndexOffset(lastPipeline, commandContext, draw->baseVertex,
                                                 draw->firstInstance));
-                commandContext->GetD3D11DeviceContext()->DrawIndexedInstanced(
+                commandContext->GetD3D11DeviceContext4()->DrawIndexedInstanced(
                     draw->indexCount, draw->instanceCount, draw->firstIndex, draw->baseVertex,
                     draw->firstInstance);
 
@@ -694,31 +685,59 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
             }
 
             case Command::DrawIndirect: {
-                // TODO(dawn:1716): figure how to setup built-in variables for indirect draw.
                 DrawIndirectCmd* draw = iter->NextCommand<DrawIndirectCmd>();
 
-                DAWN_TRY(bindGroupTracker.Apply(commandContext));
-                uint64_t indirectBufferOffset = draw->indirectOffset;
-                Buffer* indirectBuffer = ToBackend(draw->indirectBuffer.Get());
-                ASSERT(indirectBuffer != nullptr);
+                auto* indirectBuffer = ToGPUUsableBuffer(draw->indirectBuffer.Get());
+                DAWN_ASSERT(indirectBuffer != nullptr);
 
-                commandContext->GetD3D11DeviceContext()->DrawInstancedIndirect(
-                    indirectBuffer->GetD3D11Buffer(), indirectBufferOffset);
+                DAWN_TRY(bindGroupTracker.Apply());
+                vertexBufferTracker.Apply(lastPipeline);
+
+                if (lastPipeline->UsesVertexIndex() || lastPipeline->UsesInstanceIndex()) {
+                    // Copy StartVertexLocation and StartInstanceLocation into the uniform buffer
+                    // for built-in variables.
+                    uint64_t offset =
+                        draw->indirectOffset +
+                        offsetof(D3D11_DRAW_INSTANCED_INDIRECT_ARGS, StartVertexLocation);
+                    DAWN_TRY(Buffer::Copy(commandContext, indirectBuffer, offset,
+                                          sizeof(uint32_t) * 2, commandContext->GetUniformBuffer(),
+                                          0));
+                }
+
+                ID3D11Buffer* d3dBuffer;
+                DAWN_TRY_ASSIGN(d3dBuffer,
+                                indirectBuffer->GetD3D11NonConstantBuffer(commandContext));
+                commandContext->GetD3D11DeviceContext4()->DrawInstancedIndirect(
+                    d3dBuffer, draw->indirectOffset);
 
                 break;
             }
 
             case Command::DrawIndexedIndirect: {
-                // TODO(dawn:1716): figure how to setup built-in variables for indirect draw.
                 DrawIndexedIndirectCmd* draw = iter->NextCommand<DrawIndexedIndirectCmd>();
 
-                DAWN_TRY(bindGroupTracker.Apply(commandContext));
+                auto* indirectBuffer = ToGPUUsableBuffer(draw->indirectBuffer.Get());
+                DAWN_ASSERT(indirectBuffer != nullptr);
 
-                Buffer* indirectBuffer = ToBackend(draw->indirectBuffer.Get());
-                ASSERT(indirectBuffer != nullptr);
+                DAWN_TRY(bindGroupTracker.Apply());
+                vertexBufferTracker.Apply(lastPipeline);
 
-                commandContext->GetD3D11DeviceContext()->DrawIndexedInstancedIndirect(
-                    indirectBuffer->GetD3D11Buffer(), draw->indirectOffset);
+                if (lastPipeline->UsesVertexIndex() || lastPipeline->UsesInstanceIndex()) {
+                    // Copy StartVertexLocation and StartInstanceLocation into the uniform buffer
+                    // for built-in variables.
+                    uint64_t offset =
+                        draw->indirectOffset +
+                        offsetof(D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS, BaseVertexLocation);
+                    DAWN_TRY(Buffer::Copy(commandContext, indirectBuffer, offset,
+                                          sizeof(uint32_t) * 2, commandContext->GetUniformBuffer(),
+                                          0));
+                }
+
+                ID3D11Buffer* d3dBuffer;
+                DAWN_TRY_ASSIGN(d3dBuffer,
+                                indirectBuffer->GetD3D11NonConstantBuffer(commandContext));
+                commandContext->GetD3D11DeviceContext4()->DrawIndexedInstancedIndirect(
+                    d3dBuffer, draw->indirectOffset);
 
                 break;
             }
@@ -752,38 +771,33 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                 UINT indexBufferBaseOffset = cmd->offset;
                 DXGI_FORMAT indexBufferFormat = DXGIIndexFormat(cmd->format);
 
-                commandContext->GetD3D11DeviceContext()->IASetIndexBuffer(
-                    ToBackend(cmd->buffer)->GetD3D11Buffer(), indexBufferFormat,
-                    indexBufferBaseOffset);
+                ID3D11Buffer* d3dBuffer;
+                DAWN_TRY_ASSIGN(d3dBuffer, ToGPUUsableBuffer(cmd->buffer.Get())
+                                               ->GetD3D11NonConstantBuffer(commandContext));
+                commandContext->GetD3D11DeviceContext4()->IASetIndexBuffer(
+                    d3dBuffer, indexBufferFormat, indexBufferBaseOffset);
 
                 break;
             }
 
             case Command::SetVertexBuffer: {
                 SetVertexBufferCmd* cmd = iter->NextCommand<SetVertexBufferCmd>();
-                ASSERT(lastPipeline);
-                const VertexBufferInfo& info = lastPipeline->GetVertexBuffer(cmd->slot);
-
-                // TODO(dawn:1705): should we set vertex back to nullptr after the draw call?
-                UINT slot = static_cast<uint8_t>(cmd->slot);
-                ID3D11Buffer* buffer = ToBackend(cmd->buffer)->GetD3D11Buffer();
-                UINT arrayStride = info.arrayStride;
-                UINT offset = cmd->offset;
-                commandContext->GetD3D11DeviceContext()->IASetVertexBuffers(slot, 1, &buffer,
-                                                                            &arrayStride, &offset);
-
+                ID3D11Buffer* d3dBuffer;
+                DAWN_TRY_ASSIGN(d3dBuffer, ToGPUUsableBuffer(cmd->buffer.Get())
+                                               ->GetD3D11NonConstantBuffer(commandContext));
+                vertexBufferTracker.OnSetVertexBuffer(cmd->slot, d3dBuffer, cmd->offset);
                 break;
             }
 
             case Command::InsertDebugMarker:
             case Command::PopDebugGroup:
             case Command::PushDebugGroup: {
-                HandleDebugCommands(commandContext, type);
+                HandleDebugCommands(commandContext, iter, type);
                 break;
             }
 
             default:
-                UNREACHABLE();
+                DAWN_UNREACHABLE();
                 break;
         }
 
@@ -795,7 +809,38 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
         switch (type) {
             case Command::EndRenderPass: {
                 mCommands.NextCommand<EndRenderPassCmd>();
-                // TODO(dawn:1705): resolve MSAA
+                d3d11DeviceContext->OMSetRenderTargets(0, nullptr, nullptr);
+
+                if (renderPass->attachmentState->GetSampleCount() <= 1) {
+                    return {};
+                }
+
+                // Resolve multisampled textures.
+                for (auto i :
+                     IterateBitSet(renderPass->attachmentState->GetColorAttachmentsMask())) {
+                    const auto& attachment = renderPass->colorAttachments[i];
+                    if (!attachment.resolveTarget.Get()) {
+                        continue;
+                    }
+
+                    DAWN_ASSERT(attachment.view->GetAspects() == Aspect::Color);
+                    DAWN_ASSERT(attachment.resolveTarget->GetAspects() == Aspect::Color);
+
+                    Texture* resolveTexture = ToBackend(attachment.resolveTarget->GetTexture());
+                    Texture* colorTexture = ToBackend(attachment.view->GetTexture());
+                    uint32_t dstSubresource = resolveTexture->GetSubresourceIndex(
+                        attachment.resolveTarget->GetBaseMipLevel(),
+                        attachment.resolveTarget->GetBaseArrayLayer(), Aspect::Color);
+                    uint32_t srcSubresource = colorTexture->GetSubresourceIndex(
+                        attachment.view->GetBaseMipLevel(), attachment.view->GetBaseArrayLayer(),
+                        Aspect::Color);
+                    d3d11DeviceContext->ResolveSubresource(
+                        resolveTexture->GetD3D11Resource(), dstSubresource,
+                        colorTexture->GetD3D11Resource(), srcSubresource,
+                        d3d::DXGITextureFormat(GetDevice(),
+                                               attachment.resolveTarget->GetFormat().format));
+                }
+
                 return {};
             }
 
@@ -805,7 +850,7 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                 if (lastPipeline) {
                     lastPipeline->ApplyDepthStencilState(commandContext, stencilReference);
                 }
-                return {};
+                break;
             }
 
             case Command::SetViewport: {
@@ -818,7 +863,7 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                 viewport.Height = cmd->height;
                 viewport.MinDepth = cmd->minDepth;
                 viewport.MaxDepth = cmd->maxDepth;
-                commandContext->GetD3D11DeviceContext()->RSSetViewports(1, &viewport);
+                commandContext->GetD3D11DeviceContext4()->RSSetViewports(1, &viewport);
                 break;
             }
 
@@ -828,7 +873,7 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                 D3D11_RECT scissorRect = {static_cast<LONG>(cmd->x), static_cast<LONG>(cmd->y),
                                           static_cast<LONG>(cmd->x + cmd->width),
                                           static_cast<LONG>(cmd->y + cmd->height)};
-                commandContext->GetD3D11DeviceContext()->RSSetScissorRects(1, &scissorRect);
+                commandContext->GetD3D11DeviceContext4()->RSSetScissorRects(1, &scissorRect);
                 break;
             }
 
@@ -855,11 +900,17 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
             }
 
             case Command::BeginOcclusionQuery: {
-                return DAWN_UNIMPLEMENTED_ERROR("BeginOcclusionQuery unimplemented.");
+                BeginOcclusionQueryCmd* cmd = mCommands.NextCommand<BeginOcclusionQueryCmd>();
+                QuerySet* querySet = ToBackend(cmd->querySet.Get());
+                querySet->BeginQuery(commandContext->GetD3D11DeviceContext4(), cmd->queryIndex);
+                break;
             }
 
             case Command::EndOcclusionQuery: {
-                return DAWN_UNIMPLEMENTED_ERROR("EndOcclusionQuery unimplemented.");
+                EndOcclusionQueryCmd* cmd = mCommands.NextCommand<EndOcclusionQueryCmd>();
+                QuerySet* querySet = ToBackend(cmd->querySet.Get());
+                querySet->EndQuery(commandContext->GetD3D11DeviceContext4(), cmd->queryIndex);
+                break;
             }
 
             case Command::WriteTimestamp:
@@ -872,68 +923,70 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
     }
 
     // EndRenderPass should have been called
-    UNREACHABLE();
+    DAWN_UNREACHABLE();
 }
 
-void CommandBuffer::HandleDebugCommands(CommandRecordingContext* commandContext, Command command) {
+void CommandBuffer::HandleDebugCommands(
+    const ScopedSwapStateCommandRecordingContext* commandContext,
+    CommandIterator* iter,
+    Command command) {
     switch (command) {
         case Command::InsertDebugMarker: {
-            InsertDebugMarkerCmd* cmd = mCommands.NextCommand<InsertDebugMarkerCmd>();
-            std::wstring label = UTF8ToWStr(mCommands.NextData<char>(cmd->length + 1));
+            InsertDebugMarkerCmd* cmd = iter->NextCommand<InsertDebugMarkerCmd>();
+            std::wstring label = UTF8ToWStr(iter->NextData<char>(cmd->length + 1));
             commandContext->GetD3DUserDefinedAnnotation()->SetMarker(label.c_str());
             break;
         }
 
         case Command::PopDebugGroup: {
-            std::ignore = mCommands.NextCommand<PopDebugGroupCmd>();
+            [[maybe_unused]] auto cmd = iter->NextCommand<PopDebugGroupCmd>();
             commandContext->GetD3DUserDefinedAnnotation()->EndEvent();
             break;
         }
 
         case Command::PushDebugGroup: {
-            PushDebugGroupCmd* cmd = mCommands.NextCommand<PushDebugGroupCmd>();
-            std::wstring label = UTF8ToWStr(mCommands.NextData<char>(cmd->length + 1));
+            PushDebugGroupCmd* cmd = iter->NextCommand<PushDebugGroupCmd>();
+            std::wstring label = UTF8ToWStr(iter->NextData<char>(cmd->length + 1));
             commandContext->GetD3DUserDefinedAnnotation()->BeginEvent(label.c_str());
             break;
         }
         default:
-            UNREACHABLE();
+            DAWN_UNREACHABLE();
     }
 }
 
-MaybeError CommandBuffer::RecordFirstIndexOffset(RenderPipeline* renderPipeline,
-                                                 CommandRecordingContext* commandContext,
-                                                 uint32_t firstVertex,
-                                                 uint32_t firstInstance) {
-    if (!renderPipeline->GetUsesVertexOrInstanceIndex()) {
-        // Vertex and instance index are not used in shader, so we don't need to update the uniform
-        // buffer. The original value in the uniform buffer will not be used, so we don't need to
-        // clear it.
+MaybeError CommandBuffer::RecordFirstIndexOffset(
+    RenderPipeline* renderPipeline,
+    const ScopedSwapStateCommandRecordingContext* commandContext,
+    uint32_t firstVertex,
+    uint32_t firstInstance) {
+    constexpr uint32_t kFirstVertexOffset = 0;
+    constexpr uint32_t kFirstInstanceOffset = 1;
+
+    if (renderPipeline->UsesVertexIndex()) {
+        commandContext->WriteUniformBuffer(kFirstVertexOffset, firstVertex);
+    }
+    if (renderPipeline->UsesInstanceIndex()) {
+        commandContext->WriteUniformBuffer(kFirstInstanceOffset, firstInstance);
+    }
+
+    return commandContext->FlushUniformBuffer();
+}
+
+MaybeError CommandBuffer::RecordNumWorkgroupsForDispatch(
+    ComputePipeline* computePipeline,
+    const ScopedSwapStateCommandRecordingContext* commandContext,
+    DispatchCmd* dispatchCmd) {
+    if (!computePipeline->UsesNumWorkgroups()) {
+        // Workgroup size is not used in shader, so we don't need to update the uniform buffer. The
+        // original value in the uniform buffer will not be used, so we don't need to clear it.
         return {};
     }
 
-    // TODO(dawn:1705): only update the uniform buffer when the value changes.
-    uint32_t data[4] = {
-        firstVertex,
-        firstInstance,
-    };
-    DAWN_TRY(commandContext->GetUniformBuffer()->Write(commandContext, 0, data, sizeof(data)));
-
-    return {};
-}
-
-MaybeError CommandBuffer::RecordNumWorkgroupsForDispatch(ComputePipeline* computePipeline,
-                                                         CommandRecordingContext* commandContext,
-                                                         DispatchCmd* dispatchCmd) {
-    // TODO(dawn:1705): only update the uniform buffer when the value changes.
-    uint32_t data[4] = {
-        dispatchCmd->x,
-        dispatchCmd->y,
-        dispatchCmd->z,
-    };
-    DAWN_TRY(commandContext->GetUniformBuffer()->Write(commandContext, 0, data, sizeof(data)));
-
-    return {};
+    commandContext->WriteUniformBuffer(/*offset=*/0, dispatchCmd->x);
+    commandContext->WriteUniformBuffer(/*offset=*/1, dispatchCmd->y);
+    commandContext->WriteUniformBuffer(/*offset=*/2, dispatchCmd->z);
+    return commandContext->FlushUniformBuffer();
 }
 
 }  // namespace dawn::native::d3d11

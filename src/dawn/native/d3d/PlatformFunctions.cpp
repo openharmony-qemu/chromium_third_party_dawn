@@ -1,107 +1,68 @@
-// Copyright 2023 The Dawn Authors
+// Copyright 2023 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/native/d3d/PlatformFunctions.h"
 
 #include <comdef.h>
+#include <versionhelpers.h>
 
-#include <algorithm>
-#include <array>
-#include <sstream>
-#include <utility>
+#include <vector>
 
 namespace dawn::native::d3d {
+
 namespace {
-// Extract Version from "10.0.{Version}.0" if possible, otherwise return 0.
-uint32_t GetWindowsSDKVersionFromDirectoryName(const char* directoryName) {
-    constexpr char kPrefix[] = "10.0.";
-    constexpr char kPostfix[] = ".0";
-
-    constexpr uint32_t kPrefixLen = sizeof(kPrefix) - 1;
-    constexpr uint32_t kPostfixLen = sizeof(kPostfix) - 1;
-    const uint32_t directoryNameLen = strlen(directoryName);
-
-    if (directoryNameLen < kPrefixLen + kPostfixLen + 1) {
+// Referenced from base/win/registry.cc in Chromium
+uint64_t ReadFromSZRegistryKey(HKEY registerKey, const char* registerKeyName) {
+    DWORD valueType;
+    DWORD returnSize;
+    if (RegQueryValueExA(registerKey, registerKeyName, nullptr, &valueType, nullptr, &returnSize) !=
+        ERROR_SUCCESS) {
         return 0;
     }
-
-    // Check if directoryName starts with "10.0.".
-    if (strncmp(directoryName, kPrefix, kPrefixLen) != 0) {
+    std::vector<char> returnStringValue(returnSize);
+    auto hr = RegQueryValueExA(registerKey, registerKeyName, nullptr, &valueType,
+                               reinterpret_cast<LPBYTE>(returnStringValue.data()), &returnSize);
+    if (hr != ERROR_SUCCESS || valueType != REG_SZ) {
         return 0;
     }
-
-    // Check if directoryName ends with ".0".
-    if (strncmp(directoryName + (directoryNameLen - kPostfixLen), kPostfix, kPostfixLen) != 0) {
-        return 0;
-    }
-
-    // Extract Version from "10.0.{Version}.0" and convert Version into an integer.
-    return atoi(directoryName + kPrefixLen);
+    constexpr int32_t kRadix = 10;
+    return strtol(returnStringValue.data(), nullptr, kRadix);
 }
 
-class ScopedFileHandle final {
-  public:
-    explicit ScopedFileHandle(HANDLE handle) : mHandle(handle) {}
-    ~ScopedFileHandle() {
-        if (mHandle != INVALID_HANDLE_VALUE) {
-            ASSERT(FindClose(mHandle));
-        }
-    }
-    HANDLE GetHandle() const { return mHandle; }
-
-  private:
-    HANDLE mHandle;
-};
-
-std::string GetWindowsSDKBasePath() {
-    const char* kDefaultWindowsSDKPath = "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\*";
-    WIN32_FIND_DATAA fileData;
-    ScopedFileHandle handle(FindFirstFileA(kDefaultWindowsSDKPath, &fileData));
-    if (handle.GetHandle() == INVALID_HANDLE_VALUE) {
-        return "";
-    }
-
-    uint32_t highestWindowsSDKVersion = 0;
-    do {
-        if (!(fileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-            continue;
-        }
-
-        highestWindowsSDKVersion = std::max(
-            highestWindowsSDKVersion, GetWindowsSDKVersionFromDirectoryName(fileData.cFileName));
-    } while (FindNextFileA(handle.GetHandle(), &fileData));
-
-    if (highestWindowsSDKVersion == 0) {
-        return "";
-    }
-
-    // Currently we only support using DXC on x64.
-    std::ostringstream ostream;
-    ostream << "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0." << highestWindowsSDKVersion
-            << ".0\\x64\\";
-
-    return ostream.str();
-}
 }  // anonymous namespace
 
-PlatformFunctions::PlatformFunctions() = default;
+PlatformFunctions::PlatformFunctions() : mCurrentBuildNumber(0) {}
+
 PlatformFunctions::~PlatformFunctions() = default;
 
 MaybeError PlatformFunctions::LoadFunctions() {
     DAWN_TRY(LoadDXGI());
-    LoadDXCLibraries();
     DAWN_TRY(LoadFXCompiler());
+    InitWindowsVersion();
     return {};
 }
 
@@ -128,57 +89,6 @@ MaybeError PlatformFunctions::LoadDXGI() {
     return {};
 }
 
-void PlatformFunctions::LoadDXCLibraries() {
-    // TODO(dawn:766)
-    // Statically linked with dxcompiler.lib in UWP
-    // currently linked with dxcompiler.lib making CoreApp unable to activate
-    // LoadDXIL and LoadDXCompiler will fail in UWP, but LoadFunctions() can still be
-    // successfully executed.
-
-    const std::string& windowsSDKBasePath = GetWindowsSDKBasePath();
-
-    LoadDXIL(windowsSDKBasePath);
-    LoadDXCompiler(windowsSDKBasePath);
-}
-
-void PlatformFunctions::LoadDXIL(const std::string& baseWindowsSDKPath) {
-    const char* dxilDLLName = "dxil.dll";
-    const std::array<std::string, 2> kDxilDLLPaths = {
-        {dxilDLLName, baseWindowsSDKPath + dxilDLLName}};
-
-    for (const std::string& dxilDLLPath : kDxilDLLPaths) {
-        if (mDXILLib.Open(dxilDLLPath, nullptr)) {
-            return;
-        }
-    }
-    ASSERT(!mDXILLib.Valid());
-}
-
-void PlatformFunctions::LoadDXCompiler(const std::string& baseWindowsSDKPath) {
-    // DXIL must be loaded before DXC, otherwise shader signing is unavailable
-    if (!mDXILLib.Valid()) {
-        return;
-    }
-
-    const char* dxCompilerDLLName = "dxcompiler.dll";
-    const std::array<std::string, 2> kDxCompilerDLLPaths = {
-        {dxCompilerDLLName, baseWindowsSDKPath + dxCompilerDLLName}};
-
-    DynamicLib dxCompilerLib;
-    for (const std::string& dxCompilerDLLName : kDxCompilerDLLPaths) {
-        if (dxCompilerLib.Open(dxCompilerDLLName, nullptr)) {
-            break;
-        }
-    }
-
-    if (dxCompilerLib.Valid() &&
-        dxCompilerLib.GetProc(&dxcCreateInstance, "DxcCreateInstance", nullptr)) {
-        mDXCompilerLib = std::move(dxCompilerLib);
-    } else {
-        mDXILLib.Close();
-    }
-}
-
 MaybeError PlatformFunctions::LoadFXCompiler() {
 #if DAWN_PLATFORM_IS(WINUWP)
     d3dCompile = &D3DCompile;
@@ -194,10 +104,29 @@ MaybeError PlatformFunctions::LoadFXCompiler() {
     return {};
 }
 
-// Use Backend::IsDXCAvaliable if possible, which also check the DXC is no older than a given
-// version
-bool PlatformFunctions::IsDXCBinaryAvailable() const {
-    return mDXILLib.Valid() && mDXCompilerLib.Valid();
+void PlatformFunctions::InitWindowsVersion() {
+    // Currently we only care about the build number of Windows 10 and Windows 11.
+    if (!IsWindows10OrGreater()) {
+        return;
+    }
+
+    // Referenced from base/win/windows_version.cc in Chromium
+    constexpr wchar_t kRegKeyWindowsNTCurrentVersion[] =
+        L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
+
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kRegKeyWindowsNTCurrentVersion, 0, KEY_QUERY_VALUE,
+                      &hKey) != ERROR_SUCCESS) {
+        return;
+    }
+
+    mCurrentBuildNumber = ReadFromSZRegistryKey(hKey, "CurrentBuildNumber");
+
+    RegCloseKey(hKey);
+}
+
+uint64_t PlatformFunctions::GetWindowsBuildNumber() const {
+    return mCurrentBuildNumber;
 }
 
 }  // namespace dawn::native::d3d

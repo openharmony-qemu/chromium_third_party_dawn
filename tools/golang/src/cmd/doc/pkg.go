@@ -25,8 +25,7 @@ import (
 )
 
 const (
-	punchedCardWidth = 80 // These things just won't leave us alone.
-	indentedWidth    = punchedCardWidth - len(indent)
+	punchedCardWidth = 80
 	indent           = "    "
 )
 
@@ -42,6 +41,14 @@ type Package struct {
 	constructor map[*doc.Func]bool  // Constructors.
 	fs          *token.FileSet      // Needed for printing.
 	buf         pkgBuffer
+}
+
+func (p *Package) ToText(w io.Writer, text, prefix, codePrefix string) {
+	d := p.doc.Parser().Parse(text)
+	pr := p.doc.Printer()
+	pr.TextPrefix = prefix
+	pr.TextCodePrefix = codePrefix
+	w.Write(pr.Text(d))
 }
 
 // pkgBuffer is a wrapper for bytes.Buffer that prints a package clause the
@@ -89,9 +96,11 @@ func (pkg *Package) prettyPath() string {
 	// Also convert everything to slash-separated paths for uniform handling.
 	path = filepath.Clean(filepath.ToSlash(pkg.build.Dir))
 	// Can we find a decent prefix?
-	goroot := filepath.Join(buildCtx.GOROOT, "src")
-	if p, ok := trim(path, filepath.ToSlash(goroot)); ok {
-		return p
+	if buildCtx.GOROOT != "" {
+		goroot := filepath.Join(buildCtx.GOROOT, "src")
+		if p, ok := trim(path, filepath.ToSlash(goroot)); ok {
+			return p
+		}
 	}
 	for _, gopath := range splitGopath() {
 		if p, ok := trim(path, filepath.ToSlash(gopath)); ok {
@@ -249,7 +258,7 @@ func (pkg *Package) emit(comment string, node ast.Node) {
 		}
 		if comment != "" && !showSrc {
 			pkg.newlines(1)
-			doc.ToText(&pkg.buf, comment, indent, indent+indent, indentedWidth)
+			pkg.ToText(&pkg.buf, comment, indent, indent+indent)
 			pkg.newlines(2) // Blank line after comment to separate from next item.
 		} else {
 			pkg.newlines(1)
@@ -411,7 +420,7 @@ func (pkg *Package) oneLineNodeDepth(node ast.Node, depth int) string {
 
 	default:
 		// As a fallback, use default formatter for all unknown node types.
-		buf := new(bytes.Buffer)
+		buf := new(strings.Builder)
 		format.Node(buf, pkg.fs, node)
 		s := buf.String()
 		if strings.Contains(s, "\n") {
@@ -461,7 +470,7 @@ func joinStrings(ss []string) string {
 // allDoc prints all the docs for the package.
 func (pkg *Package) allDoc() {
 	pkg.Printf("") // Trigger the package clause; we know the package exists.
-	doc.ToText(&pkg.buf, pkg.doc.Doc, "", indent, indentedWidth)
+	pkg.ToText(&pkg.buf, pkg.doc.Doc, "", indent)
 	pkg.newlines(1)
 
 	printed := make(map[*ast.GenDecl]bool)
@@ -521,7 +530,7 @@ func (pkg *Package) allDoc() {
 func (pkg *Package) packageDoc() {
 	pkg.Printf("") // Trigger the package clause; we know the package exists.
 	if !short {
-		doc.ToText(&pkg.buf, pkg.doc.Doc, "", indent, indentedWidth)
+		pkg.ToText(&pkg.buf, pkg.doc.Doc, "", indent)
 		pkg.newlines(1)
 	}
 
@@ -840,7 +849,7 @@ func (pkg *Package) typeDoc(typ *doc.Type) {
 // structs and methods from interfaces (unless the unexported flag is set or we
 // are asked to show the original source).
 func trimUnexportedElems(spec *ast.TypeSpec) {
-	if unexported || showSrc {
+	if showSrc {
 		return
 	}
 	switch typ := spec.Type.(type) {
@@ -861,6 +870,43 @@ func trimUnexportedFields(fields *ast.FieldList, isInterface bool) *ast.FieldLis
 	trimmed := false
 	list := make([]*ast.Field, 0, len(fields.List))
 	for _, field := range fields.List {
+		// When printing fields we normally print field.Doc.
+		// Here we are going to pass the AST to go/format,
+		// which will print the comments from the AST,
+		// not field.Doc which is from go/doc.
+		// The two are similar but not identical;
+		// for example, field.Doc does not include directives.
+		// In order to consistently print field.Doc,
+		// we replace the comment in the AST with field.Doc.
+		// That will cause go/format to print what we want.
+		// See issue #56592.
+		if field.Doc != nil {
+			doc := field.Doc
+			text := doc.Text()
+
+			trailingBlankLine := len(doc.List[len(doc.List)-1].Text) == 2
+			if !trailingBlankLine {
+				// Remove trailing newline.
+				lt := len(text)
+				if lt > 0 && text[lt-1] == '\n' {
+					text = text[:lt-1]
+				}
+			}
+
+			start := doc.List[0].Slash
+			doc.List = doc.List[:0]
+			for _, line := range strings.Split(text, "\n") {
+				prefix := "// "
+				if len(line) > 0 && line[0] == '\t' {
+					prefix = "//"
+				}
+				doc.List = append(doc.List, &ast.Comment{
+					Text: prefix + line,
+				})
+			}
+			doc.List[0].Slash = start
+		}
+
 		names := field.Names
 		if len(names) == 0 {
 			// Embedded type. Use the name of the type. It must be of the form ident or
@@ -899,11 +945,13 @@ func trimUnexportedFields(fields *ast.FieldList, isInterface bool) *ast.FieldLis
 		}
 		// Trims if any is unexported. Good enough in practice.
 		ok := true
-		for _, name := range names {
-			if !isExported(name.Name) {
-				trimmed = true
-				ok = false
-				break
+		if !unexported {
+			for _, name := range names {
+				if !isExported(name.Name) {
+					trimmed = true
+					ok = false
+					break
+				}
 			}
 		}
 		if ok {
@@ -1031,9 +1079,9 @@ func (pkg *Package) printFieldDoc(symbol, fieldName string) bool {
 				if field.Doc != nil {
 					// To present indented blocks in comments correctly, process the comment as
 					// a unit before adding the leading // to each line.
-					docBuf := bytes.Buffer{}
-					doc.ToText(&docBuf, field.Doc.Text(), "", indent, indentedWidth)
-					scanner := bufio.NewScanner(&docBuf)
+					docBuf := new(bytes.Buffer)
+					pkg.ToText(docBuf, field.Doc.Text(), "", indent)
+					scanner := bufio.NewScanner(docBuf)
 					for scanner.Scan() {
 						fmt.Fprintf(&pkg.buf, "%s// %s\n", indent, scanner.Bytes())
 					}

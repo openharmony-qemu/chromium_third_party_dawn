@@ -1,17 +1,30 @@
 #!/usr/bin/env python3
-# Copyright 2019 The Dawn Authors
+# Copyright 2019 The Dawn & Tint Authors
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+#    contributors may be used to endorse or promote products derived from
+#    this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 """Module to create generators that render multiple Jinja2 templates for GN.
 
 A helper module that can be used to create generator scripts (clients)
@@ -53,6 +66,16 @@ from collections import namedtuple
 #
 FileRender = namedtuple('FileRender', ['template', 'output', 'params_dicts'])
 
+# A GeneratorOutput represent everything an invocation of the generator will
+# produce.
+#
+#   renders: an iterable of FileRenders.
+#
+#   imported_templates: paths to additional templates that will be imported.
+#       Trying to import with {% from %} will enforce that the file is listed
+#       to ensure the dependency information produced is correct.
+GeneratorOutput = namedtuple('GeneratorOutput',
+                             ['renders', 'imported_templates'])
 
 # The interface that must be implemented by generators.
 class Generator:
@@ -64,7 +87,7 @@ class Generator:
         """Add generator-specific argparse arguments."""
         pass
 
-    def get_file_renders(self, args):
+    def get_outputs(self, args):
         """Return the list of FileRender objects to process."""
         return []
 
@@ -107,20 +130,28 @@ import jinja2
 # A custom Jinja2 template loader that removes the extra indentation
 # of the template blocks so that the output is correctly indented
 class _PreprocessingLoader(jinja2.BaseLoader):
-    def __init__(self, path):
+
+    def __init__(self, path, allow_list):
         self.path = path
+        self.allow_list = set(allow_list)
+
+        # Check that all the listed templates exist.
+        for template in self.allow_list:
+            if not os.path.exists(os.path.join(self.path, template)):
+                raise jinja2.TemplateNotFound(template)
 
     def get_source(self, environment, template):
-        path = os.path.join(self.path, template)
-        if not os.path.exists(path):
+        if not template in self.allow_list:
             raise jinja2.TemplateNotFound(template)
+
+        path = os.path.join(self.path, template)
         mtime = os.path.getmtime(path)
         with open(path) as f:
             source = self.preprocess(f.read())
         return source, path, lambda: mtime == os.path.getmtime(path)
 
-    blockstart = re.compile('{%-?\s*(if|elif|else|for|block|macro)[^}]*%}')
-    blockend = re.compile('{%-?\s*(end(if|for|block|macro)|elif|else)[^}]*%}')
+    blockstart = re.compile(r'{%-?\s*(if|elif|else|for|block|macro)[^}]*%}')
+    blockend = re.compile(r'{%-?\s*(end(if|for|block|macro)|elif|else)[^}]*%}')
 
     def preprocess(self, source):
         lines = source.split('\n')
@@ -164,16 +195,20 @@ class _PreprocessingLoader(jinja2.BaseLoader):
 _FileOutput = namedtuple('FileOutput', ['name', 'content'])
 
 
-def _do_renders(renders, template_dir):
-    loader = _PreprocessingLoader(template_dir)
-    env = jinja2.Environment(extensions=['jinja2.ext.do'],
-                             loader=loader,
-                             lstrip_blocks=True,
-                             trim_blocks=True,
-                             line_comment_prefix='//*')
+def _do_renders(output, template_dir):
+    template_allow_list = [render.template for render in output.renders
+                           ] + list(output.imported_templates)
+    loader = _PreprocessingLoader(template_dir, template_allow_list)
 
-    def do_assert(expr):
-        assert expr
+    env = jinja2.Environment(
+        extensions=['jinja2.ext.do', 'jinja2.ext.loopcontrols'],
+        loader=loader,
+        lstrip_blocks=True,
+        trim_blocks=True,
+        line_comment_prefix='//*')
+
+    def do_assert(expr, message=''):
+        assert expr, message
         return ''
 
     def debug(text):
@@ -188,7 +223,7 @@ def _do_renders(renders, template_dir):
     }
 
     outputs = []
-    for render in renders:
+    for render in output.renders:
         params = {}
         params.update(base_params)
         for param_dict in render.params_dicts:
@@ -227,7 +262,17 @@ def _compute_python_dependencies(root_dir=None):
 
         paths.add(path)
 
-    return paths
+    return sorted(paths)
+
+
+# Computes the string representing a cmake list of paths.
+def _cmake_path_list(paths):
+    if os.name == "nt":
+        # On Windows CMake still expects paths to be separated by forward
+        # slashes
+        return (";".join(paths)).replace("\\", "/")
+    else:
+        return ";".join(paths)
 
 
 def run_generator(generator):
@@ -292,14 +337,18 @@ def run_generator(generator):
 
     args = parser.parse_args()
 
-    renders = generator.get_file_renders(args)
+    output = generator.get_outputs(args)
 
     # Output a list of all dependencies for CMake or the tarball for GN/Ninja.
     if args.depfile != None or args.print_cmake_dependencies:
         dependencies = generator.get_dependencies(args)
         dependencies += [
             args.template_dir + os.path.sep + render.template
-            for render in renders
+            for render in output.renders
+        ]
+        dependencies += [
+            args.template_dir + os.path.sep + template
+            for template in output.imported_templates
         ]
         dependencies += _compute_python_dependencies(args.root_dir)
 
@@ -309,7 +358,7 @@ def run_generator(generator):
                         " ".join(dependencies))
 
         if args.print_cmake_dependencies:
-            sys.stdout.write(";".join(dependencies))
+            sys.stdout.write(_cmake_path_list(dependencies))
             return 0
 
     # The caller wants to assert that the outputs are what it expects.
@@ -318,7 +367,7 @@ def run_generator(generator):
         with open(args.expected_outputs_file) as f:
             expected = set([line.strip() for line in f.readlines()])
 
-        actual = {render.output for render in renders}
+        actual = {render.output for render in output.renders}
 
         if actual != expected:
             print("Wrong expected outputs, caller expected:\n    " +
@@ -328,17 +377,19 @@ def run_generator(generator):
 
     # Print the list of all the outputs for cmake.
     if args.print_cmake_outputs:
-        sys.stdout.write(";".join([
-            os.path.join(args.output_dir, render.output) for render in renders
-        ]))
+        sys.stdout.write(
+            _cmake_path_list([
+                os.path.join(args.output_dir, render.output)
+                for render in output.renders
+            ]))
         return 0
 
-    outputs = _do_renders(renders, args.template_dir)
+    render_outputs = _do_renders(output, args.template_dir)
 
     # Output the JSON tarball
     if args.output_json_tarball != None:
         json_root = {}
-        for output in outputs:
+        for output in render_outputs:
             json_root[output.name] = output.content
 
         with open(args.output_json_tarball, 'w') as f:
@@ -346,7 +397,7 @@ def run_generator(generator):
 
     # Output the files directly.
     if args.output_dir != None:
-        for output in outputs:
+        for output in render_outputs:
             output_path = os.path.join(args.output_dir, output.name)
 
             directory = os.path.dirname(output_path)

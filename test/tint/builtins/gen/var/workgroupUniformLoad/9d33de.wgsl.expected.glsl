@@ -1,32 +1,25 @@
 #version 310 es
 
-int tint_workgroupUniformLoad(inout int p) {
-  barrier();
-  int result = p;
-  barrier();
-  return result;
-}
-
-shared int arg_0;
-layout(binding = 0, std430) buffer prevent_dce_block_ssbo {
+layout(binding = 0, std430)
+buffer prevent_dce_block_1_ssbo {
   int inner;
-} prevent_dce;
-
-void workgroupUniformLoad_9d33de() {
-  int res = tint_workgroupUniformLoad(arg_0);
-  prevent_dce.inner = res;
+} v;
+shared int arg_0;
+int workgroupUniformLoad_9d33de() {
+  barrier();
+  int v_1 = arg_0;
+  barrier();
+  int res = v_1;
+  return res;
 }
-
-void compute_main(uint local_invocation_index) {
-  {
+void compute_main_inner(uint tint_local_index) {
+  if ((tint_local_index == 0u)) {
     arg_0 = 0;
   }
   barrier();
-  workgroupUniformLoad_9d33de();
+  v.inner = workgroupUniformLoad_9d33de();
 }
-
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 void main() {
-  compute_main(gl_LocalInvocationIndex);
-  return;
+  compute_main_inner(gl_LocalInvocationIndex);
 }

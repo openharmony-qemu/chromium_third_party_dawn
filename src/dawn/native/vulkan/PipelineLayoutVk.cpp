@@ -1,18 +1,34 @@
-// Copyright 2018 The Dawn Authors
+// Copyright 2018 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/native/vulkan/PipelineLayoutVk.h"
+
+#include <string>
+#include <utility>
 
 #include "dawn/common/BitSetIterator.h"
 #include "dawn/native/vulkan/BindGroupLayoutVk.h"
@@ -26,31 +42,24 @@ namespace dawn::native::vulkan {
 // static
 ResultOrError<Ref<PipelineLayout>> PipelineLayout::Create(
     Device* device,
-    const PipelineLayoutDescriptor* descriptor) {
+    const UnpackedPtr<PipelineLayoutDescriptor>& descriptor) {
     Ref<PipelineLayout> layout = AcquireRef(new PipelineLayout(device, descriptor));
     DAWN_TRY(layout->Initialize());
     return layout;
 }
 
-MaybeError PipelineLayout::Initialize() {
+ResultOrError<Ref<RefCountedVkHandle<VkPipelineLayout>>> PipelineLayout::CreateVkPipelineLayout(
+    uint32_t internalImmediateDataSize) {
     // Compute the array of VkDescriptorSetLayouts that will be chained in the create info.
     // TODO(crbug.com/dawn/277) Vulkan doesn't allow holes in this array, should we expose
     // this constraints at the Dawn level?
     uint32_t numSetLayouts = 0;
     std::array<VkDescriptorSetLayout, kMaxBindGroups> setLayouts;
-    std::array<const CachedObject*, kMaxBindGroups> cachedObjects;
     for (BindGroupIndex setIndex : IterateBitSet(GetBindGroupLayoutsMask())) {
-        const BindGroupLayoutBase* bindGroupLayout = GetBindGroupLayout(setIndex);
+        const BindGroupLayoutInternalBase* bindGroupLayout = GetBindGroupLayout(setIndex);
         setLayouts[numSetLayouts] = ToBackend(bindGroupLayout)->GetHandle();
-        cachedObjects[numSetLayouts] = bindGroupLayout;
         numSetLayouts++;
     }
-
-    // Always reserve push constant space for the ClampFragDepthArgs.
-    VkPushConstantRange depthClampArgsRange;
-    depthClampArgsRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    depthClampArgsRange.offset = kClampFragDepthArgsOffset;
-    depthClampArgsRange.size = kClampFragDepthArgsSize;
 
     VkPipelineLayoutCreateInfo createInfo;
     createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -58,38 +67,95 @@ MaybeError PipelineLayout::Initialize() {
     createInfo.flags = 0;
     createInfo.setLayoutCount = numSetLayouts;
     createInfo.pSetLayouts = AsVkArray(setLayouts.data());
-    createInfo.pushConstantRangeCount = 1;
-    createInfo.pPushConstantRanges = &depthClampArgsRange;
+    createInfo.pushConstantRangeCount = 0;
+    createInfo.pPushConstantRanges = nullptr;
 
-    // Record cache key information now since the createInfo is not stored.
-    StreamIn(&mCacheKey, stream::Iterable(cachedObjects.data(), numSetLayouts), createInfo);
+    // Create pipeline layout without internal immediate data size.
+    uint32_t immediateDataSize = GetImmediateDataRangeByteSize() + internalImmediateDataSize;
+    VkPushConstantRange immediateDataRange;
 
+    // createInfo has been initialized based on PipelineLayout attributes.
+    // Create immediateDataRange info based on
+    // Record cache key information now to represent pipelineLayout to exclude future changes
+    // caused by internal immediate data size from pipeline.
+    if (immediateDataSize > 0) {
+        immediateDataRange.stageFlags = kImmediateDataRangeShaderStage;
+        immediateDataRange.offset = 0;
+        immediateDataRange.size = immediateDataSize;
+        createInfo.pushConstantRangeCount = 1;
+        createInfo.pPushConstantRanges = &immediateDataRange;
+    }
+
+    VkPipelineLayout vkPipelineLayout;
     Device* device = ToBackend(GetDevice());
-    DAWN_TRY(CheckVkSuccess(
-        device->fn.CreatePipelineLayout(device->GetVkDevice(), &createInfo, nullptr, &*mHandle),
-        "CreatePipelineLayout"));
+    DAWN_TRY(CheckVkSuccess(device->fn.CreatePipelineLayout(device->GetVkDevice(), &createInfo,
+                                                            nullptr, &*vkPipelineLayout),
+                            "CreatePipelineLayout"));
 
-    SetLabelImpl();
+    return AcquireRef(new RefCountedVkHandle<VkPipelineLayout>(device, vkPipelineLayout));
+}
+
+MaybeError PipelineLayout::Initialize() {
+    uint32_t numSetLayouts = 0;
+    std::array<const CachedObject*, kMaxBindGroups> cachedObjects;
+    for (BindGroupIndex setIndex : IterateBitSet(GetBindGroupLayoutsMask())) {
+        const BindGroupLayoutInternalBase* bindGroupLayout = GetBindGroupLayout(setIndex);
+        cachedObjects[numSetLayouts] = bindGroupLayout;
+        numSetLayouts++;
+    }
+
+    // Record bind group layout objects and user immediate data size into pipeline layout cache key.
+    // It represents pipeline layout base attributes and ignored future changes caused by internal
+    // immediate data size from pipeline.
+    StreamIn(&mCacheKey, stream::Iterable(cachedObjects.data(), numSetLayouts),
+             GetImmediateDataRangeByteSize());
 
     return {};
+}
+
+ResultOrError<Ref<RefCountedVkHandle<VkPipelineLayout>>> PipelineLayout::GetOrCreateVkLayoutObject(
+    uint32_t internalImmediateDataSize) {
+    // Check cache
+    Ref<RefCountedVkHandle<VkPipelineLayout>> pipelineLayoutVk;
+    mVkPipelineLayouts.Use([&](auto vkPipelineLayouts) {
+        auto it = vkPipelineLayouts->find(internalImmediateDataSize);
+        if (it != vkPipelineLayouts->end()) {
+            pipelineLayoutVk = it->second;
+        }
+    });
+
+    if (pipelineLayoutVk != nullptr) {
+        return pipelineLayoutVk;
+    }
+
+    DAWN_TRY_ASSIGN(pipelineLayoutVk, CreateVkPipelineLayout(internalImmediateDataSize));
+
+    return mVkPipelineLayouts.Use([&](auto vkPipelineLayouts) {
+        return vkPipelineLayouts->insert({internalImmediateDataSize, std::move(pipelineLayoutVk)})
+            .first->second;
+    });
+}
+
+VkShaderStageFlags PipelineLayout::GetImmediateDataRangeStage() const {
+    return kImmediateDataRangeShaderStage;
 }
 
 PipelineLayout::~PipelineLayout() = default;
 
 void PipelineLayout::DestroyImpl() {
     PipelineLayoutBase::DestroyImpl();
-    if (mHandle != VK_NULL_HANDLE) {
-        ToBackend(GetDevice())->GetFencedDeleter()->DeleteWhenUnused(mHandle);
-        mHandle = VK_NULL_HANDLE;
-    }
-}
-
-VkPipelineLayout PipelineLayout::GetHandle() const {
-    return mHandle;
+    mVkPipelineLayouts->clear();
 }
 
 void PipelineLayout::SetLabelImpl() {
-    SetDebugName(ToBackend(GetDevice()), mHandle, "Dawn_PipelineLayout", GetLabel());
+    Device* device = ToBackend(GetDevice());
+    const std::string& label = GetLabel();
+
+    mVkPipelineLayouts.Use([&](auto vkPipelineLayouts) {
+        for (const auto& [_, vkLayout] : *vkPipelineLayouts) {
+            SetDebugName(device, vkLayout->Get(), "Dawn_PipelineLayout", label);
+        }
+    });
 }
 
 }  // namespace dawn::native::vulkan

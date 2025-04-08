@@ -1,16 +1,29 @@
-// Copyright 2019 The Dawn Authors
+// Copyright 2019 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <utility>
 #include <vector>
@@ -18,6 +31,9 @@
 #include "dawn/tests/DawnTest.h"
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
+
+namespace dawn {
+namespace {
 
 constexpr uint32_t kRTSize = 16;
 constexpr wgpu::TextureFormat kFormat = wgpu::TextureFormat::RGBA8Unorm;
@@ -145,7 +161,10 @@ TEST_P(RenderPassTest, NoCorrespondingFragmentShaderOutputs) {
         utils::ComboRenderPipelineDescriptor descriptor;
         descriptor.vertex.module = mVSModule;
         descriptor.cFragment.module = fsModule;
-        descriptor.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+        // (Off-topic) spot-test for defaulting of these three fields.
+        descriptor.primitive.topology = wgpu::PrimitiveTopology::Undefined;
+        descriptor.primitive.frontFace = wgpu::FrontFace::Undefined;
+        descriptor.primitive.cullMode = wgpu::CullMode::Undefined;
         descriptor.cTargets[0].format = kFormat;
         descriptor.cTargets[0].writeMask = wgpu::ColorWriteMask::None;
 
@@ -166,6 +185,7 @@ TEST_P(RenderPassTest, NoCorrespondingFragmentShaderOutputs) {
 }
 
 DAWN_INSTANTIATE_TEST(RenderPassTest,
+                      D3D11Backend(),
                       D3D12Backend(),
                       D3D12Backend({}, {"use_d3d12_render_pass"}),
                       MetalBackend(),
@@ -225,6 +245,7 @@ TEST_P(RenderPassTest_RegressionDawn1071, ClearLowestMipOfR8Unorm) {
 }
 
 DAWN_INSTANTIATE_TEST(RenderPassTest_RegressionDawn1071,
+                      D3D11Backend(),
                       D3D12Backend(),
                       MetalBackend(),
                       MetalBackend({"metal_render_r8_rg8_unorm_small_mip_to_temp_texture"}),
@@ -236,8 +257,13 @@ DAWN_INSTANTIATE_TEST(RenderPassTest_RegressionDawn1071,
 // test for dawn:1389 where Intel Metal devices fail to do that correctly, requiring a workaround.
 class RenderPassTest_RegressionDawn1389 : public RenderPassTest {};
 TEST_P(RenderPassTest_RegressionDawn1389, ClearMultisubresourceAfterWriteDepth16Unorm) {
-    // TODO(crbug.com/dawn/1492): Support copying to Depth16Unorm on GL.
-    DAWN_SUPPRESS_TEST_IF(IsOpenGL() || IsOpenGLES());
+    // TODO(dawn:1705): fix this test for Intel D3D11.
+    DAWN_SUPPRESS_TEST_IF((IsD3D11() || IsANGLED3D11()) && IsIntel());
+
+    // TODO(crbug.com/dawn/1989): Failed on Intel Gen12 GPUs because of Windows Vulkan driver issue,
+    // when copying to a D16_UNORM depth texture and clearing one subresource, other subresources
+    // will have incorrect values. Remove this suppression once the issue is fixed.
+    DAWN_SUPPRESS_TEST_IF(IsVulkan() && IsWindows() && IsIntelGen12());
 
     // Test all combinatons of multi-mip, multi-layer
     for (uint32_t mipLevelCount : {1, 5}) {
@@ -339,8 +365,8 @@ TEST_P(RenderPassTest_RegressionDawn1389, ClearMultisubresourceAfterWriteDepth16
                         std::vector<uint16_t> data(mipWidth * mipHeight, 0xCCCC);
                         EXPECT_TEXTURE_EQ(data.data(), tex, {0, 0, layer}, {mipWidth, mipHeight},
                                           level)
-                            << "cleared texture data should have been 0xCCCC at:"
-                            << "\nlayer: " << layer << "\nlevel: " << level;
+                            << "cleared texture data should have been 0xCCCC at:" << "\nlayer: "
+                            << layer << "\nlevel: " << level;
                     } else {
                         // Otherwise, check the other subresources have the orignal contents.
                         // Without the workaround, they are 0.
@@ -349,8 +375,8 @@ TEST_P(RenderPassTest_RegressionDawn1389, ClearMultisubresourceAfterWriteDepth16
                         std::vector<uint16_t> data(mipWidth * mipHeight, value);
                         EXPECT_TEXTURE_EQ(data.data(), tex, {0, 0, layer}, {mipWidth, mipHeight},
                                           level)
-                            << "written texture data should still be " << value << " at:"
-                            << "\nlayer: " << layer << "\nlevel: " << level;
+                            << "written texture data should still be " << value
+                            << " at:" << "\nlayer: " << layer << "\nlevel: " << level;
                     }
                 }
             }
@@ -359,9 +385,13 @@ TEST_P(RenderPassTest_RegressionDawn1389, ClearMultisubresourceAfterWriteDepth16
 }
 
 DAWN_INSTANTIATE_TEST(RenderPassTest_RegressionDawn1389,
+                      D3D11Backend(),
                       D3D12Backend(),
                       MetalBackend(),
                       MetalBackend({"use_blit_for_buffer_to_depth_texture_copy"}),
                       OpenGLBackend(),
                       OpenGLESBackend(),
                       VulkanBackend());
+
+}  // anonymous namespace
+}  // namespace dawn

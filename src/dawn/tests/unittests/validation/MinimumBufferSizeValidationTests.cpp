@@ -1,16 +1,29 @@
-// Copyright 2020 The Dawn Authors
+// Copyright 2020 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <string>
 #include <vector>
@@ -21,7 +34,11 @@
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
 
+namespace dawn {
 namespace {
+
+using testing::Not;
+
 // Helper for describing bindings throughout the tests
 struct BindingDescriptor {
     uint32_t group;
@@ -42,7 +59,7 @@ void WithEachSizeOffsetBy(int64_t offset, const std::vector<uint64_t>& originalS
     std::vector<uint64_t> modifiedSizes = originalSizes;
     for (size_t i = 0; i < originalSizes.size(); ++i) {
         if (offset < 0) {
-            ASSERT(originalSizes[i] >= static_cast<uint64_t>(-offset));
+            DAWN_ASSERT(originalSizes[i] >= static_cast<uint64_t>(-offset));
         }
         // Run the function with an element offset, and restore element afterwards
         modifiedSizes[i] += offset;
@@ -89,7 +106,7 @@ std::string GenerateBindingString(const std::vector<BindingDescriptor>& bindings
                 ostream << "var<storage, read> b" << index << " : S" << index << ";\n";
                 break;
             default:
-                UNREACHABLE();
+                DAWN_UNREACHABLE();
         }
         index++;
     }
@@ -146,7 +163,6 @@ std::vector<BindingDescriptor> CombineBindings(
     }
     return result;
 }
-}  // namespace
 
 class MinBufferSizeTestsBase : public ValidationTest {
   public:
@@ -174,7 +190,6 @@ class MinBufferSizeTestsBase : public ValidationTest {
             csDesc.layout = device.CreatePipelineLayout(&descriptor);
         }
         csDesc.compute.module = csModule;
-        csDesc.compute.entryPoint = "main";
 
         return device.CreateComputePipeline(&csDesc);
     }
@@ -216,7 +231,7 @@ class MinBufferSizeTestsBase : public ValidationTest {
     // Creates bind group layout with given minimum sizes for each binding
     wgpu::BindGroupLayout CreateBindGroupLayout(const std::vector<BindingDescriptor>& bindings,
                                                 const std::vector<uint64_t>& minimumSizes) {
-        ASSERT(bindings.size() == minimumSizes.size());
+        DAWN_ASSERT(bindings.size() == minimumSizes.size());
         std::vector<wgpu::BindGroupLayoutEntry> entries;
 
         for (size_t i = 0; i < bindings.size(); ++i) {
@@ -230,7 +245,7 @@ class MinBufferSizeTestsBase : public ValidationTest {
         }
 
         wgpu::BindGroupLayoutDescriptor descriptor;
-        descriptor.entryCount = static_cast<uint32_t>(entries.size());
+        descriptor.entryCount = entries.size();
         descriptor.entries = entries.data();
         return device.CreateBindGroupLayout(&descriptor);
     }
@@ -254,7 +269,7 @@ class MinBufferSizeTestsBase : public ValidationTest {
     wgpu::BindGroup CreateBindGroup(wgpu::BindGroupLayout layout,
                                     const std::vector<BindingDescriptor>& bindings,
                                     const std::vector<uint64_t>& bindingSizes) {
-        ASSERT(bindings.size() == bindingSizes.size());
+        DAWN_ASSERT(bindings.size() == bindingSizes.size());
 
         std::vector<wgpu::BindGroupEntry> entries;
         entries.reserve(bindingSizes.size());
@@ -267,7 +282,7 @@ class MinBufferSizeTestsBase : public ValidationTest {
             wgpu::BindGroupEntry entry = {};
             entry.binding = bindings[i].binding;
             entry.buffer = buffer;
-            ASSERT(bindingSizes[i] < 1024);
+            DAWN_ASSERT(bindingSizes[i] < 1024);
             entry.size = bindingSizes[i];
             entries.push_back(entry);
         }
@@ -403,22 +418,6 @@ TEST_F(MinBufferSizeBindGroupCreationTests, BindingTooSmall) {
             ASSERT_DEVICE_ERROR(CreateBindGroup(layout, bindings, sizes));
         }
     });
-}
-
-// Check two layouts with different minimum size are unequal
-TEST_F(MinBufferSizeBindGroupCreationTests, LayoutEquality) {
-    // Returning the same pointer is an implementation detail of Dawn Native.
-    // It is not the same semantic with the Wire.
-    DAWN_SKIP_TEST_IF(UsesWire());
-
-    auto MakeLayout = [&](uint64_t size) {
-        return utils::MakeBindGroupLayout(
-            device,
-            {{0, wgpu::ShaderStage::Compute, wgpu::BufferBindingType::Uniform, false, size}});
-    };
-
-    EXPECT_EQ(MakeLayout(0).Get(), MakeLayout(0).Get());
-    EXPECT_NE(MakeLayout(0).Get(), MakeLayout(4).Get());
 }
 
 // The check between the bindgroup binding sizes and the required pipeline sizes at draw time
@@ -623,3 +622,6 @@ TEST_F(MinBufferSizePipelineCreationTests, NonStructVec3) {
         }
     });
 }
+
+}  // anonymous namespace
+}  // namespace dawn

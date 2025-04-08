@@ -5,8 +5,7 @@ void textureDimensions_f60bdb() {
   int2 res = (0).xx;
   uint3 tint_tmp;
   arg_0.GetDimensions(tint_tmp.x, tint_tmp.y, tint_tmp.z);
-  const int2 x_16 = int2(tint_tmp.xy);
-  res = x_16;
+  res = int2(tint_tmp.xy);
   return;
 }
 
@@ -30,12 +29,12 @@ struct tint_symbol_3 {
 
 vertex_main_out vertex_main_inner() {
   vertex_main_1();
-  const vertex_main_out tint_symbol_4 = {tint_symbol_1};
+  vertex_main_out tint_symbol_4 = {tint_symbol_1};
   return tint_symbol_4;
 }
 
 tint_symbol_3 vertex_main() {
-  const vertex_main_out inner_result = vertex_main_inner();
+  vertex_main_out inner_result = vertex_main_inner();
   tint_symbol_3 wrapper_result = (tint_symbol_3)0;
   wrapper_result.tint_symbol_1_1 = inner_result.tint_symbol_1_1;
   return wrapper_result;

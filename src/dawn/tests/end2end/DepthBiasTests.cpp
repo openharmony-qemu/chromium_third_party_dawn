@@ -1,16 +1,29 @@
-// Copyright 2020 The Dawn Authors
+// Copyright 2020 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <limits>
 #include <vector>
@@ -21,6 +34,9 @@
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/TextureUtils.h"
 #include "dawn/utils/WGPUHelpers.h"
+
+namespace dawn {
+namespace {
 
 constexpr static unsigned int kRTSize = 2;
 
@@ -34,6 +50,11 @@ class DepthBiasTests : public DawnTest {
                           int32_t bias,
                           float biasSlopeScale,
                           float biasClamp) {
+        // Skip formats other than Depth24PlusStencil8 if we're specifically testing with the packed
+        // depth24_unorm_stencil8 toggle.
+        DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("use_packed_depth24_unorm_stencil8_format") &&
+                                 depthFormat != wgpu::TextureFormat::Depth24PlusStencil8);
+
         const char* vertexSource = nullptr;
         switch (quadAngle) {
             case QuadAngle::Flat:
@@ -104,7 +125,7 @@ class DepthBiasTests : public DawnTest {
         renderPipelineDesc.vertex.module = vertexModule;
         renderPipelineDesc.cFragment.module = fragmentModule;
         wgpu::DepthStencilState* depthStencil = renderPipelineDesc.EnableDepthStencil(depthFormat);
-        depthStencil->depthWriteEnabled = true;
+        depthStencil->depthWriteEnabled = wgpu::OptionalBool::True;
         depthStencil->depthBias = bias;
         depthStencil->depthBiasSlopeScale = biasSlopeScale;
         depthStencil->depthBiasClamp = biasClamp;
@@ -143,16 +164,8 @@ class DepthBiasTests : public DawnTest {
 
 // Test adding positive bias to output
 TEST_P(DepthBiasTests, PositiveBiasOnFloat) {
-    // TODO(crbug.com/dawn/667): Work around the fact that some platforms do not support reading
-    // depth.
-    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("disable_depth_read"));
-
     // NVIDIA GPUs under Vulkan seem to be using a different scale than everyone else.
     DAWN_SUPPRESS_TEST_IF(IsVulkan() && IsNvidia());
-
-    // OpenGL uses a different scale than the other APIs
-    DAWN_TEST_UNSUPPORTED_IF(IsOpenGL());
-    DAWN_TEST_UNSUPPORTED_IF(IsOpenGLES());
 
     // Draw quad flat on z = 0.25 with 0.25 bias
     RunDepthBiasTest(wgpu::TextureFormat::Depth32Float, 0, QuadAngle::Flat,
@@ -190,16 +203,8 @@ TEST_P(DepthBiasTests, PositiveBiasOnFloatWithClamp) {
 
 // Test adding negative bias to output
 TEST_P(DepthBiasTests, NegativeBiasOnFloat) {
-    // TODO(crbug.com/dawn/667): Work around the fact that some platforms do not support reading
-    // depth.
-    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("disable_depth_read"));
-
     // NVIDIA GPUs seems to be using a different scale than everyone else
     DAWN_SUPPRESS_TEST_IF(IsVulkan() && IsNvidia());
-
-    // OpenGL uses a different scale than the other APIs
-    DAWN_TEST_UNSUPPORTED_IF(IsOpenGL());
-
     // Draw quad flat on z = 0.25 with -0.25 bias, depth clear of 0.125
     RunDepthBiasTest(wgpu::TextureFormat::Depth32Float, 0.125, QuadAngle::Flat,
                      -kPointTwoFiveBiasForPointTwoFiveZOnFloat, 0, 0);
@@ -236,10 +241,6 @@ TEST_P(DepthBiasTests, NegativeBiasOnFloatWithClamp) {
 
 // Test adding positive infinite slope bias to output
 TEST_P(DepthBiasTests, PositiveInfinitySlopeBiasOnFloat) {
-    // TODO(crbug.com/dawn/667): Work around the fact that some platforms do not support reading
-    // depth.
-    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("disable_depth_read"));
-
     // NVIDIA GPUs do not clamp values to 1 when using Inf slope bias.
     DAWN_SUPPRESS_TEST_IF(IsVulkan() && IsNvidia());
 
@@ -259,10 +260,6 @@ TEST_P(DepthBiasTests, PositiveInfinitySlopeBiasOnFloat) {
 
 // Test adding positive infinite slope bias to output
 TEST_P(DepthBiasTests, NegativeInfinityBiasOnFloat) {
-    // TODO(crbug.com/dawn/667): Work around the fact that some platforms do not support reading
-    // depth.
-    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("disable_depth_read"));
-
     // NVIDIA GPUs do not clamp values to 0 when using -Inf slope bias.
     DAWN_SUPPRESS_TEST_IF(IsVulkan() && IsNvidia());
 
@@ -282,10 +279,6 @@ TEST_P(DepthBiasTests, NegativeInfinityBiasOnFloat) {
 
 // Test tiledX quad with no bias
 TEST_P(DepthBiasTests, NoBiasTiltedXOnFloat) {
-    // TODO(crbug.com/dawn/667): Work around the fact that some platforms do not support reading
-    // depth.
-    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("disable_depth_read"));
-
     // Draw quad with z from 0 to 0.5 with no bias
     RunDepthBiasTest(wgpu::TextureFormat::Depth32Float, 0, QuadAngle::TiltedX, 0, 0, 0);
 
@@ -301,10 +294,6 @@ TEST_P(DepthBiasTests, NoBiasTiltedXOnFloat) {
 
 // Test adding positive slope bias to output
 TEST_P(DepthBiasTests, PositiveSlopeBiasOnFloat) {
-    // TODO(crbug.com/dawn/667): Work around the fact that some platforms do not support reading
-    // depth.
-    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("disable_depth_read"));
-
     // Draw quad with z from 0 to 0.5 with a slope bias of 1
     RunDepthBiasTest(wgpu::TextureFormat::Depth32Float, 0, QuadAngle::TiltedX, 0, 1, 0);
 
@@ -320,10 +309,6 @@ TEST_P(DepthBiasTests, PositiveSlopeBiasOnFloat) {
 
 // Test adding negative half slope bias to output
 TEST_P(DepthBiasTests, NegativeHalfSlopeBiasOnFloat) {
-    // TODO(crbug.com/dawn/667): Work around the fact that some platforms do not support reading
-    // depth.
-    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("disable_depth_read"));
-
     // Draw quad with z from 0 to 0.5 with a slope bias of -0.5
     RunDepthBiasTest(wgpu::TextureFormat::Depth32Float, 0, QuadAngle::TiltedX, 0, -0.5, 0);
 
@@ -396,3 +381,6 @@ DAWN_INSTANTIATE_TEST(DepthBiasTests,
                       OpenGLBackend(),
                       OpenGLESBackend(),
                       VulkanBackend());
+
+}  // anonymous namespace
+}  // namespace dawn

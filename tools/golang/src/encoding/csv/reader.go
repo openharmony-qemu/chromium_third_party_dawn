@@ -84,10 +84,12 @@ func (e *ParseError) Unwrap() error { return e.Err }
 
 // These are the errors that can be returned in ParseError.Err.
 var (
-	ErrTrailingComma = errors.New("extra delimiter at end of line") // Deprecated: No longer used.
-	ErrBareQuote     = errors.New("bare \" in non-quoted-field")
-	ErrQuote         = errors.New("extraneous or missing \" in quoted-field")
-	ErrFieldCount    = errors.New("wrong number of fields")
+	ErrBareQuote  = errors.New("bare \" in non-quoted-field")
+	ErrQuote      = errors.New("extraneous or missing \" in quoted-field")
+	ErrFieldCount = errors.New("wrong number of fields")
+
+	// Deprecated: ErrTrailingComma is no longer used.
+	ErrTrailingComma = errors.New("extra delimiter at end of line")
 )
 
 var errInvalidDelim = errors.New("csv: invalid field or comment delimiter")
@@ -142,12 +144,16 @@ type Reader struct {
 	// By default, each call to Read returns newly allocated memory owned by the caller.
 	ReuseRecord bool
 
-	TrailingComma bool // Deprecated: No longer used.
+	// Deprecated: TrailingComma is no longer used.
+	TrailingComma bool
 
 	r *bufio.Reader
 
 	// numLine is the current line being read in the CSV file.
 	numLine int
+
+	// offset is the input stream byte offset of the current reader position.
+	offset int64
 
 	// rawBuffer is a line buffer only used by the readLine method.
 	rawBuffer []byte
@@ -181,8 +187,9 @@ func NewReader(r io.Reader) *Reader {
 // Read reads one record (a slice of fields) from r.
 // If the record has an unexpected number of fields,
 // Read returns the record along with the error ErrFieldCount.
-// Except for that case, Read always returns either a non-nil
-// record or a non-nil error, but not both.
+// If the record contains a field that cannot be parsed,
+// Read returns a partial record along with the parse error.
+// The partial record contains all fields read before the error.
 // If there is no data left to be read, Read returns nil, io.EOF.
 // If ReuseRecord is true, the returned slice may be shared
 // between multiple calls to Read.
@@ -208,6 +215,13 @@ func (r *Reader) FieldPos(field int) (line, column int) {
 	}
 	p := &r.fieldPositions[field]
 	return p.line, p.col
+}
+
+// InputOffset returns the input stream byte offset of the current reader
+// position. The offset gives the location of the end of the most recently
+// read row and the beginning of the next row.
+func (r *Reader) InputOffset() int64 {
+	return r.offset
 }
 
 // pos holds the position of a field in the current line.
@@ -247,14 +261,16 @@ func (r *Reader) readLine() ([]byte, error) {
 		}
 		line = r.rawBuffer
 	}
-	if len(line) > 0 && err == io.EOF {
+	readSize := len(line)
+	if readSize > 0 && err == io.EOF {
 		err = nil
 		// For backwards compatibility, drop trailing \r before EOF.
-		if line[len(line)-1] == '\r' {
-			line = line[:len(line)-1]
+		if line[readSize-1] == '\r' {
+			line = line[:readSize-1]
 		}
 	}
 	r.numLine++
+	r.offset += int64(readSize)
 	// Normalize \r\n to \n on all input lines.
 	if n := len(line); n >= 2 && line[n-2] == '\r' && line[n-1] == '\n' {
 		line[n-2] = '\n'

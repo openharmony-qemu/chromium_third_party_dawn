@@ -1,34 +1,67 @@
-// Copyright 2021 The Dawn Authors
+// Copyright 2021 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #ifndef SRC_DAWN_NODE_BINDING_GPUDEVICE_H_
 #define SRC_DAWN_NODE_BINDING_GPUDEVICE_H_
 
+#include <webgpu/webgpu_cpp.h>
+
 #include <memory>
 #include <string>
 
-#include "dawn/webgpu_cpp.h"
 #include "src/dawn/node/binding/AsyncRunner.h"
-#include "src/dawn/node/interop/Napi.h"
+#include "src/dawn/node/interop/NodeAPI.h"
 #include "src/dawn/node/interop/WebGPU.h"
 
 namespace wgpu::binding {
+// GPUDeviceLostInfo is an implementation of interop::GPUDeviceLostInfo that wraps the members.
+class GPUDeviceLostInfo final : public interop::GPUDeviceLostInfo {
+  public:
+    GPUDeviceLostInfo(interop::GPUDeviceLostReason reason, std::string message);
+
+    interop::GPUDeviceLostReason getReason(Napi::Env env) override;
+    std::string getMessage(Napi::Env) override;
+
+  private:
+    interop::GPUDeviceLostReason reason_;
+    std::string message_;
+};
+
 // GPUDevice is an implementation of interop::GPUDevice that wraps a wgpu::Device.
 class GPUDevice final : public interop::GPUDevice {
   public:
-    GPUDevice(Napi::Env env, wgpu::Device device);
+    GPUDevice(Napi::Env env,
+              const wgpu::DeviceDescriptor& desc,
+              wgpu::Device device,
+              interop::Promise<interop::Interface<interop::GPUDeviceLostInfo>> lost_promise,
+              std::shared_ptr<AsyncRunner> async);
     ~GPUDevice();
+
+    void ForceLoss(wgpu::DeviceLostReason reason, const char* message);
 
     // interop::GPUDevice interface compliance
     interop::Interface<interop::GPUSupportedFeatures> getFeatures(Napi::Env) override;
@@ -102,8 +135,6 @@ class GPUDevice final : public interop::GPUDevice {
     bool dispatchEvent(Napi::Env, interop::Interface<interop::Event> event) override;
 
   private:
-    void QueueTick();
-
     Napi::Env env_;
     wgpu::Device device_;
     std::shared_ptr<AsyncRunner> async_;
@@ -111,6 +142,7 @@ class GPUDevice final : public interop::GPUDevice {
     // This promise's JS object lives as long as the device because it is stored in .lost
     // of the wrapper JS object.
     interop::Promise<interop::Interface<interop::GPUDeviceLostInfo>> lost_promise_;
+    std::string label_;
 
     bool destroyed_ = false;
 };

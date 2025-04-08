@@ -1,19 +1,34 @@
-// Copyright 2021 The Dawn Authors
+// Copyright 2021 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #ifndef SRC_DAWN_NODE_BINDING_CONVERTER_H_
 #define SRC_DAWN_NODE_BINDING_CONVERTER_H_
+
+#include <webgpu/webgpu_cpp.h>
 
 #include <functional>
 #include <string>
@@ -23,9 +38,8 @@
 #include <vector>
 
 #include "dawn/native/DawnNative.h"
-#include "dawn/webgpu_cpp.h"
 #include "src/dawn/node/binding/Errors.h"
-#include "src/dawn/node/interop/Napi.h"
+#include "src/dawn/node/interop/NodeAPI.h"
 #include "src/dawn/node/interop/WebGPU.h"
 
 namespace wgpu::binding {
@@ -87,7 +101,7 @@ class Converter {
     // The pointer assigned to 'out_els' is valid until the Converter is destructed.
     template <typename OUT, typename IN>
     [[nodiscard]] inline bool operator()(OUT*& out_els,
-                                         uint32_t& out_count,
+                                         size_t& out_count,
                                          const std::vector<IN>& in) {
         return Convert(out_els, out_count, in);
     }
@@ -115,13 +129,16 @@ class Converter {
 
     [[nodiscard]] bool Convert(wgpu::TextureAspect& out, const interop::GPUTextureAspect& in);
 
-    [[nodiscard]] bool Convert(wgpu::ImageCopyTexture& out, const interop::GPUImageCopyTexture& in);
+    [[nodiscard]] bool Convert(wgpu::ImageCopyTexture& out,
+                               const interop::GPUTexelCopyTextureInfo& in);
 
-    [[nodiscard]] bool Convert(wgpu::ImageCopyBuffer& out, const interop::GPUImageCopyBuffer& in);
+    [[nodiscard]] bool Convert(wgpu::ImageCopyBuffer& out,
+                               const interop::GPUTexelCopyBufferInfo& in);
 
     [[nodiscard]] bool Convert(BufferSource& out, interop::BufferSource in);
 
-    [[nodiscard]] bool Convert(wgpu::TextureDataLayout& out, const interop::GPUImageDataLayout& in);
+    [[nodiscard]] bool Convert(wgpu::TextureDataLayout& out,
+                               const interop::GPUTexelCopyBufferLayout& in);
 
     [[nodiscard]] bool Convert(wgpu::TextureFormat& out, const interop::GPUTextureFormat& in);
 
@@ -198,21 +215,15 @@ class Converter {
     [[nodiscard]] bool Convert(wgpu::RenderPassDepthStencilAttachment& out,
                                const interop::GPURenderPassDepthStencilAttachment& in);
 
-    [[nodiscard]] bool Convert(wgpu::RenderPassTimestampWrite& out,
-                               const interop::GPURenderPassTimestampWrite& in);
+    [[nodiscard]] bool Convert(wgpu::RenderPassTimestampWrites& out,
+                               const interop::GPURenderPassTimestampWrites& in);
 
-    [[nodiscard]] bool Convert(wgpu::RenderPassTimestampLocation& out,
-                               const interop::GPURenderPassTimestampLocation& in);
+    [[nodiscard]] bool Convert(wgpu::ComputePassTimestampWrites& out,
+                               const interop::GPUComputePassTimestampWrites& in);
 
     [[nodiscard]] bool Convert(wgpu::LoadOp& out, const interop::GPULoadOp& in);
 
     [[nodiscard]] bool Convert(wgpu::StoreOp& out, const interop::GPUStoreOp& in);
-
-    [[nodiscard]] bool Convert(wgpu::ComputePassTimestampWrite& out,
-                               const interop::GPUComputePassTimestampWrite& in);
-
-    [[nodiscard]] bool Convert(wgpu::ComputePassTimestampLocation& out,
-                               const interop::GPUComputePassTimestampLocation& in);
 
     [[nodiscard]] bool Convert(wgpu::BindGroupEntry& out, const interop::GPUBindGroupEntry& in);
 
@@ -249,7 +260,7 @@ class Converter {
 
     [[nodiscard]] bool Convert(wgpu::FilterMode& out, const interop::GPUFilterMode& in);
 
-    [[nodiscard]] bool Convert(wgpu::FilterMode& out, const interop::GPUMipmapFilterMode& in);
+    [[nodiscard]] bool Convert(wgpu::MipmapFilterMode& out, const interop::GPUMipmapFilterMode& in);
 
     [[nodiscard]] bool Convert(wgpu::ComputePipelineDescriptor& out,
                                const interop::GPUComputePipelineDescriptor& in);
@@ -258,6 +269,9 @@ class Converter {
                                const interop::GPURenderPipelineDescriptor& in);
 
     [[nodiscard]] bool Convert(wgpu::PipelineLayout& out, const interop::GPUAutoLayoutMode& in);
+
+    [[nodiscard]] bool Convert(wgpu::Bool& out, const bool& in);
+    [[nodiscard]] bool Convert(wgpu::OptionalBool& out, const std::optional<bool>& in);
 
     // Below are the various overloads of Convert() used to convert the Dawn types -> interop.
     [[nodiscard]] bool Convert(interop::GPUTextureDimension& out, wgpu::TextureDimension in);
@@ -272,64 +286,76 @@ class Converter {
 
     [[nodiscard]] bool Convert(interop::GPUBufferMapState& out, wgpu::BufferMapState in);
 
-    // The two conversion methods don't generate an error when false is returned. That
+    // These conversion methods don't generate an error when false is returned. That
     // responsibility is left to the caller if it is needed (it isn't always needed, see
     // https://gpuweb.github.io/gpuweb/#gpu-supportedfeatures)
     [[nodiscard]] bool Convert(wgpu::FeatureName& out, interop::GPUFeatureName in);
     [[nodiscard]] bool Convert(interop::GPUFeatureName& out, wgpu::FeatureName in);
+    [[nodiscard]] bool Convert(wgpu::WGSLFeatureName& out, interop::WGSLFeatureName in);
+    [[nodiscard]] bool Convert(interop::WGSLFeatureName& out, wgpu::WGSLFeatureName in);
 
-    // std::string to C string
-    inline bool Convert(const char*& out, const std::string& in) {
+    // std::string to C string / wgpu::StringView types
+    [[nodiscard]] inline bool Convert(const char*& out, const std::string& in) {
         out = in.c_str();
         return true;
     }
+    [[nodiscard]] inline bool Convert(wgpu::StringView& out, const std::string& in) {
+        out = {in.data(), in.size()};
+        return true;
+    }
 
-    // Pass-through (no conversion)
-    template <typename T>
-    inline bool Convert(T& out, const T& in) {
+    // Floating point number conversion. IDL rules are that double/float that isn't "unrestricted"
+    // must be finite.
+    template <typename OUT,
+              typename IN,
+              std::enable_if_t<std::is_floating_point_v<IN> && std::is_floating_point_v<OUT>,
+                               bool> = true>
+    [[nodiscard]] inline bool Convert(OUT& out, const IN& in) {
         out = in;
+        if (!std::isfinite(out)) {
+            return Throw(Napi::TypeError::New(
+                env, "Floating-point value (" + std::to_string(out) + ") is not finite"));
+        }
         return true;
     }
 
     // Integral number conversion, with dynamic limit checking
     template <typename OUT,
               typename IN,
-              typename = std::enable_if_t<std::is_integral_v<IN> && std::is_integral_v<OUT>>>
-    inline bool Convert(OUT& out, const IN& in) {
+              std::enable_if_t<std::is_integral_v<IN> && std::is_integral_v<OUT>, bool> = true>
+    [[nodiscard]] inline bool Convert(OUT& out, const IN& in) {
         out = static_cast<OUT>(in);
         if (static_cast<IN>(out) != in) {
-            Napi::Error::New(env, "Integer value (" + std::to_string(in) +
-                                      ") cannot be converted to the Dawn data type without "
-                                      "truncation of the value")
-                .ThrowAsJavaScriptException();
-            return false;
+            return Throw("Integer value (" + std::to_string(in) +
+                         ") cannot be converted to the Dawn data type without "
+                         "truncation of the value");
         }
         return true;
     }
 
     // ClampedInteger<T>
     template <typename T>
-    inline bool Convert(T& out, const interop::ClampedInteger<T>& in) {
+    [[nodiscard]] inline bool Convert(T& out, const interop::ClampedInteger<T>& in) {
         out = in;
         return true;
     }
 
     // EnforceRangeInteger<T>
     template <typename T>
-    inline bool Convert(T& out, const interop::EnforceRangeInteger<T>& in) {
+    [[nodiscard]] inline bool Convert(T& out, const interop::EnforceRangeInteger<T>& in) {
         out = in;
         return true;
     }
 
     template <typename OUT, typename... IN_TYPES>
-    inline bool Convert(OUT& out, const std::variant<IN_TYPES...>& in) {
+    [[nodiscard]] inline bool Convert(OUT& out, const std::variant<IN_TYPES...>& in) {
         return std::visit([&](auto&& i) { return Convert(out, i); }, in);
     }
 
     // If the std::optional does not have a value, then Convert() simply returns true and 'out'
     // is not assigned a new value.
     template <typename OUT, typename IN>
-    inline bool Convert(OUT& out, const std::optional<IN>& in) {
+    [[nodiscard]] inline bool Convert(OUT& out, const std::optional<IN>& in) {
         if (in.has_value()) {
             return Convert(out, in.value());
         }
@@ -342,7 +368,7 @@ class Converter {
     template <typename OUT,
               typename IN,
               typename _ = std::enable_if_t<!std::is_same_v<IN, std::string>>>
-    inline bool Convert(OUT*& out, const std::optional<IN>& in) {
+    [[nodiscard]] inline bool Convert(OUT*& out, const std::optional<IN>& in) {
         if (in.has_value()) {
             auto* el = Allocate<std::remove_const_t<OUT>>();
             if (!Convert(*el, in.value())) {
@@ -357,7 +383,7 @@ class Converter {
 
     // interop::Interface -> Dawn object
     template <typename OUT, typename IN>
-    inline bool Convert(OUT& out, const interop::Interface<IN>& in) {
+    [[nodiscard]] inline bool Convert(OUT& out, const interop::Interface<IN>& in) {
         using Impl = ImplOf<IN>;
         out = *in.template As<Impl>();
         if (!out) {
@@ -369,7 +395,7 @@ class Converter {
 
     // vector -> raw pointer + count
     template <typename OUT, typename IN>
-    inline bool Convert(OUT*& out_els, uint32_t& out_count, const std::vector<IN>& in) {
+    [[nodiscard]] inline bool Convert(OUT*& out_els, size_t& out_count, const std::vector<IN>& in) {
         if (in.size() == 0) {
             out_els = nullptr;
             out_count = 0;
@@ -387,9 +413,9 @@ class Converter {
 
     // unordered_map -> raw pointer + count
     template <typename OUT, typename IN_KEY, typename IN_VALUE>
-    inline bool Convert(OUT*& out_els,
-                        uint32_t& out_count,
-                        const std::unordered_map<IN_KEY, IN_VALUE>& in) {
+    [[nodiscard]] inline bool Convert(OUT*& out_els,
+                                      size_t& out_count,
+                                      const std::unordered_map<IN_KEY, IN_VALUE>& in) {
         if (in.size() == 0) {
             out_els = nullptr;
             out_count = 0;
@@ -408,7 +434,9 @@ class Converter {
 
     // std::optional<T> -> raw pointer + count
     template <typename OUT, typename IN>
-    inline bool Convert(OUT*& out_els, uint32_t& out_count, const std::optional<IN>& in) {
+    [[nodiscard]] inline bool Convert(OUT*& out_els,
+                                      size_t& out_count,
+                                      const std::optional<IN>& in) {
         if (!in.has_value()) {
             out_els = nullptr;
             out_count = 0;
@@ -417,10 +445,24 @@ class Converter {
         return Convert(out_els, out_count, in.value());
     }
 
+    // JS strings can contain the null character, replace it with some other invalid character
+    // to preserve the creation of errors in this case.
+    char* ConvertStringReplacingNull(std::string_view in);
+
     Napi::Env env;
     wgpu::Device device = nullptr;
 
     bool HasFeature(wgpu::FeatureName feature);
+
+    // Function to be used when throwing a JavaScript exception because of issues during the
+    // conversion. Because the conversion should stop immediately, this method returns false,
+    // so the pattern is:
+    //
+    //    if (some error case) {
+    //        return Throw("Some error case description");
+    //    }
+    [[nodiscard]] bool Throw(std::string&& message);
+    [[nodiscard]] bool Throw(Napi::Error&& error);
 
     // Allocate() allocates and constructs an array of 'n' elements, and returns a pointer to
     // the first element. The array is freed when the Converter is destructed.
@@ -433,6 +475,8 @@ class Converter {
 
     std::vector<std::function<void()>> free_;
 };
+
+std::string CopyLabel(StringView label);
 
 }  // namespace wgpu::binding
 

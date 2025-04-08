@@ -1,16 +1,29 @@
-// Copyright 2021 The Dawn Authors
+// Copyright 2021 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <algorithm>
 #include <array>
@@ -22,6 +35,7 @@
 #include "dawn/tests/DawnTest.h"
 #include "dawn/utils/WGPUHelpers.h"
 
+namespace dawn {
 namespace {
 
 // Helper for replacing all occurrences of substr in str with replacement
@@ -71,7 +85,7 @@ std::string ScalarTypeName(ScalarType scalarType) {
         case ScalarType::f16:
             return "f16";
     }
-    UNREACHABLE();
+    DAWN_UNREACHABLE();
     return "";
 }
 
@@ -84,7 +98,7 @@ size_t ScalarTypeSize(ScalarType scalarType) {
         case ScalarType::f16:
             return 2;
     }
-    UNREACHABLE();
+    DAWN_UNREACHABLE();
     return 0;
 }
 
@@ -166,19 +180,19 @@ class MemoryDataBuilder {
         // bytes and avoid NaN or Inf.
         constexpr uint8_t dataMask = ~paddingMask;
         // Get a data byte
-        auto NextDataByte = [&]() {
+        auto NextDataByte = [&] {
             dataByte += 0x11u;
             return static_cast<uint8_t>((dataByte ^ dataXorKey) & dataMask);
         };
         // Get a padding byte
-        auto NextPaddingByte = [&]() {
+        auto NextPaddingByte = [&] {
             paddingByte += 0x13u;
             return static_cast<uint8_t>((paddingByte ^ paddingXorKey) | paddingMask);
         };
         for (auto& operation : mOperations) {
             switch (operation.mType) {
                 case OperationType::FillingFixed: {
-                    ASSERT(operation.mOperand == operation.mFixedFillingData.size());
+                    DAWN_ASSERT(operation.mOperand == operation.mFixedFillingData.size());
                     buffer.insert(buffer.end(), operation.mFixedFillingData.begin(),
                                   operation.mFixedFillingData.end());
                     break;
@@ -268,7 +282,7 @@ class Field {
     // Applies a @size attribute, sets the mPaddedSize to value.
     // Returns this Field so calls can be chained.
     Field& SizeAttribute(size_t value) {
-        ASSERT(value >= mSize);
+        DAWN_ASSERT(value >= mSize);
         mHasSizeAttribute = true;
         mPaddedSize = value;
         return *this;
@@ -279,8 +293,8 @@ class Field {
     // Applies a @align attribute, sets the align to value.
     // Returns this Field so calls can be chained.
     Field& AlignAttribute(size_t value) {
-        ASSERT(value >= mAlign);
-        ASSERT(IsPowerOfTwo(value));
+        DAWN_ASSERT(value >= mAlign);
+        DAWN_ASSERT(IsPowerOfTwo(value));
         mAlign = value;
         mHasAlignAttribute = true;
         return *this;
@@ -293,8 +307,8 @@ class Field {
     Field& Strided(size_t bytesData, size_t bytesPadding) {
         // Check that stride pattern cover the whole data part, i.e. the data part contains N x
         // whole data bytes and N or (N-1) x whole padding bytes.
-        ASSERT((mSize % (bytesData + bytesPadding) == 0) ||
-               ((mSize + bytesPadding) % (bytesData + bytesPadding) == 0));
+        DAWN_ASSERT((mSize % (bytesData + bytesPadding) == 0) ||
+                    ((mSize + bytesPadding) % (bytesData + bytesPadding) == 0));
         mStrideDataBytes = bytesData;
         mStridePaddingBytes = bytesPadding;
         return *this;
@@ -334,8 +348,9 @@ class Field {
         // Check that stride pattern cover the whole data part, i.e. the data part contains N x
         // whole data bytes and N or (N-1) x whole padding bytes. Note that this also handle
         // continious data, i.e. mStrideDataBytes == mSize and mStridePaddingBytes == 0, correctly.
-        ASSERT((mSize % (mStrideDataBytes + mStridePaddingBytes) == 0) ||
-               ((mSize + mStridePaddingBytes) % (mStrideDataBytes + mStridePaddingBytes) == 0));
+        DAWN_ASSERT(
+            (mSize % (mStrideDataBytes + mStridePaddingBytes) == 0) ||
+            ((mSize + mStridePaddingBytes) % (mStrideDataBytes + mStridePaddingBytes) == 0));
         size_t offset = 0;
         while (offset < mSize) {
             builder.AddData(mStrideDataBytes);
@@ -359,7 +374,7 @@ class Field {
 
     // Helper function to build a Field describing a vector type.
     static Field Vector(uint32_t n, ScalarType type) {
-        ASSERT(2 <= n && n <= 4);
+        DAWN_ASSERT(2 <= n && n <= 4);
         size_t elementSize = ScalarTypeSize(type);
         size_t vectorSize = n * elementSize;
         size_t vectorAlignment = (n == 3 ? 4 : n) * elementSize;
@@ -369,9 +384,9 @@ class Field {
 
     // Helper function to build a Field describing a matrix type.
     static Field Matrix(uint32_t col, uint32_t row, ScalarType type) {
-        ASSERT(2 <= col && col <= 4);
-        ASSERT(2 <= row && row <= 4);
-        ASSERT(type == ScalarType::f32 || type == ScalarType::f16);
+        DAWN_ASSERT(2 <= col && col <= 4);
+        DAWN_ASSERT(2 <= row && row <= 4);
+        DAWN_ASSERT(type == ScalarType::f32 || type == ScalarType::f16);
         size_t elementSize = ScalarTypeSize(type);
         size_t colVectorSize = row * elementSize;
         size_t colVectorAlignment = (row == 3 ? 4 : row) * elementSize;
@@ -440,7 +455,6 @@ void RunComputeShaderWithBuffers(const wgpu::Device& device,
 
     wgpu::ComputePipelineDescriptor csDesc;
     csDesc.compute.module = module;
-    csDesc.compute.entryPoint = "main";
 
     wgpu::ComputePipeline pipeline = device.CreateComputePipeline(&csDesc);
 
@@ -458,7 +472,7 @@ void RunComputeShaderWithBuffers(const wgpu::Device& device,
 
     wgpu::BindGroupDescriptor descriptor;
     descriptor.layout = pipeline.GetBindGroupLayout(0);
-    descriptor.entryCount = static_cast<uint32_t>(entries.size());
+    descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
 
     wgpu::BindGroup bindGroup = device.CreateBindGroup(&descriptor);
@@ -528,6 +542,11 @@ TEST_P(ComputeLayoutMemoryBufferTests, StructMember) {
     // TODO(crbug.com/dawn/1606): find out why these tests fail on Windows for OpenGL.
     DAWN_TEST_UNSUPPORTED_IF(IsOpenGLES() && IsWindows());
 
+    // TODO(crbug.com/dawn/2295): diagnose this failure on Pixel 4 OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsQualcomm());
+
+    const bool isUniform = GetParam().mAddressSpace == AddressSpace::Uniform;
+
     // Sentinel value markers codes used to check that the start and end of
     // structures are correctly aligned. Each of these codes are distinct and
     // are not likely to be confused with data.
@@ -545,11 +564,9 @@ TEST_P(ComputeLayoutMemoryBufferTests, StructMember) {
 
     const Field& field = GetParam().mField;
 
-    if (field.IsRequireF16Feature() && !device.HasFeature(wgpu::FeatureName::ShaderF16)) {
-        return;
-    }
-
-    const bool isUniform = GetParam().mAddressSpace == AddressSpace::Uniform;
+    // Skip if device don't support f16 extension.
+    DAWN_TEST_UNSUPPORTED_IF(field.IsRequireF16Feature() &&
+                             !device.HasFeature(wgpu::FeatureName::ShaderF16));
 
     std::string shader = std::string(field.IsRequireF16Feature() ? "enable f16;" : "") +
                          R"(
@@ -594,9 +611,9 @@ fn main() {
 })";
 
     // https://www.w3.org/TR/WGSL/#alignment-and-size
-    // Structure size: roundUp(AlignOf(S), OffsetOf(S, L) + SizeOf(S, L))
+    // Structure size: RoundUp(AlignOf(S), OffsetOf(S, L) + SizeOf(S, L))
     // https://www.w3.org/TR/WGSL/#storage-class-constraints
-    // RequiredAlignOf(S, uniform): roundUp(16, max(AlignOf(T0), ..., AlignOf(TN)))
+    // RequiredAlignOf(S, uniform): RoundUp(16, max(AlignOf(T0), ..., AlignOf(TN)))
     uint32_t dataAlign = isUniform ? std::max(size_t(16u), field.GetAlign()) : field.GetAlign();
 
     // https://www.w3.org/TR/WGSL/#structure-layout-rules
@@ -680,8 +697,7 @@ fn main() {
     RunComputeShaderWithBuffers(device, queue, shader, {inputBuf, outputBuf, statusBuf});
 
     // Check the status
-    EXPECT_BUFFER_U32_EQ(kStatusOk, statusBuf, 0) << "status code error" << std::endl
-                                                  << "Shader: " << shader;
+    EXPECT_BUFFER_U32_EQ(kStatusOk, statusBuf, 0) << "status code error\nShader: " << shader;
 
     // Check the data. Note that MemoryDataBuilder avoid generating NaN and Inf floating point data,
     // whose bit pattern will not get preserved when reading from buffer (arbitrary NaNs may be
@@ -698,6 +714,9 @@ fn main() {
 TEST_P(ComputeLayoutMemoryBufferTests, NonStructMember) {
     // TODO(crbug.com/dawn/1606): find out why these tests fail on Windows for OpenGL.
     DAWN_TEST_UNSUPPORTED_IF(IsOpenGLES() && IsWindows());
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsQualcomm());
+
+    const bool isUniform = GetParam().mAddressSpace == AddressSpace::Uniform;
 
     auto params = GetParam();
 
@@ -708,11 +727,9 @@ TEST_P(ComputeLayoutMemoryBufferTests, NonStructMember) {
         return;
     }
 
-    if (field.IsRequireF16Feature() && !device.HasFeature(wgpu::FeatureName::ShaderF16)) {
-        return;
-    }
-
-    const bool isUniform = GetParam().mAddressSpace == AddressSpace::Uniform;
+    // Skip if device don't support f16 extension.
+    DAWN_TEST_UNSUPPORTED_IF(field.IsRequireF16Feature() &&
+                             !device.HasFeature(wgpu::FeatureName::ShaderF16));
 
     std::string shader = std::string(field.IsRequireF16Feature() ? "enable f16;" : "") +
                          R"(
@@ -778,6 +795,7 @@ fn main() {
 auto GenerateParams() {
     auto params = MakeParamGenerator<ComputeLayoutMemoryBufferTestParams>(
         {
+            D3D11Backend(),
             D3D12Backend(),
             D3D12Backend({"use_dxc"}),
             MetalBackend(),
@@ -1151,4 +1169,5 @@ INSTANTIATE_TEST_SUITE_P(,
                          DawnTestBase::PrintToStringParamName("ComputeLayoutMemoryBufferTests"));
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(ComputeLayoutMemoryBufferTests);
 
-}  // namespace
+}  // anonymous namespace
+}  // namespace dawn

@@ -1,31 +1,56 @@
-SKIP: FAILED
+#include <metal_stdlib>
 
+using namespace metal;
 
-enable chromium_experimental_dp4a;
-
-fn dot4I8Packed_881e62() {
-  var arg_0 = 1u;
-  var arg_1 = 1u;
-  var res : i32 = dot4I8Packed(arg_0, arg_1);
+template<typename T>
+T tint_dot4(vec<T,4> a, vec<T,4> b) {
+  return a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3];
+}
+int tint_dot4_i8_packed(uint a, uint b) {
+  int4 const a_i8 = (as_type<int4>((uint4(a) << uint4(24u, 16u, 8u, 0u))) >> uint4(24u));
+  int4 const b_i8 = (as_type<int4>((uint4(b) << uint4(24u, 16u, 8u, 0u))) >> uint4(24u));
+  return tint_dot4(a_i8, b_i8);
 }
 
-@vertex
-fn vertex_main() -> @builtin(position) vec4<f32> {
-  dot4I8Packed_881e62();
-  return vec4<f32>();
+int dot4I8Packed_881e62() {
+  uint arg_0 = 1u;
+  uint arg_1 = 1u;
+  int res = tint_dot4_i8_packed(arg_0, arg_1);
+  return res;
 }
 
-@fragment
-fn fragment_main() {
-  dot4I8Packed_881e62();
+fragment void fragment_main(device int* tint_symbol_1 [[buffer(0)]]) {
+  *(tint_symbol_1) = dot4I8Packed_881e62();
+  return;
 }
 
-@compute @workgroup_size(1)
-fn compute_main() {
-  dot4I8Packed_881e62();
+kernel void compute_main(device int* tint_symbol_2 [[buffer(0)]]) {
+  *(tint_symbol_2) = dot4I8Packed_881e62();
+  return;
 }
 
-Failed to generate: builtins/gen/var/dot4I8Packed/881e62.wgsl:24:8 error: MSL backend does not support extension 'chromium_experimental_dp4a'
-enable chromium_experimental_dp4a;
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^
+struct VertexOutput {
+  float4 pos;
+  int prevent_dce;
+};
+
+struct tint_symbol {
+  int prevent_dce [[user(locn0)]] [[flat]];
+  float4 pos [[position]];
+};
+
+VertexOutput vertex_main_inner() {
+  VertexOutput out = {};
+  out.pos = float4(0.0f);
+  out.prevent_dce = dot4I8Packed_881e62();
+  return out;
+}
+
+vertex tint_symbol vertex_main() {
+  VertexOutput const inner_result = vertex_main_inner();
+  tint_symbol wrapper_result = {};
+  wrapper_result.pos = inner_result.pos;
+  wrapper_result.prevent_dce = inner_result.prevent_dce;
+  return wrapper_result;
+}
 

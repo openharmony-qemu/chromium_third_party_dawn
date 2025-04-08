@@ -1,104 +1,71 @@
 #version 310 es
 precision highp float;
-
-struct atomic_compare_exchange_resulti32 {
-  int old_value;
-  bool exchanged;
-};
+precision highp int;
 
 
 struct SB_RW_atomic {
   int arg_0;
 };
 
-struct SB_RW {
-  int arg_0;
-};
-
-struct x__atomic_compare_exchange_resulti32 {
+struct tint_symbol {
   int old_value;
   bool exchanged;
 };
 
-layout(binding = 0, std430) buffer sb_rw_block_ssbo {
+struct atomic_compare_exchange_result_i32 {
+  int old_value;
+  bool exchanged;
+};
+
+layout(binding = 0, std430)
+buffer sb_rw_block_1_ssbo {
   SB_RW_atomic inner;
-} sb_rw;
-
+} v;
 void atomicCompareExchangeWeak_1bd40a() {
-  x__atomic_compare_exchange_resulti32 res = x__atomic_compare_exchange_resulti32(0, false);
-  atomic_compare_exchange_resulti32 atomic_compare_result;
-  atomic_compare_result.old_value = atomicCompSwap(sb_rw.inner.arg_0, 1, 1);
-  atomic_compare_result.exchanged = atomic_compare_result.old_value == 1;
-  atomic_compare_exchange_resulti32 tint_symbol = atomic_compare_result;
-  int old_value_1 = tint_symbol.old_value;
+  tint_symbol res = tint_symbol(0, false);
+  int v_1 = atomicCompSwap(v.inner.arg_0, 1, 1);
+  int old_value_1 = atomic_compare_exchange_result_i32(v_1, (v_1 == 1)).old_value;
   int x_19 = old_value_1;
-  x__atomic_compare_exchange_resulti32 tint_symbol_1 = x__atomic_compare_exchange_resulti32(x_19, (x_19 == 1));
-  res = tint_symbol_1;
-  return;
+  res = tint_symbol(x_19, (x_19 == 1));
 }
-
 void fragment_main_1() {
   atomicCompareExchangeWeak_1bd40a();
-  return;
 }
-
-void fragment_main() {
-  fragment_main_1();
-}
-
 void main() {
-  fragment_main();
-  return;
+  fragment_main_1();
 }
 #version 310 es
 
-struct atomic_compare_exchange_resulti32 {
-  int old_value;
-  bool exchanged;
-};
-
 
 struct SB_RW_atomic {
   int arg_0;
 };
 
-struct SB_RW {
-  int arg_0;
-};
-
-struct x__atomic_compare_exchange_resulti32 {
+struct tint_symbol {
   int old_value;
   bool exchanged;
 };
 
-layout(binding = 0, std430) buffer sb_rw_block_ssbo {
+struct atomic_compare_exchange_result_i32 {
+  int old_value;
+  bool exchanged;
+};
+
+layout(binding = 0, std430)
+buffer sb_rw_block_1_ssbo {
   SB_RW_atomic inner;
-} sb_rw;
-
+} v;
 void atomicCompareExchangeWeak_1bd40a() {
-  x__atomic_compare_exchange_resulti32 res = x__atomic_compare_exchange_resulti32(0, false);
-  atomic_compare_exchange_resulti32 atomic_compare_result;
-  atomic_compare_result.old_value = atomicCompSwap(sb_rw.inner.arg_0, 1, 1);
-  atomic_compare_result.exchanged = atomic_compare_result.old_value == 1;
-  atomic_compare_exchange_resulti32 tint_symbol = atomic_compare_result;
-  int old_value_1 = tint_symbol.old_value;
+  tint_symbol res = tint_symbol(0, false);
+  int v_1 = atomicCompSwap(v.inner.arg_0, 1, 1);
+  int old_value_1 = atomic_compare_exchange_result_i32(v_1, (v_1 == 1)).old_value;
   int x_19 = old_value_1;
-  x__atomic_compare_exchange_resulti32 tint_symbol_1 = x__atomic_compare_exchange_resulti32(x_19, (x_19 == 1));
-  res = tint_symbol_1;
-  return;
+  res = tint_symbol(x_19, (x_19 == 1));
 }
-
 void compute_main_1() {
   atomicCompareExchangeWeak_1bd40a();
-  return;
 }
-
-void compute_main() {
-  compute_main_1();
-}
-
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 void main() {
-  compute_main();
-  return;
+  compute_main_1();
 }

@@ -1,16 +1,29 @@
-// Copyright 2018 The Dawn Authors
+// Copyright 2018 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/native/ProgrammableEncoder.h"
 
@@ -25,11 +38,12 @@
 #include "dawn/native/Device.h"
 #include "dawn/native/ObjectType_autogen.h"
 #include "dawn/native/ValidationUtils_autogen.h"
+#include "dawn/native/utils/WGPUHelpers.h"
 
 namespace dawn::native {
 
 ProgrammableEncoder::ProgrammableEncoder(DeviceBase* device,
-                                         const char* label,
+                                         StringView label,
                                          EncodingContext* encodingContext)
     : ApiObjectBase(device, label),
       mEncodingContext(encodingContext),
@@ -38,7 +52,7 @@ ProgrammableEncoder::ProgrammableEncoder(DeviceBase* device,
 ProgrammableEncoder::ProgrammableEncoder(DeviceBase* device,
                                          EncodingContext* encodingContext,
                                          ErrorTag errorTag,
-                                         const char* label)
+                                         StringView label)
     : ApiObjectBase(device, errorTag, label),
       mEncodingContext(encodingContext),
       mValidationEnabled(device->IsValidationEnabled()) {}
@@ -54,20 +68,18 @@ MaybeError ProgrammableEncoder::ValidateProgrammableEncoderEnd() const {
     return {};
 }
 
-void ProgrammableEncoder::APIInsertDebugMarker(const char* groupLabel) {
+void ProgrammableEncoder::APIInsertDebugMarker(StringView markerIn) {
+    std::string_view marker = utils::NormalizeMessageString(markerIn);
     mEncodingContext->TryEncode(
         this,
         [&](CommandAllocator* allocator) -> MaybeError {
             InsertDebugMarkerCmd* cmd =
                 allocator->Allocate<InsertDebugMarkerCmd>(Command::InsertDebugMarker);
-            cmd->length = strlen(groupLabel);
-
-            char* label = allocator->AllocateData<char>(cmd->length + 1);
-            memcpy(label, groupLabel, cmd->length + 1);
+            AddNullTerminatedString(allocator, marker, &cmd->length);
 
             return {};
         },
-        "encoding %s.InsertDebugMarker(\"%s\").", this, groupLabel);
+        "encoding %s.InsertDebugMarker(%s).", this, marker);
 }
 
 void ProgrammableEncoder::APIPopDebugGroup() {
@@ -87,56 +99,59 @@ void ProgrammableEncoder::APIPopDebugGroup() {
         "encoding %s.PopDebugGroup().", this);
 }
 
-void ProgrammableEncoder::APIPushDebugGroup(const char* groupLabel) {
+void ProgrammableEncoder::APIPushDebugGroup(StringView groupLabelIn) {
+    std::string_view groupLabel = utils::NormalizeMessageString(groupLabelIn);
     mEncodingContext->TryEncode(
         this,
         [&](CommandAllocator* allocator) -> MaybeError {
             PushDebugGroupCmd* cmd =
                 allocator->Allocate<PushDebugGroupCmd>(Command::PushDebugGroup);
-            cmd->length = strlen(groupLabel);
-
-            char* label = allocator->AllocateData<char>(cmd->length + 1);
-            memcpy(label, groupLabel, cmd->length + 1);
+            const char* label = AddNullTerminatedString(allocator, groupLabel, &cmd->length);
 
             mDebugGroupStackSize++;
-            mEncodingContext->PushDebugGroupLabel(groupLabel);
+            mEncodingContext->PushDebugGroupLabel(std::string_view(label, cmd->length));
 
             return {};
         },
-        "encoding %s.PushDebugGroup(\"%s\").", this, groupLabel);
+        "encoding %s.PushDebugGroup(%s).", this, groupLabel);
 }
 
 MaybeError ProgrammableEncoder::ValidateSetBindGroup(BindGroupIndex index,
                                                      BindGroupBase* group,
                                                      uint32_t dynamicOffsetCountIn,
                                                      const uint32_t* dynamicOffsetsIn) const {
-    DAWN_TRY(GetDevice()->ValidateObject(group));
-
     DAWN_INVALID_IF(index >= kMaxBindGroupsTyped, "Bind group index (%u) exceeds the maximum (%u).",
-                    static_cast<uint32_t>(index), kMaxBindGroups);
+                    index, kMaxBindGroupsTyped);
 
     ityp::span<BindingIndex, const uint32_t> dynamicOffsets(dynamicOffsetsIn,
                                                             BindingIndex(dynamicOffsetCountIn));
 
+    if (group == nullptr) {
+        uint32_t size = static_cast<uint32_t>(dynamicOffsets.size());
+        DAWN_INVALID_IF(size != 0, "The number of dynamic offsets (%u) is not zero", size);
+        return {};
+    }
+
+    DAWN_TRY(GetDevice()->ValidateObject(group));
+
     // Dynamic offsets count must match the number required by the layout perfectly.
-    const BindGroupLayoutBase* layout = group->GetLayout();
+    const BindGroupLayoutInternalBase* layout = group->GetLayout();
     DAWN_INVALID_IF(
         layout->GetDynamicBufferCount() != dynamicOffsets.size(),
         "The number of dynamic offsets (%u) does not match the number of dynamic buffers (%u) "
         "in %s.",
-        static_cast<uint32_t>(dynamicOffsets.size()),
-        static_cast<uint32_t>(layout->GetDynamicBufferCount()), layout);
+        dynamicOffsets.size(), layout->GetDynamicBufferCount(), layout);
 
     for (BindingIndex i{0}; i < dynamicOffsets.size(); ++i) {
         const BindingInfo& bindingInfo = layout->GetBindingInfo(i);
 
         // BGL creation sorts bindings such that the dynamic buffer bindings are first.
-        // ASSERT that this true.
-        ASSERT(bindingInfo.bindingType == BindingInfoType::Buffer);
-        ASSERT(bindingInfo.buffer.hasDynamicOffset);
+        const BufferBindingInfo& bindingLayout =
+            std::get<BufferBindingInfo>(bindingInfo.bindingLayout);
+        DAWN_ASSERT(bindingLayout.hasDynamicOffset);
 
         uint64_t requiredAlignment;
-        switch (bindingInfo.buffer.type) {
+        switch (bindingLayout.type) {
             case wgpu::BufferBindingType::Uniform:
                 requiredAlignment = GetDevice()->GetLimits().v1.minUniformBufferOffsetAlignment;
                 break;
@@ -146,19 +161,19 @@ MaybeError ProgrammableEncoder::ValidateSetBindGroup(BindGroupIndex index,
                 requiredAlignment = GetDevice()->GetLimits().v1.minStorageBufferOffsetAlignment;
                 break;
             case wgpu::BufferBindingType::Undefined:
-                UNREACHABLE();
+                DAWN_UNREACHABLE();
         }
 
         DAWN_INVALID_IF(!IsAligned(dynamicOffsets[i], requiredAlignment),
-                        "Dynamic Offset[%u] (%u) is not %u byte aligned.", static_cast<uint32_t>(i),
-                        dynamicOffsets[i], requiredAlignment);
+                        "Dynamic Offset[%u] (%u) is not %u byte aligned.", i, dynamicOffsets[i],
+                        requiredAlignment);
 
         BufferBinding bufferBinding = group->GetBindingAsBufferBinding(i);
 
         // During BindGroup creation, validation ensures binding offset + binding size
         // <= buffer size.
-        ASSERT(bufferBinding.buffer->GetSize() >= bufferBinding.size);
-        ASSERT(bufferBinding.buffer->GetSize() - bufferBinding.size >= bufferBinding.offset);
+        DAWN_ASSERT(bufferBinding.buffer->GetSize() >= bufferBinding.size);
+        DAWN_ASSERT(bufferBinding.buffer->GetSize() - bufferBinding.size >= bufferBinding.offset);
 
         if ((dynamicOffsets[i] >
              bufferBinding.buffer->GetSize() - bufferBinding.offset - bufferBinding.size)) {
@@ -168,14 +183,14 @@ MaybeError ProgrammableEncoder::ValidateSetBindGroup(BindGroupIndex index,
                 "range of (offset: %u, size: %u). The binding goes to the end of the buffer "
                 "even with a dynamic offset of 0. Did you forget to specify "
                 "the binding's size?",
-                static_cast<uint32_t>(i), dynamicOffsets[i], bufferBinding.buffer,
-                bufferBinding.buffer->GetSize(), bufferBinding.offset, bufferBinding.size);
+                i, dynamicOffsets[i], bufferBinding.buffer, bufferBinding.buffer->GetSize(),
+                bufferBinding.offset, bufferBinding.size);
 
             return DAWN_VALIDATION_ERROR(
                 "Dynamic Offset[%u] (%u) is out of bounds of "
                 "%s with a size of %u and a bound range of (offset: %u, size: %u).",
-                static_cast<uint32_t>(i), dynamicOffsets[i], bufferBinding.buffer,
-                bufferBinding.buffer->GetSize(), bufferBinding.offset, bufferBinding.size);
+                i, dynamicOffsets[i], bufferBinding.buffer, bufferBinding.buffer->GetSize(),
+                bufferBinding.offset, bufferBinding.size);
         }
     }
 

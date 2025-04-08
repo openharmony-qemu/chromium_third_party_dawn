@@ -1,16 +1,29 @@
-// Copyright 2018 The Dawn Authors
+// Copyright 2018 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/native/vulkan/ComputePipelineVk.h"
 
@@ -18,7 +31,7 @@
 #include <utility>
 #include <vector>
 
-#include "dawn/native/CreatePipelineAsyncTask.h"
+#include "dawn/native/CreatePipelineAsyncEvent.h"
 #include "dawn/native/vulkan/DeviceVk.h"
 #include "dawn/native/vulkan/FencedDeleter.h"
 #include "dawn/native/vulkan/PipelineCacheVk.h"
@@ -26,28 +39,33 @@
 #include "dawn/native/vulkan/ShaderModuleVk.h"
 #include "dawn/native/vulkan/UtilsVulkan.h"
 #include "dawn/native/vulkan/VulkanError.h"
+#include "dawn/platform/metrics/HistogramMacros.h"
 
 namespace dawn::native::vulkan {
 
 // static
 Ref<ComputePipeline> ComputePipeline::CreateUninitialized(
     Device* device,
-    const ComputePipelineDescriptor* descriptor) {
+    const UnpackedPtr<ComputePipelineDescriptor>& descriptor) {
     return AcquireRef(new ComputePipeline(device, descriptor));
 }
 
-MaybeError ComputePipeline::Initialize() {
+MaybeError ComputePipeline::InitializeImpl() {
     Device* device = ToBackend(GetDevice());
-    const PipelineLayout* layout = ToBackend(GetLayout());
+    PipelineLayout* layout = ToBackend(GetLayout());
 
     // Vulkan devices need cache UUID field to be serialized into pipeline cache keys.
     StreamIn(&mCacheKey, device->GetDeviceInfo().properties.pipelineCacheUUID);
+
+    // Compute pipeline doesn't have clamp depth feature.
+    // TODO(crbug.com/366291600): Setting immediate data size if needed.
+    DAWN_TRY(InitializeBase(layout, 0));
 
     VkComputePipelineCreateInfo createInfo;
     createInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     createInfo.pNext = nullptr;
     createInfo.flags = 0;
-    createInfo.layout = layout->GetHandle();
+    createInfo.layout = GetVkLayout();
     createInfo.basePipelineHandle = VkPipeline{};
     createInfo.basePipelineIndex = -1;
 
@@ -60,21 +78,39 @@ MaybeError ComputePipeline::Initialize() {
     ShaderModule* module = ToBackend(computeStage.module.Get());
 
     ShaderModule::ModuleAndSpirv moduleAndSpirv;
-    DAWN_TRY_ASSIGN(moduleAndSpirv,
-                    module->GetHandleAndSpirv(SingleShaderStage::Compute, computeStage, layout,
-                                              /*clampFragDepth*/ false));
+    DAWN_TRY_ASSIGN(
+        moduleAndSpirv,
+        module->GetHandleAndSpirv(
+            SingleShaderStage::Compute, computeStage, layout,
+            /*clampFragDepth*/ false,
+            /*emitPointSize*/ false,
+            /* maxSubgroupSizeForFullSubgroups */
+            IsFullSubgroupsRequired()
+                ? std::make_optional(device->GetLimits().experimentalSubgroupLimits.maxSubgroupSize)
+                : std::nullopt));
 
     createInfo.stage.module = moduleAndSpirv.module;
-    createInfo.stage.pName = moduleAndSpirv.remappedEntryPoint;
+    createInfo.stage.pName = moduleAndSpirv.remappedEntryPoint.c_str();
+
+    if (IsFullSubgroupsRequired()) {
+        // Workgroup size validation is handled in ValidateComputeStageWorkgroupSize when compiling
+        // shader module. Vulkan device that support Subgroups feature must support
+        // computeFullSubgroups.
+        DAWN_ASSERT(device->GetDeviceInfo().subgroupSizeControlFeatures.computeFullSubgroups);
+        createInfo.stage.flags |= VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT |
+                                  VK_PIPELINE_SHADER_STAGE_CREATE_ALLOW_VARYING_SUBGROUP_SIZE_BIT;
+    }
 
     createInfo.stage.pSpecializationInfo = nullptr;
 
+    VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroupSizeInfo = {};
     PNextChainBuilder stageExtChain(&createInfo.stage);
 
-    VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroupSizeInfo = {};
     uint32_t computeSubgroupSize = device->GetComputeSubgroupSize();
-    if (computeSubgroupSize != 0u) {
-        ASSERT(device->GetDeviceInfo().HasExt(DeviceExt::SubgroupSizeControl));
+    // If experimental full subgroups is required, pipeline is created with varying subgroup size
+    // enabled, and thus do not use explicit subgroup size control.
+    if (computeSubgroupSize != 0u && !IsFullSubgroupsRequired()) {
+        DAWN_ASSERT(device->GetDeviceInfo().HasExt(DeviceExt::SubgroupSizeControl));
         subgroupSizeInfo.requiredSubgroupSize = computeSubgroupSize;
         stageExtChain.Add(
             &subgroupSizeInfo,
@@ -86,13 +122,23 @@ MaybeError ComputePipeline::Initialize() {
              stream::Iterable(moduleAndSpirv.spirv, moduleAndSpirv.wordCount));
 
     // Try to see if we have anything in the blob cache.
+    platform::metrics::DawnHistogramTimer cacheTimer(GetDevice()->GetPlatform());
     Ref<PipelineCache> cache = ToBackend(GetDevice()->GetOrCreatePipelineCache(GetCacheKey()));
-    DAWN_TRY(
-        CheckVkSuccess(device->fn.CreateComputePipelines(device->GetVkDevice(), cache->GetHandle(),
-                                                         1, &createInfo, nullptr, &*mHandle),
-                       "CreateComputePipeline"));
-    // TODO(dawn:549): Flush is currently in the same thread, but perhaps deferrable.
-    DAWN_TRY(cache->FlushIfNeeded());
+    if (cache->CacheHit()) {
+        DAWN_TRY(CheckVkSuccess(
+            device->fn.CreateComputePipelines(device->GetVkDevice(), cache->GetHandle(), 1,
+                                              &createInfo, nullptr, &*mHandle),
+            "CreateComputePipelines"));
+        cacheTimer.RecordMicroseconds("Vulkan.CreateComputePipelines.CacheHit");
+    } else {
+        cacheTimer.Reset();
+        DAWN_TRY(CheckVkSuccess(
+            device->fn.CreateComputePipelines(device->GetVkDevice(), cache->GetHandle(), 1,
+                                              &createInfo, nullptr, &*mHandle),
+            "CreateComputePipelines"));
+        cacheTimer.RecordMicroseconds("Vulkan.CreateComputePipelines.CacheMiss");
+    }
+    DAWN_TRY(cache->DidCompilePipeline());
 
     SetLabelImpl();
 
@@ -107,7 +153,7 @@ ComputePipeline::~ComputePipeline() = default;
 
 void ComputePipeline::DestroyImpl() {
     ComputePipelineBase::DestroyImpl();
-
+    PipelineVk::DestroyImpl();
     if (mHandle != VK_NULL_HANDLE) {
         ToBackend(GetDevice())->GetFencedDeleter()->DeleteWhenUnused(mHandle);
         mHandle = VK_NULL_HANDLE;
@@ -116,15 +162,6 @@ void ComputePipeline::DestroyImpl() {
 
 VkPipeline ComputePipeline::GetHandle() const {
     return mHandle;
-}
-
-void ComputePipeline::InitializeAsync(Ref<ComputePipelineBase> computePipeline,
-                                      WGPUCreateComputePipelineAsyncCallback callback,
-                                      void* userdata) {
-    std::unique_ptr<CreateComputePipelineAsyncTask> asyncTask =
-        std::make_unique<CreateComputePipelineAsyncTask>(std::move(computePipeline), callback,
-                                                         userdata);
-    CreateComputePipelineAsyncTask::RunAsync(std::move(asyncTask));
 }
 
 }  // namespace dawn::native::vulkan

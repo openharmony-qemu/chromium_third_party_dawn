@@ -1,16 +1,29 @@
-// Copyright 2021 The Dawn Authors
+// Copyright 2021 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <unistd.h>
 
@@ -22,15 +35,11 @@
 #include "dawn/native/vulkan/FencedDeleter.h"
 #include "dawn/native/vulkan/ResourceMemoryAllocatorVk.h"
 #include "dawn/native/vulkan/UtilsVulkan.h"
-#include "dawn/tests/white_box/VulkanImageWrappingTests.h"
+#include "dawn/tests/white_box/VulkanImageWrappingTests_OpaqueFD.h"
 #include "gtest/gtest.h"
+#include "partition_alloc/pointers/raw_ptr.h"
 
 namespace dawn::native::vulkan {
-
-ExternalImageDescriptorVkForTesting::ExternalImageDescriptorVkForTesting()
-    : ExternalImageDescriptorVk(ExternalImageType::OpaqueFD) {}
-ExternalImageExportInfoVkForTesting::ExternalImageExportInfoVkForTesting()
-    : ExternalImageExportInfoVk(ExternalImageType::OpaqueFD) {}
 
 class ExternalSemaphoreOpaqueFD : public VulkanImageWrappingTestBackend::ExternalSemaphore {
   public:
@@ -52,7 +61,7 @@ class ExternalSemaphoreOpaqueFD : public VulkanImageWrappingTestBackend::Externa
 
 class ExternalTextureOpaqueFD : public VulkanImageWrappingTestBackend::ExternalTexture {
   public:
-    ExternalTextureOpaqueFD(dawn::native::vulkan::Device* device,
+    ExternalTextureOpaqueFD(native::vulkan::Device* device,
                             int fd,
                             VkDeviceMemory allocation,
                             VkImage handle,
@@ -80,7 +89,7 @@ class ExternalTextureOpaqueFD : public VulkanImageWrappingTestBackend::ExternalT
     int Dup() const { return dup(mFd); }
 
   private:
-    dawn::native::vulkan::Device* mDevice;
+    raw_ptr<native::vulkan::Device> mDevice;
     int mFd = -1;
     VkDeviceMemory mAllocation = VK_NULL_HANDLE;
     VkImage mHandle = VK_NULL_HANDLE;
@@ -93,12 +102,13 @@ class ExternalTextureOpaqueFD : public VulkanImageWrappingTestBackend::ExternalT
 class VulkanImageWrappingTestBackendOpaqueFD : public VulkanImageWrappingTestBackend {
   public:
     explicit VulkanImageWrappingTestBackendOpaqueFD(const wgpu::Device& device) : mDevice(device) {
-        mDeviceVk = dawn::native::vulkan::ToBackend(dawn::native::FromAPI(device.Get()));
+        mDeviceVk = native::vulkan::ToBackend(native::FromAPI(device.Get()));
     }
 
     bool SupportsTestParams(const TestParams& params) const override {
-        return !params.useDedicatedAllocation ||
-               mDeviceVk->GetDeviceInfo().HasExt(DeviceExt::DedicatedAllocation);
+        return mDeviceVk->GetDeviceInfo().HasExt(DeviceExt::ExternalMemoryFD) &&
+               (!params.useDedicatedAllocation ||
+                mDeviceVk->GetDeviceInfo().HasExt(DeviceExt::DedicatedAllocation));
     }
 
     std::unique_ptr<ExternalTexture> CreateTexture(uint32_t width,
@@ -156,7 +166,7 @@ class VulkanImageWrappingTestBackendOpaqueFD : public VulkanImageWrappingTestBac
         }
 
         return wgpu::Texture::Acquire(
-            dawn::native::vulkan::WrapVulkanImage(device.Get(), &descriptorOpaqueFD));
+            native::vulkan::WrapVulkanImage(device.Get(), &descriptorOpaqueFD));
     }
 
     bool ExportImage(const wgpu::Texture& texture,
@@ -175,7 +185,7 @@ class VulkanImageWrappingTestBackendOpaqueFD : public VulkanImageWrappingTestBac
 
   private:
     // Creates a VkImage with external memory
-    ::VkResult CreateImage(dawn::native::vulkan::Device* deviceVk,
+    ::VkResult CreateImage(native::vulkan::Device* deviceVk,
                            uint32_t width,
                            uint32_t height,
                            VkFormat format,
@@ -199,17 +209,18 @@ class VulkanImageWrappingTestBackendOpaqueFD : public VulkanImageWrappingTestBac
         createInfo.queueFamilyIndexCount = 0;
         createInfo.pQueueFamilyIndices = nullptr;
         createInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        PNextChainBuilder createChain(&createInfo);
 
         VkExternalMemoryImageCreateInfoKHR externalInfo;
         externalInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
+
+        PNextChainBuilder createChain(&createInfo);
         createChain.Add(&externalInfo, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO_KHR);
 
         return deviceVk->fn.CreateImage(deviceVk->GetVkDevice(), &createInfo, nullptr, &**image);
     }
 
     // Allocates memory for an image
-    ::VkResult AllocateMemory(dawn::native::vulkan::Device* deviceVk,
+    ::VkResult AllocateMemory(native::vulkan::Device* deviceVk,
                               VkImage handle,
                               VkDeviceMemory* allocation,
                               VkDeviceSize* allocationSize,
@@ -226,11 +237,12 @@ class VulkanImageWrappingTestBackendOpaqueFD : public VulkanImageWrappingTestBac
         allocateInfo.pNext = nullptr;
         allocateInfo.allocationSize = requirements.size;
         allocateInfo.memoryTypeIndex = static_cast<uint32_t>(bestType);
-        PNextChainBuilder allocateChain(&allocateInfo);
 
         // Import memory from file descriptor
         VkExportMemoryAllocateInfoKHR externalInfo;
         externalInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
+
+        PNextChainBuilder allocateChain(&allocateInfo);
         allocateChain.Add(&externalInfo, VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO_KHR);
 
         // Use a dedicated memory allocation if testing that path.
@@ -249,14 +261,12 @@ class VulkanImageWrappingTestBackendOpaqueFD : public VulkanImageWrappingTestBac
     }
 
     // Binds memory to an image
-    ::VkResult BindMemory(dawn::native::vulkan::Device* deviceVk,
-                          VkImage handle,
-                          VkDeviceMemory memory) {
+    ::VkResult BindMemory(native::vulkan::Device* deviceVk, VkImage handle, VkDeviceMemory memory) {
         return deviceVk->fn.BindImageMemory(deviceVk->GetVkDevice(), handle, memory, 0);
     }
 
     // Extracts a file descriptor representing memory on a device
-    int GetMemoryFd(dawn::native::vulkan::Device* deviceVk, VkDeviceMemory memory) {
+    int GetMemoryFd(native::vulkan::Device* deviceVk, VkDeviceMemory memory) {
         VkMemoryGetFdInfoKHR getFdInfo;
         getFdInfo.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
         getFdInfo.pNext = nullptr;
@@ -271,7 +281,7 @@ class VulkanImageWrappingTestBackendOpaqueFD : public VulkanImageWrappingTestBac
     }
 
     // Prepares and exports memory for an image on a given device
-    void CreateBindExportImage(dawn::native::vulkan::Device* deviceVk,
+    void CreateBindExportImage(native::vulkan::Device* deviceVk,
                                uint32_t width,
                                uint32_t height,
                                VkFormat format,
@@ -282,12 +292,10 @@ class VulkanImageWrappingTestBackendOpaqueFD : public VulkanImageWrappingTestBac
                                int* memoryFd) {}
 
     wgpu::Device mDevice;
-    dawn::native::vulkan::Device* mDeviceVk;
+    raw_ptr<native::vulkan::Device> mDeviceVk;
 };
 
-// static
-std::unique_ptr<VulkanImageWrappingTestBackend> VulkanImageWrappingTestBackend::Create(
-    const wgpu::Device& device) {
+std::unique_ptr<VulkanImageWrappingTestBackend> CreateOpaqueFDBackend(const wgpu::Device& device) {
     return std::make_unique<VulkanImageWrappingTestBackendOpaqueFD>(device);
 }
 

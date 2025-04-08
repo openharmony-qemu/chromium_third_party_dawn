@@ -1,16 +1,29 @@
-// Copyright 2020 The Dawn Authors
+// Copyright 2020 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <fcntl.h>
 #include <gbm.h>
@@ -23,14 +36,21 @@
 #include <vector>
 
 #include "dawn/native/vulkan/DeviceVk.h"
-#include "dawn/tests/white_box/VulkanImageWrappingTests.h"
+#include "dawn/tests/white_box/VulkanImageWrappingTests_DmaBuf.h"
+#include "partition_alloc/pointers/raw_ptr.h"
 
 namespace dawn::native::vulkan {
 
-ExternalImageDescriptorVkForTesting::ExternalImageDescriptorVkForTesting()
-    : ExternalImageDescriptorVk(ExternalImageType::DmaBuf) {}
-ExternalImageExportInfoVkForTesting::ExternalImageExportInfoVkForTesting()
-    : ExternalImageExportInfoVk(ExternalImageType::DmaBuf) {}
+namespace {
+
+struct GbmDeviceDeleter {
+    void operator()(gbm_device* ptr) { gbm_device_destroy(ptr); }
+};
+struct GbmBoDeleter {
+    void operator()(gbm_bo* ptr) { gbm_bo_destroy(ptr); }
+};
+
+}  // namespace
 
 class ExternalSemaphoreDmaBuf : public VulkanImageWrappingTestBackend::ExternalSemaphore {
   public:
@@ -63,15 +83,12 @@ class ExternalTextureDmaBuf : public VulkanImageWrappingTestBackend::ExternalTex
         if (mFd != -1) {
             close(mFd);
         }
-        if (mGbmBo != nullptr) {
-            gbm_bo_destroy(mGbmBo);
-        }
     }
 
     int Dup() const { return dup(mFd); }
 
   private:
-    gbm_bo* mGbmBo = nullptr;
+    std::unique_ptr<gbm_bo, GbmBoDeleter> mGbmBo;
     int mFd = -1;
 
   public:
@@ -82,22 +99,19 @@ class ExternalTextureDmaBuf : public VulkanImageWrappingTestBackend::ExternalTex
 class VulkanImageWrappingTestBackendDmaBuf : public VulkanImageWrappingTestBackend {
   public:
     explicit VulkanImageWrappingTestBackendDmaBuf(const wgpu::Device& device) {
-        mDeviceVk = dawn::native::vulkan::ToBackend(dawn::native::FromAPI(device.Get()));
-    }
-
-    ~VulkanImageWrappingTestBackendDmaBuf() {
-        if (mGbmDevice != nullptr) {
-            gbm_device_destroy(mGbmDevice);
-            mGbmDevice = nullptr;
-        }
+        mDeviceVk = native::vulkan::ToBackend(native::FromAPI(device.Get()));
+        CreateGbmDevice();
     }
 
     bool SupportsTestParams(const TestParams& params) const override {
         // Even though this backend doesn't decide on creation whether the image should use
         // dedicated allocation, it still supports all options of NeedsDedicatedAllocation so we
         // test them.
-        return !params.useDedicatedAllocation ||
-               mDeviceVk->GetDeviceInfo().HasExt(DeviceExt::DedicatedAllocation);
+        return mGbmDevice != nullptr &&
+               (mDeviceVk->GetDeviceInfo().HasExt(DeviceExt::ExternalMemoryFD) &&
+                mDeviceVk->GetDeviceInfo().HasExt(DeviceExt::ImageDrmFormatModifier)) &&
+               (!params.useDedicatedAllocation ||
+                mDeviceVk->GetDeviceInfo().HasExt(DeviceExt::DedicatedAllocation));
     }
 
     std::unique_ptr<ExternalTexture> CreateTexture(uint32_t width,
@@ -139,7 +153,7 @@ class VulkanImageWrappingTestBackendDmaBuf : public VulkanImageWrappingTestBacke
         descriptorDmaBuf.drmModifier = textureDmaBuf->drmModifier;
 
         return wgpu::Texture::Acquire(
-            dawn::native::vulkan::WrapVulkanImage(device.Get(), &descriptorDmaBuf));
+            native::vulkan::WrapVulkanImage(device.Get(), &descriptorDmaBuf));
     }
 
     bool ExportImage(const wgpu::Texture& texture,
@@ -177,11 +191,14 @@ class VulkanImageWrappingTestBackendDmaBuf : public VulkanImageWrappingTestBacke
                 break;
             }
         }
-        EXPECT_GE(renderNodeFd, 0) << "Failed to get file descriptor for render node";
 
-        gbm_device* gbmDevice = gbm_create_device(renderNodeFd);
-        EXPECT_NE(gbmDevice, nullptr) << "Failed to create GBM device";
-        mGbmDevice = gbmDevice;
+        // Failed to get file descriptor for render node and mGbmDevice is nullptr.
+        if (renderNodeFd < 0) {
+            return;
+        }
+
+        // Might be failed to create GBM device and mGbmDevice is nullptr.
+        mGbmDevice.reset(gbm_create_device(renderNodeFd));
     }
 
   private:
@@ -190,21 +207,17 @@ class VulkanImageWrappingTestBackendDmaBuf : public VulkanImageWrappingTestBacke
         if (linear) {
             flags |= GBM_BO_USE_LINEAR;
         }
-        gbm_bo* gbmBo = gbm_bo_create(mGbmDevice, width, height, GBM_FORMAT_XBGR8888, flags);
+        gbm_bo* gbmBo = gbm_bo_create(mGbmDevice.get(), width, height, GBM_FORMAT_XBGR8888, flags);
         EXPECT_NE(gbmBo, nullptr) << "Failed to create GBM buffer object";
         return gbmBo;
     }
 
-    gbm_device* mGbmDevice = nullptr;
-    dawn::native::vulkan::Device* mDeviceVk;
+    std::unique_ptr<gbm_device, GbmDeviceDeleter> mGbmDevice;
+    raw_ptr<native::vulkan::Device> mDeviceVk;
 };
 
-// static
-std::unique_ptr<VulkanImageWrappingTestBackend> VulkanImageWrappingTestBackend::Create(
-    const wgpu::Device& device) {
-    auto backend = std::make_unique<VulkanImageWrappingTestBackendDmaBuf>(device);
-    backend->CreateGbmDevice();
-    return backend;
+std::unique_ptr<VulkanImageWrappingTestBackend> CreateDMABufBackend(const wgpu::Device& device) {
+    return std::make_unique<VulkanImageWrappingTestBackendDmaBuf>(device);
 }
 
 }  // namespace dawn::native::vulkan

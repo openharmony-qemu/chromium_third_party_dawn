@@ -1,16 +1,29 @@
-// Copyright 2019 The Dawn Authors
+// Copyright 2019 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <string>
 #include <vector>
@@ -21,16 +34,19 @@
 #include "dawn/utils/TestUtils.h"
 #include "dawn/utils/WGPUHelpers.h"
 
-#define EXPECT_LAZY_CLEAR(N, statement)                                                        \
-    do {                                                                                       \
-        if (UsesWire()) {                                                                      \
-            statement;                                                                         \
-        } else {                                                                               \
-            size_t lazyClearsBefore = dawn::native::GetLazyClearCountForTesting(device.Get()); \
-            statement;                                                                         \
-            size_t lazyClearsAfter = dawn::native::GetLazyClearCountForTesting(device.Get());  \
-            EXPECT_EQ(N, lazyClearsAfter - lazyClearsBefore);                                  \
-        }                                                                                      \
+namespace dawn {
+namespace {
+
+#define EXPECT_LAZY_CLEAR(N, statement)                                                  \
+    do {                                                                                 \
+        if (UsesWire()) {                                                                \
+            statement;                                                                   \
+        } else {                                                                         \
+            size_t lazyClearsBefore = native::GetLazyClearCountForTesting(device.Get()); \
+            statement;                                                                   \
+            size_t lazyClearsAfter = native::GetLazyClearCountForTesting(device.Get());  \
+            EXPECT_EQ(N, lazyClearsAfter - lazyClearsBefore);                            \
+        }                                                                                \
     } while (0)
 
 class TextureZeroInitTest : public DawnTest {
@@ -52,6 +68,7 @@ class TextureZeroInitTest : public DawnTest {
         descriptor.format = format;
         descriptor.mipLevelCount = mipLevelCount;
         descriptor.usage = usage;
+
         return descriptor;
     }
     wgpu::TextureViewDescriptor CreateTextureViewDescriptor(
@@ -168,7 +185,7 @@ TEST_P(TextureZeroInitTest, CopyTextureToBufferSource) {
     EXPECT_LAZY_CLEAR(1u, EXPECT_PIXEL_RGBA8_EQ(filledWithZeros, texture, 0, 0));
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
 }
 
 // This tests that the code path of CopyTextureToBuffer with multiple texture array layers clears
@@ -203,8 +220,7 @@ TEST_P(TextureZeroInitTest, CopyMultipleTextureArrayLayersToBufferSource) {
     EXPECT_LAZY_CLEAR(1u, queue.Submit(1, &commandBuffer));
 
     // Expect texture subresource initialized to be true
-    EXPECT_TRUE(
-        dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, kArrayLayers));
+    EXPECT_TRUE(native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, kArrayLayers));
 
     const std::vector<utils::RGBA8> kExpectedAllZero(kSize * kSize, {0, 0, 0, 0});
     for (uint32_t layer = 0; layer < kArrayLayers; ++layer) {
@@ -253,8 +269,8 @@ TEST_P(TextureZeroInitTest, RenderingMipMapClearsToZero) {
                       baseMipLevel);
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(
-                        renderPass.color.Get(), baseMipLevel, 1, baseArrayLayer, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(renderPass.color.Get(), baseMipLevel, 1,
+                                                            baseArrayLayer, 1));
 }
 
 // Test that non-zero array layers clears subresource to Zero after first use.
@@ -296,8 +312,8 @@ TEST_P(TextureZeroInitTest, RenderingArrayLayerClearsToZero) {
                       baseMipLevel);
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(
-                        renderPass.color.Get(), baseMipLevel, 1, baseArrayLayer, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(renderPass.color.Get(), baseMipLevel, 1,
+                                                            baseArrayLayer, 1));
 }
 
 // This tests CopyBufferToTexture fully overwrites copy so lazy init is not needed.
@@ -328,7 +344,7 @@ TEST_P(TextureZeroInitTest, CopyBufferToTexture) {
     EXPECT_TEXTURE_EQ(expected.data(), texture, {0, 0}, {kSize, kSize});
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
 }
 
 // Test for a copy only to a subset of the subresource, lazy init is necessary to clear the other
@@ -363,7 +379,7 @@ TEST_P(TextureZeroInitTest, CopyBufferToTextureHalf) {
     EXPECT_TEXTURE_EQ(expectedZeros.data(), texture, {kSize / 2, 0}, {kSize / 2, kSize});
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
 }
 
 // This tests CopyBufferToTexture fully overwrites a range of subresources, so lazy initialization
@@ -394,8 +410,8 @@ TEST_P(TextureZeroInitTest, CopyBufferToTextureMultipleArrayLayers) {
     EXPECT_LAZY_CLEAR(0u, queue.Submit(1, &commands));
 
     // Expect texture subresource initialized to be true
-    EXPECT_TRUE(dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, kBaseArrayLayer,
-                                                              kCopyLayerCount));
+    EXPECT_TRUE(native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, kBaseArrayLayer,
+                                                        kCopyLayerCount));
 
     const std::vector<utils::RGBA8> expected100(kSize * kSize, {100, 100, 100, 100});
     for (uint32_t layer = kBaseArrayLayer; layer < kBaseArrayLayer + kCopyLayerCount; ++layer) {
@@ -435,8 +451,8 @@ TEST_P(TextureZeroInitTest, CopyTextureToTexture) {
     EXPECT_TEXTURE_EQ(expected.data(), dstTexture, {0, 0}, {kSize, kSize});
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(srcTexture.Get(), 0, 1, 0, 1));
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(dstTexture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(srcTexture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(dstTexture.Get(), 0, 1, 0, 1));
 }
 
 // This Tests the CopyTextureToTexture's copy only to a subset of the subresource, lazy init is
@@ -492,16 +508,13 @@ TEST_P(TextureZeroInitTest, CopyTextureToTextureHalf) {
     EXPECT_TEXTURE_EQ(expectedWithZeros.data(), dstTexture, {kSize / 2, 0}, {kSize / 2, kSize});
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(srcTexture.Get(), 0, 1, 0, 1));
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(dstTexture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(srcTexture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(dstTexture.Get(), 0, 1, 0, 1));
 }
 
 // This tests the texture with depth attachment and load op load will init depth stencil texture to
 // 0s.
 TEST_P(TextureZeroInitTest, RenderingLoadingDepth) {
-    // TODO(crbug.com/dawn/1423): Investigate why this test fails on Windows Vulkan drivers
-    DAWN_SUPPRESS_TEST_IF(IsWindows() && IsVulkan());
-
     wgpu::TextureDescriptor srcDescriptor =
         CreateTextureDescriptor(1, 1,
                                 wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst |
@@ -538,15 +551,12 @@ TEST_P(TextureZeroInitTest, RenderingLoadingDepth) {
     EXPECT_TEXTURE_EQ(expected.data(), srcTexture, {0, 0}, {kSize, kSize});
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(srcTexture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(srcTexture.Get(), 0, 1, 0, 1));
 }
 
 // This tests the texture with stencil attachment and load op load will init depth stencil texture
 // to 0s.
 TEST_P(TextureZeroInitTest, RenderingLoadingStencil) {
-    // TODO(crbug.com/dawn/1423): Investigate why this test fails on Windows Vulkan drivers
-    DAWN_SUPPRESS_TEST_IF(IsWindows() && IsVulkan());
-
     wgpu::TextureDescriptor srcDescriptor =
         CreateTextureDescriptor(1, 1,
                                 wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst |
@@ -583,15 +593,12 @@ TEST_P(TextureZeroInitTest, RenderingLoadingStencil) {
     EXPECT_TEXTURE_EQ(expected.data(), srcTexture, {0, 0}, {kSize, kSize});
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(srcTexture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(srcTexture.Get(), 0, 1, 0, 1));
 }
 
 // This tests the texture with depth stencil attachment and load op load will init depth stencil
 // texture to 0s.
 TEST_P(TextureZeroInitTest, RenderingLoadingDepthStencil) {
-    // TODO(crbug.com/dawn/1423): Investigate why this test fails on Windows Vulkan drivers
-    DAWN_SUPPRESS_TEST_IF(IsWindows() && IsVulkan());
-
     wgpu::TextureDescriptor srcDescriptor =
         CreateTextureDescriptor(1, 1,
                                 wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst |
@@ -625,7 +632,7 @@ TEST_P(TextureZeroInitTest, RenderingLoadingDepthStencil) {
     EXPECT_TEXTURE_EQ(expected.data(), srcTexture, {0, 0}, {kSize, kSize});
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(srcTexture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(srcTexture.Get(), 0, 1, 0, 1));
 }
 
 // Test that clear state is tracked independently for depth/stencil textures.
@@ -656,12 +663,12 @@ TEST_P(TextureZeroInitTest, IndependentDepthStencilLoadAfterDiscard) {
         }
 
         // "all" subresources are not initialized; Depth is not initialized
-        EXPECT_EQ(false, dawn::native::IsTextureSubresourceInitialized(
-                             depthStencilTexture.Get(), 0, 1, 0, 1, WGPUTextureAspect_All));
-        EXPECT_EQ(false, dawn::native::IsTextureSubresourceInitialized(
-                             depthStencilTexture.Get(), 0, 1, 0, 1, WGPUTextureAspect_DepthOnly));
-        EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(
-                            depthStencilTexture.Get(), 0, 1, 0, 1, WGPUTextureAspect_StencilOnly));
+        EXPECT_EQ(false, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0,
+                                                                 1, WGPUTextureAspect_All));
+        EXPECT_EQ(false, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0,
+                                                                 1, WGPUTextureAspect_DepthOnly));
+        EXPECT_EQ(true, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0,
+                                                                1, WGPUTextureAspect_StencilOnly));
 
         // Now load both depth and stencil. Depth should be cleared and stencil should stay the same
         // at 2.
@@ -695,21 +702,18 @@ TEST_P(TextureZeroInitTest, IndependentDepthStencilLoadAfterDiscard) {
         }
 
         // Everything is initialized now
-        EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(
-                            depthStencilTexture.Get(), 0, 1, 0, 1, WGPUTextureAspect_All));
-        EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(
-                            depthStencilTexture.Get(), 0, 1, 0, 1, WGPUTextureAspect_DepthOnly));
-        EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(
-                            depthStencilTexture.Get(), 0, 1, 0, 1, WGPUTextureAspect_StencilOnly));
+        EXPECT_EQ(true, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0,
+                                                                1, WGPUTextureAspect_All));
+        EXPECT_EQ(true, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0,
+                                                                1, WGPUTextureAspect_DepthOnly));
+        EXPECT_EQ(true, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0,
+                                                                1, WGPUTextureAspect_StencilOnly));
 
-        // TODO(crbug.com/dawn/439): Implement stencil copies on other platforms
-        if (IsMetal() || IsVulkan() || IsD3D12()) {
-            // Check by copy that the stencil data is 2.
-            std::vector<uint8_t> expected(kSize * kSize, 2);
-            EXPECT_LAZY_CLEAR(
-                0u, EXPECT_TEXTURE_EQ(expected.data(), depthStencilTexture, {0, 0}, {kSize, kSize},
-                                      0, wgpu::TextureAspect::StencilOnly));
-        }
+        // Check by copy that the stencil data is 2.
+        std::vector<uint8_t> expected(kSize * kSize, 2);
+        EXPECT_LAZY_CLEAR(
+            0u, EXPECT_TEXTURE_EQ(expected.data(), depthStencilTexture, {0, 0}, {kSize, kSize}, 0,
+                                  wgpu::TextureAspect::StencilOnly));
     }
 
     // Uninitialize only stencil
@@ -731,12 +735,12 @@ TEST_P(TextureZeroInitTest, IndependentDepthStencilLoadAfterDiscard) {
         }
 
         // "all" subresources are not initialized; Stencil is not initialized
-        EXPECT_EQ(false, dawn::native::IsTextureSubresourceInitialized(
-                             depthStencilTexture.Get(), 0, 1, 0, 1, WGPUTextureAspect_All));
-        EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(
-                            depthStencilTexture.Get(), 0, 1, 0, 1, WGPUTextureAspect_DepthOnly));
-        EXPECT_EQ(false, dawn::native::IsTextureSubresourceInitialized(
-                             depthStencilTexture.Get(), 0, 1, 0, 1, WGPUTextureAspect_StencilOnly));
+        EXPECT_EQ(false, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0,
+                                                                 1, WGPUTextureAspect_All));
+        EXPECT_EQ(true, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0,
+                                                                1, WGPUTextureAspect_DepthOnly));
+        EXPECT_EQ(false, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0,
+                                                                 1, WGPUTextureAspect_StencilOnly));
 
         // Now load both depth and stencil. Stencil should be cleared and depth should stay the same
         // at 0.7.
@@ -769,15 +773,15 @@ TEST_P(TextureZeroInitTest, IndependentDepthStencilLoadAfterDiscard) {
         }
 
         // Everything is initialized now
-        EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(
-                            depthStencilTexture.Get(), 0, 1, 0, 1, WGPUTextureAspect_All));
-        EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(
-                            depthStencilTexture.Get(), 0, 1, 0, 1, WGPUTextureAspect_DepthOnly));
-        EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(
-                            depthStencilTexture.Get(), 0, 1, 0, 1, WGPUTextureAspect_StencilOnly));
+        EXPECT_EQ(true, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0,
+                                                                1, WGPUTextureAspect_All));
+        EXPECT_EQ(true, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0,
+                                                                1, WGPUTextureAspect_DepthOnly));
+        EXPECT_EQ(true, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0,
+                                                                1, WGPUTextureAspect_StencilOnly));
 
-        // TODO(crbug.com/dawn/439): Implement stencil copies on other platforms
-        if (IsMetal() || IsVulkan() || IsD3D12()) {
+        // TODO(chromium:42241686): Fail on the Android devices using Mali GPUs (e.g. Pixel 6).
+        if (!(IsAndroid() && IsARM())) {
             // Check by copy that the stencil data is 0.
             std::vector<uint8_t> expected(kSize * kSize, 0);
             EXPECT_LAZY_CLEAR(
@@ -790,9 +794,6 @@ TEST_P(TextureZeroInitTest, IndependentDepthStencilLoadAfterDiscard) {
 // Test that a stencil texture that is written via copy, then discarded, sees
 // zero contents when it is read by sampling.
 TEST_P(TextureZeroInitTest, StencilCopyThenDiscardAndReadBySampling) {
-    // Copies to a single aspect are unsupported on OpenGL.
-    DAWN_SUPPRESS_TEST_IF(IsOpenGL() || IsOpenGLES());
-
     for (wgpu::TextureFormat format :
          {wgpu::TextureFormat::Stencil8, wgpu::TextureFormat::Depth24PlusStencil8}) {
         wgpu::Texture depthStencilTexture = CreateAndFillStencilTexture(format);
@@ -821,9 +822,6 @@ TEST_P(TextureZeroInitTest, StencilCopyThenDiscardAndReadBySampling) {
 // Test that a stencil texture that is written via copy, then discarded, sees
 // zero contents when it is read via copy.
 TEST_P(TextureZeroInitTest, StencilCopyThenDiscardAndReadByCopy) {
-    // Copies to a single aspect are unsupported on OpenGL.
-    DAWN_SUPPRESS_TEST_IF(IsOpenGL() || IsOpenGLES());
-
     for (wgpu::TextureFormat format :
          {wgpu::TextureFormat::Stencil8, wgpu::TextureFormat::Depth24PlusStencil8}) {
         wgpu::Texture depthStencilTexture = CreateAndFillStencilTexture(format);
@@ -854,9 +852,6 @@ TEST_P(TextureZeroInitTest, StencilCopyThenDiscardAndReadByCopy) {
 // Test that a stencil texture that is written via copy, then discarded, then copied to
 // another texture, sees zero contents when it is read via copy.
 TEST_P(TextureZeroInitTest, StencilCopyThenDiscardAndCopyToTextureThenReadByCopy) {
-    // Copies to a single aspect are unsupported on OpenGL.
-    DAWN_SUPPRESS_TEST_IF(IsOpenGL() || IsOpenGLES());
-
     for (wgpu::TextureFormat format :
          {wgpu::TextureFormat::Stencil8, wgpu::TextureFormat::Depth24PlusStencil8}) {
         // Create the texture.
@@ -916,9 +911,6 @@ TEST_P(TextureZeroInitTest, StencilCopyThenDiscardAndCopyToTextureThenReadByCopy
 // Test that clear state is tracked independently for depth/stencil textures.
 // Lazy clear of the stencil aspect via copy should not touch depth.
 TEST_P(TextureZeroInitTest, IndependentDepthStencilCopyAfterDiscard) {
-    // TODO(crbug.com/dawn/439): Implement stencil copies on other platforms
-    DAWN_SUPPRESS_TEST_IF(!(IsMetal() || IsVulkan() || IsD3D12()));
-
     // TODO(dawn:1549) Fails on Qualcomm-based Android devices.
     DAWN_SUPPRESS_TEST_IF(IsAndroid() && IsQualcomm());
 
@@ -942,25 +934,28 @@ TEST_P(TextureZeroInitTest, IndependentDepthStencilCopyAfterDiscard) {
     }
 
     // "all" subresources are not initialized; Stencil is not initialized
-    EXPECT_EQ(false, dawn::native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1,
-                                                                   0, 1, WGPUTextureAspect_All));
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(
-                        depthStencilTexture.Get(), 0, 1, 0, 1, WGPUTextureAspect_DepthOnly));
-    EXPECT_EQ(false, dawn::native::IsTextureSubresourceInitialized(
-                         depthStencilTexture.Get(), 0, 1, 0, 1, WGPUTextureAspect_StencilOnly));
+    EXPECT_EQ(false, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0, 1,
+                                                             WGPUTextureAspect_All));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0, 1,
+                                                            WGPUTextureAspect_DepthOnly));
+    EXPECT_EQ(false, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0, 1,
+                                                             WGPUTextureAspect_StencilOnly));
 
     // Check by copy that the stencil data is lazily cleared to 0.
-    std::vector<uint8_t> expected(kSize * kSize, 0);
-    EXPECT_LAZY_CLEAR(1u, EXPECT_TEXTURE_EQ(expected.data(), depthStencilTexture, {0, 0},
-                                            {kSize, kSize}, 0, wgpu::TextureAspect::StencilOnly));
+    {
+        std::vector<uint8_t> expected(kSize * kSize, 0);
+        EXPECT_LAZY_CLEAR(
+            1u, EXPECT_TEXTURE_EQ(expected.data(), depthStencilTexture, {0, 0}, {kSize, kSize}, 0,
+                                  wgpu::TextureAspect::StencilOnly));
+    }
 
     // Everything is initialized now
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1,
-                                                                  0, 1, WGPUTextureAspect_All));
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(
-                        depthStencilTexture.Get(), 0, 1, 0, 1, WGPUTextureAspect_DepthOnly));
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(
-                        depthStencilTexture.Get(), 0, 1, 0, 1, WGPUTextureAspect_StencilOnly));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0, 1,
+                                                            WGPUTextureAspect_All));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0, 1,
+                                                            WGPUTextureAspect_DepthOnly));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0, 1,
+                                                            WGPUTextureAspect_StencilOnly));
 
     // Now load both depth and stencil. Stencil should be cleared and depth should stay the same
     // at 0.3.
@@ -1012,8 +1007,7 @@ TEST_P(TextureZeroInitTest, ColorAttachmentsClear) {
     EXPECT_TEXTURE_EQ(expected.data(), renderPass.color, {0, 0}, {kSize, kSize});
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true,
-              dawn::native::IsTextureSubresourceInitialized(renderPass.color.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(renderPass.color.Get(), 0, 1, 0, 1));
 }
 
 // This tests the clearing of sampled textures in render pass
@@ -1057,7 +1051,7 @@ TEST_P(TextureZeroInitTest, RenderPassSampledTextureClear) {
     EXPECT_TEXTURE_EQ(expectedWithZeros.data(), renderTexture, {0, 0}, {kSize, kSize});
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(renderTexture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(renderTexture.Get(), 0, 1, 0, 1));
 }
 
 // This is a regression test for a bug where a texture wouldn't get clear for a pass if at least
@@ -1065,12 +1059,17 @@ TEST_P(TextureZeroInitTest, RenderPassSampledTextureClear) {
 // sampled and attachment (with LoadOp::Clear so the lazy clear can be skipped) then the sampled
 // subresource is correctly cleared.
 TEST_P(TextureZeroInitTest, TextureBothSampledAndAttachmentClear) {
+    // TODO(crbug.com/346362367): Compatibility mode does not support binding a `2d-array` texture
+    // to a WGSL variable of type `texture_2d`.
+    DAWN_TEST_UNSUPPORTED_IF(IsCompatibilityMode());
+
     // Create a 2D array texture, layer 0 will be used as attachment, layer 1 as sampled.
     wgpu::TextureDescriptor texDesc;
     texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::RenderAttachment |
                     wgpu::TextureUsage::CopySrc;
     texDesc.size = {1, 1, 2};
     texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
+
     wgpu::Texture texture = device.CreateTexture(&texDesc);
 
     wgpu::TextureViewDescriptor viewDesc;
@@ -1114,7 +1113,7 @@ TEST_P(TextureZeroInitTest, TextureBothSampledAndAttachmentClear) {
     EXPECT_TEXTURE_EQ(&utils::RGBA8::kZero, texture, {0, 0, 1}, {1, 1});
 
     // The whole texture is now initialized.
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 2));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 2));
 }
 
 // This tests the clearing of sampled textures during compute pass
@@ -1152,7 +1151,6 @@ TEST_P(TextureZeroInitTest, ComputePassSampledTextureClear) {
         }
     )";
     computePipelineDescriptor.compute.module = utils::CreateShaderModule(device, cs);
-    computePipelineDescriptor.compute.entryPoint = "main";
     wgpu::ComputePipeline computePipeline =
         device.CreateComputePipeline(&computePipelineDescriptor);
 
@@ -1176,14 +1174,13 @@ TEST_P(TextureZeroInitTest, ComputePassSampledTextureClear) {
     EXPECT_BUFFER_U32_RANGE_EQ(expectedWithZeros.data(), bufferTex, 0, kFormatBlockByteSize);
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
 }
 
 // This tests that the code path of CopyTextureToBuffer clears correctly for non-renderable textures
 TEST_P(TextureZeroInitTest, NonRenderableTextureClear) {
-    // TODO(crbug.com/dawn/667): Work around the fact that some platforms do not support reading
-    // from Snorm textures.
-    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("disable_snorm_read"));
+    // TODO(dawn:1877): Snorm copy failing ANGLE Swiftshader, need further investigation.
+    DAWN_SUPPRESS_TEST_IF(IsANGLESwiftShader());
 
     wgpu::TextureDescriptor descriptor =
         CreateTextureDescriptor(1, 1, wgpu::TextureUsage::CopySrc, kNonrenderableColorFormat);
@@ -1209,14 +1206,13 @@ TEST_P(TextureZeroInitTest, NonRenderableTextureClear) {
     EXPECT_BUFFER_U32_RANGE_EQ(expectedWithZeros.data(), bufferDst, 0, kSize);
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
 }
 
 // This tests that the code path of CopyTextureToBuffer clears correctly for non-renderable textures
 TEST_P(TextureZeroInitTest, NonRenderableTextureClearUnalignedSize) {
-    // TODO(crbug.com/dawn/667): Work around the fact that some platforms do not support reading
-    // from Snorm textures.
-    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("disable_snorm_read"));
+    // TODO(dawn:1877): Snorm copy failing ANGLE Swiftshader, need further investigation.
+    DAWN_SUPPRESS_TEST_IF(IsANGLESwiftShader());
 
     wgpu::TextureDescriptor descriptor =
         CreateTextureDescriptor(1, 1, wgpu::TextureUsage::CopySrc, kNonrenderableColorFormat);
@@ -1244,15 +1240,14 @@ TEST_P(TextureZeroInitTest, NonRenderableTextureClearUnalignedSize) {
     EXPECT_BUFFER_U32_RANGE_EQ(expectedWithZeros.data(), bufferDst, 0, kUnalignedSize);
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
 }
 
 // This tests that the code path of CopyTextureToBuffer clears correctly for non-renderable textures
 // with more than 1 array layers
 TEST_P(TextureZeroInitTest, NonRenderableTextureClearWithMultiArrayLayers) {
-    // TODO(crbug.com/dawn/667): Work around the fact that some platforms do not support reading
-    // from Snorm textures.
-    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("disable_snorm_read"));
+    // TODO(dawn:1877): Snorm copy failing ANGLE Swiftshader, need further investigation.
+    DAWN_SUPPRESS_TEST_IF(IsANGLESwiftShader());
 
     wgpu::TextureDescriptor descriptor =
         CreateTextureDescriptor(1, 2, wgpu::TextureUsage::CopySrc, kNonrenderableColorFormat);
@@ -1278,7 +1273,7 @@ TEST_P(TextureZeroInitTest, NonRenderableTextureClearWithMultiArrayLayers) {
     EXPECT_BUFFER_U32_RANGE_EQ(expectedWithZeros.data(), bufferDst, 0, 8);
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 1, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 1, 1));
 }
 
 // This tests that storeOp clear resets resource state to uninitialized.
@@ -1342,8 +1337,8 @@ TEST_P(TextureZeroInitTest, RenderPassStoreOpClear) {
         1u, EXPECT_TEXTURE_EQ(expectedWithZeros.data(), renderTexture, {0, 0}, {kSize, kSize}));
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(renderTexture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(renderTexture.Get(), 0, 1, 0, 1));
 }
 
 // This tests storeOp Clear on depth and stencil textures.
@@ -1396,8 +1391,8 @@ TEST_P(TextureZeroInitTest, RenderingLoadingDepthStencilStoreOpClear) {
 
         // Expect texture subresource initialized to be false since storeop is clear, sets
         // subresource as uninitialized
-        EXPECT_EQ(false, dawn::native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0,
-                                                                       1, 0, 1));
+        EXPECT_EQ(false,
+                  native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0, 1));
     }
 
     // Now we put the depth stencil texture back into renderpass, it should be cleared by loadop
@@ -1421,8 +1416,8 @@ TEST_P(TextureZeroInitTest, RenderingLoadingDepthStencilStoreOpClear) {
 
         // Expect texture subresource initialized to be false since storeop is clear, sets
         // subresource as uninitialized
-        EXPECT_EQ(false, dawn::native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0,
-                                                                       1, 0, 1));
+        EXPECT_EQ(false,
+                  native::IsTextureSubresourceInitialized(depthStencilTexture.Get(), 0, 1, 0, 1));
     }
 }
 
@@ -1499,17 +1494,22 @@ TEST_P(TextureZeroInitTest, PreservesInitializedMip) {
                                             {mipSize, mipSize}, 1));
 
     // Expect the whole texture to be initialized
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(sampleTexture.Get(), 0, 2, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(sampleTexture.Get(), 0, 2, 0, 1));
 }
 
 // Test that if one layer of a texture is initialized and another is uninitialized, lazy clearing
 // the uninitialized layer does not clear the initialized layer.
 TEST_P(TextureZeroInitTest, PreservesInitializedArrayLayer) {
+    // TODO(crbug.com/346362367): Compatibility mode does not support binding a `2d-array` texture
+    // to a WGSL variable of type `texture_2d`.
+    DAWN_TEST_UNSUPPORTED_IF(IsCompatibilityMode());
+
     wgpu::TextureDescriptor sampleTextureDescriptor =
         CreateTextureDescriptor(1, 2,
                                 wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst |
                                     wgpu::TextureUsage::TextureBinding,
                                 kColorFormat);
+
     wgpu::Texture sampleTexture = device.CreateTexture(&sampleTextureDescriptor);
 
     wgpu::TextureDescriptor renderTextureDescriptor = CreateTextureDescriptor(
@@ -1580,15 +1580,14 @@ TEST_P(TextureZeroInitTest, PreservesInitializedArrayLayer) {
         0u, EXPECT_TEXTURE_EQ(expectedWithTwos.data(), sampleTexture, {0, 0, 1}, {kSize, kSize}));
 
     // Expect the whole texture to be initialized
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(sampleTexture.Get(), 0, 1, 0, 2));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(sampleTexture.Get(), 0, 1, 0, 2));
 }
 
 // This is a regression test for crbug.com/dawn/451 where the lazy texture
 // init path on D3D12 had a divide-by-zero exception in the copy split logic.
 TEST_P(TextureZeroInitTest, CopyTextureToBufferNonRenderableUnaligned) {
-    // TODO(crbug.com/dawn/667): Work around the fact that some platforms do not support reading
-    // from Snorm textures.
-    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("disable_snorm_read"));
+    // TODO(dawn:1877): Snorm copy failing ANGLE Swiftshader, need further investigation.
+    DAWN_SUPPRESS_TEST_IF(IsANGLESwiftShader());
 
     wgpu::TextureDescriptor descriptor;
     descriptor.size.width = kUnalignedSize;
@@ -1622,7 +1621,7 @@ TEST_P(TextureZeroInitTest, CopyTextureToBufferNonRenderableUnaligned) {
     }
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
 }
 
 // In this test WriteTexture fully overwrites a texture
@@ -1651,7 +1650,7 @@ TEST_P(TextureZeroInitTest, WriteWholeTexture) {
                                &textureDataLayout, &copySize));
 
     // Expect texture initialized to be true
-    EXPECT_TRUE(dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
+    EXPECT_TRUE(native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
 
     EXPECT_TEXTURE_EQ(data.data(), texture, {0, 0}, {kSize, kSize});
 }
@@ -1685,7 +1684,7 @@ TEST_P(TextureZeroInitTest, WriteTextureHalf) {
                                &textureDataLayout, &copySize));
 
     // Expect texture initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
 
     std::vector<utils::RGBA8> expectedZeros((kSize / 2) * kSize, {0, 0, 0, 0});
     // first half filled with 100, by the data
@@ -1726,8 +1725,8 @@ TEST_P(TextureZeroInitTest, WriteWholeTextureArray) {
                                &textureDataLayout, &copySize));
 
     // Expect texture subresource initialized to be true
-    EXPECT_TRUE(dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, kBaseArrayLayer,
-                                                              kCopyLayerCount));
+    EXPECT_TRUE(native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, kBaseArrayLayer,
+                                                        kCopyLayerCount));
 
     for (uint32_t layer = kBaseArrayLayer; layer < kBaseArrayLayer + kCopyLayerCount; ++layer) {
         EXPECT_TEXTURE_EQ(data.data(), texture, {0, 0, layer}, {kSize, kSize});
@@ -1767,8 +1766,8 @@ TEST_P(TextureZeroInitTest, WriteTextureArrayHalf) {
                                &textureDataLayout, &copySize));
 
     // Expect texture subresource initialized to be true
-    EXPECT_EQ(true, dawn::native::IsTextureSubresourceInitialized(
-                        texture.Get(), 0, 1, kBaseArrayLayer, kCopyLayerCount));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, kBaseArrayLayer,
+                                                            kCopyLayerCount));
 
     std::vector<utils::RGBA8> expectedZeros((kSize / 2) * kSize, {0, 0, 0, 0});
     for (uint32_t layer = kBaseArrayLayer; layer < kBaseArrayLayer + kCopyLayerCount; ++layer) {
@@ -1809,7 +1808,7 @@ TEST_P(TextureZeroInitTest, WriteWholeTextureAtMipLevel) {
                                &textureDataLayout, &copySize));
 
     // Expect texture initialized to be true
-    EXPECT_TRUE(dawn::native::IsTextureSubresourceInitialized(texture.Get(), kMipLevel, 1, 0, 1));
+    EXPECT_TRUE(native::IsTextureSubresourceInitialized(texture.Get(), kMipLevel, 1, 0, 1));
 
     EXPECT_TEXTURE_EQ(data.data(), texture, {0, 0}, {kMipSize, kMipSize}, kMipLevel);
 }
@@ -1847,8 +1846,7 @@ TEST_P(TextureZeroInitTest, WriteTextureHalfAtMipLevel) {
                                &textureDataLayout, &copySize));
 
     // Expect texture initialized to be true
-    EXPECT_EQ(true,
-              dawn::native::IsTextureSubresourceInitialized(texture.Get(), kMipLevel, 1, 0, 1));
+    EXPECT_EQ(true, native::IsTextureSubresourceInitialized(texture.Get(), kMipLevel, 1, 0, 1));
 
     std::vector<utils::RGBA8> expectedZeros((kMipSize / 2) * kMipSize, {0, 0, 0, 0});
     // first half filled with 100, by the data
@@ -1865,19 +1863,20 @@ TEST_P(TextureZeroInitTest, ErrorTextureIsUninitialized) {
 
     // Test CreateErrorTexture.
     wgpu::Texture texture = device.CreateErrorTexture(&descriptor);
-    EXPECT_FALSE(dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
+    EXPECT_FALSE(native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
 
     // Test CreateTexture with an error descriptor.
     if (!HasToggleEnabled("skip_validation")) {
         descriptor = CreateTextureDescriptor(1, 1, wgpu::TextureUsage::CopyDst,
                                              static_cast<wgpu::TextureFormat>(-4));
         ASSERT_DEVICE_ERROR(texture = device.CreateTexture(&descriptor));
-        EXPECT_FALSE(dawn::native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
+        EXPECT_FALSE(native::IsTextureSubresourceInitialized(texture.Get(), 0, 1, 0, 1));
     }
 }
 
 DAWN_INSTANTIATE_TEST(
     TextureZeroInitTest,
+    D3D11Backend({"nonzero_clear_resources_on_creation_for_testing"}),
     D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"}),
     D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"}, {"use_d3d12_render_pass"}),
     OpenGLBackend({"nonzero_clear_resources_on_creation_for_testing"}),
@@ -2006,8 +2005,8 @@ class CompressedTextureZeroInitTest : public TextureZeroInitTest {
                                            {0x00, 0x20, 0x08, 0xFF});
         EXPECT_TEXTURE_EQ(expected.data(), renderPass.color, {0, 0},
                           {nonPaddedCopyExtent.width, nonPaddedCopyExtent.height});
-        EXPECT_TRUE(dawn::native::IsTextureSubresourceInitialized(bcTexture.Get(), viewMipmapLevel,
-                                                                  1, baseArrayLayer, 1));
+        EXPECT_TRUE(native::IsTextureSubresourceInitialized(bcTexture.Get(), viewMipmapLevel, 1,
+                                                            baseArrayLayer, 1));
 
         // If we only copied to half the texture, check the other half is initialized to black
         if (halfCopyTest) {
@@ -2037,9 +2036,6 @@ TEST_P(CompressedTextureZeroInitTest, FullMipCopy) {
 
 // Test that 1 lazy clear count happens when we copy to half the texture
 TEST_P(CompressedTextureZeroInitTest, HalfCopyBufferToTexture) {
-    // TODO(crbug.com/dawn/643): diagnose and fix this failure on OpenGL.
-    DAWN_SUPPRESS_TEST_IF(IsOpenGL() || IsOpenGLES());
-
     wgpu::TextureDescriptor textureDescriptor;
     textureDescriptor.usage = wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst |
                               wgpu::TextureUsage::TextureBinding;
@@ -2057,9 +2053,6 @@ TEST_P(CompressedTextureZeroInitTest, HalfCopyBufferToTexture) {
 // Test that 0 lazy clear count happens when we copy buffer to texture to a nonzero mip level
 // (with physical size different from the virtual mip size)
 TEST_P(CompressedTextureZeroInitTest, FullCopyToNonZeroMipLevel) {
-    // TODO(crbug.com/dawn/1328): ES3.1 does not support subsetting of compressed textures.
-    DAWN_TEST_UNSUPPORTED_IF(IsOpenGLES());
-
     wgpu::TextureDescriptor textureDescriptor;
     textureDescriptor.usage = wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst |
                               wgpu::TextureUsage::TextureBinding;
@@ -2082,8 +2075,8 @@ TEST_P(CompressedTextureZeroInitTest, FullCopyToNonZeroMipLevel) {
 // Test that 1 lazy clear count happens when we copy buffer to half texture to a nonzero mip level
 // (with physical size different from the virtual mip size)
 TEST_P(CompressedTextureZeroInitTest, HalfCopyToNonZeroMipLevel) {
-    // TODO(crbug.com/dawn/643): diagnose and fix this failure on OpenGL.
-    DAWN_SUPPRESS_TEST_IF(IsOpenGL() || IsOpenGLES());
+    // TODO(crbug.com/346264229): diagnose this failure on ANGLE/D3D11
+    DAWN_SUPPRESS_TEST_IF(IsANGLED3D11());
 
     wgpu::TextureDescriptor textureDescriptor;
     textureDescriptor.usage = wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst |
@@ -2106,8 +2099,9 @@ TEST_P(CompressedTextureZeroInitTest, HalfCopyToNonZeroMipLevel) {
 
 // Test that 0 lazy clear count happens when we copy buffer to nonzero array layer
 TEST_P(CompressedTextureZeroInitTest, FullCopyToNonZeroArrayLayer) {
-    // TODO(crbug.com/dawn/1328): ES3.1 does not support subsetting of compressed textures.
-    DAWN_TEST_UNSUPPORTED_IF(IsOpenGLES());
+    // TODO(crbug.com/346362367): Compatibility mode does not support binding a `2d-array` texture
+    // to a WGSL variable of type `texture_2d`.
+    DAWN_TEST_UNSUPPORTED_IF(IsCompatibilityMode());
 
     wgpu::TextureDescriptor textureDescriptor;
     textureDescriptor.usage = wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst |
@@ -2126,8 +2120,9 @@ TEST_P(CompressedTextureZeroInitTest, FullCopyToNonZeroArrayLayer) {
 
 // Test that 1 lazy clear count happens when we copy buffer to half texture to a nonzero array layer
 TEST_P(CompressedTextureZeroInitTest, HalfCopyToNonZeroArrayLayer) {
-    // TODO(crbug.com/dawn/643): diagnose and fix this failure on OpenGL.
-    DAWN_SUPPRESS_TEST_IF(IsOpenGL() || IsOpenGLES());
+    // TODO(crbug.com/346362367): Compatibility mode does not support binding a `2d-array` texture
+    // to a WGSL variable of type `texture_2d`.
+    DAWN_TEST_UNSUPPORTED_IF(IsCompatibilityMode());
 
     wgpu::TextureDescriptor textureDescriptor;
     textureDescriptor.usage = wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst |
@@ -2146,8 +2141,8 @@ TEST_P(CompressedTextureZeroInitTest, HalfCopyToNonZeroArrayLayer) {
 
 // full copy texture to texture, 0 lazy clears are needed
 TEST_P(CompressedTextureZeroInitTest, FullCopyTextureToTextureMipLevel) {
-    // TODO(crbug.com/dawn/1328): ES3.1 does not support subsetting of compressed textures.
-    DAWN_TEST_UNSUPPORTED_IF(IsOpenGLES());
+    // Compatibility mode does not support compressed texture-to-texture copies.
+    DAWN_TEST_UNSUPPORTED_IF(IsCompatibilityMode());
 
     // create srcTexture and fill it with data
     wgpu::TextureDescriptor srcDescriptor =
@@ -2195,8 +2190,8 @@ TEST_P(CompressedTextureZeroInitTest, FullCopyTextureToTextureMipLevel) {
 
 // half copy texture to texture, lazy clears are needed for noncopied half
 TEST_P(CompressedTextureZeroInitTest, HalfCopyTextureToTextureMipLevel) {
-    // TODO(crbug.com/dawn/643): diagnose and fix this failure on OpenGL.
-    DAWN_SUPPRESS_TEST_IF(IsOpenGL() || IsOpenGLES());
+    // Compatibility mode does not support compressed texture-to-texture copies.
+    DAWN_SUPPRESS_TEST_IF(IsCompatibilityMode());
 
     // create srcTexture with data
     wgpu::TextureDescriptor srcDescriptor =
@@ -2248,8 +2243,8 @@ TEST_P(CompressedTextureZeroInitTest, HalfCopyTextureToTextureMipLevel) {
 // was considered fully initialized even though there was a 256-byte
 // stride between images.
 TEST_P(CompressedTextureZeroInitTest, Copy2DArrayCompressedB2T2B) {
-    // TODO(crbug.com/dawn/643): diagnose and fix this failure on OpenGL.
-    DAWN_SUPPRESS_TEST_IF(IsOpenGL() || IsOpenGLES());
+    // Compatibility mode does not support compressed texture-to-buffer copies.
+    DAWN_SUPPRESS_TEST_IF(IsCompatibilityMode());
 
     // create srcTexture with data
     wgpu::TextureDescriptor textureDescriptor = CreateTextureDescriptor(
@@ -2322,8 +2317,14 @@ TEST_P(CompressedTextureZeroInitTest, Copy2DArrayCompressedB2T2B) {
 }
 
 DAWN_INSTANTIATE_TEST(CompressedTextureZeroInitTest,
+                      D3D11Backend({"nonzero_clear_resources_on_creation_for_testing"}),
                       D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"}),
+                      D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"},
+                                   {"d3d12_create_not_zeroed_heap"}),
                       MetalBackend({"nonzero_clear_resources_on_creation_for_testing"}),
                       OpenGLBackend({"nonzero_clear_resources_on_creation_for_testing"}),
                       OpenGLESBackend({"nonzero_clear_resources_on_creation_for_testing"}),
                       VulkanBackend({"nonzero_clear_resources_on_creation_for_testing"}));
+
+}  // anonymous namespace
+}  // namespace dawn

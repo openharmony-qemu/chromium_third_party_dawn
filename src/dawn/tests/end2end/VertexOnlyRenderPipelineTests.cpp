@@ -1,21 +1,37 @@
-// Copyright 2021 The Dawn Authors
+// Copyright 2021 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/tests/DawnTest.h"
 
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
+
+namespace dawn {
+namespace {
 
 constexpr wgpu::TextureFormat kDepthStencilFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 constexpr wgpu::TextureFormat kColorFormat = wgpu::TextureFormat::RGBA8Unorm;
@@ -74,32 +90,32 @@ class VertexOnlyRenderPipelineTest : public DawnTest {
         // ignore the stencil component
         depthPipelineNoFragment =
             CreateRenderPipeline(wgpu::CompareFunction::Always, wgpu::StencilOperation::Keep,
-                                 wgpu::CompareFunction::Always, true, false);
+                                 wgpu::CompareFunction::Always, wgpu::OptionalBool::True, false);
         depthPipelineWithFragment =
             CreateRenderPipeline(wgpu::CompareFunction::Always, wgpu::StencilOperation::Keep,
-                                 wgpu::CompareFunction::Always, true, true);
+                                 wgpu::CompareFunction::Always, wgpu::OptionalBool::True, true);
 
         // Create a vertex-only render pipeline that only modify the stencil in DepthStencilView,
         // and ignore the depth component
         stencilPipelineNoFragment =
             CreateRenderPipeline(wgpu::CompareFunction::Always, wgpu::StencilOperation::Replace,
-                                 wgpu::CompareFunction::Always, false, false);
+                                 wgpu::CompareFunction::Always, wgpu::OptionalBool::False, false);
         stencilPipelineWithFragment =
             CreateRenderPipeline(wgpu::CompareFunction::Always, wgpu::StencilOperation::Replace,
-                                 wgpu::CompareFunction::Always, false, true);
+                                 wgpu::CompareFunction::Always, wgpu::OptionalBool::False, true);
 
         // Create a complete render pipeline that do both depth and stencil tests, and draw to color
         // attachment
-        fullPipeline =
-            CreateRenderPipeline(wgpu::CompareFunction::Equal, wgpu::StencilOperation::Keep,
-                                 wgpu::CompareFunction::GreaterEqual, false, true);
+        fullPipeline = CreateRenderPipeline(
+            wgpu::CompareFunction::Equal, wgpu::StencilOperation::Keep,
+            wgpu::CompareFunction::GreaterEqual, wgpu::OptionalBool::False, true);
     }
 
     wgpu::RenderPipeline CreateRenderPipeline(
         wgpu::CompareFunction stencilCompare = wgpu::CompareFunction::Always,
         wgpu::StencilOperation stencilPassOp = wgpu::StencilOperation::Keep,
         wgpu::CompareFunction depthCompare = wgpu::CompareFunction::Always,
-        bool writeDepth = false,
+        wgpu::OptionalBool writeDepth = wgpu::OptionalBool::False,
         bool useFragment = true) {
         wgpu::ShaderModule vsModule = utils::CreateShaderModule(device, R"(
             @vertex
@@ -216,6 +232,9 @@ TEST_P(VertexOnlyRenderPipelineTest, Stencil) {
 // Test that a vertex-only render pipeline modify the depth attachment as same as a complete render
 // pipeline do.
 TEST_P(VertexOnlyRenderPipelineTest, Depth) {
+    // TODO(crbug.com/dawn/2295): diagnose this failure on Pixel 4 OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsQualcomm());
+
     auto doStencilTest = [&](const wgpu::RenderPassDescriptor* renderPass,
                              const wgpu::RenderPipeline& pipeline,
                              const utils::RGBA8& colorExpect) -> void {
@@ -307,6 +326,8 @@ TEST_P(VertexOnlyRenderPipelineTest, MultiplePass) {
 }
 
 DAWN_INSTANTIATE_TEST(VertexOnlyRenderPipelineTest,
+                      D3D11Backend(),
+                      D3D11Backend({"use_placeholder_fragment_in_vertex_only_pipeline"}),
                       D3D12Backend(),
                       D3D12Backend({"use_placeholder_fragment_in_vertex_only_pipeline"}),
                       MetalBackend(),
@@ -317,3 +338,6 @@ DAWN_INSTANTIATE_TEST(VertexOnlyRenderPipelineTest,
                       OpenGLESBackend({"use_placeholder_fragment_in_vertex_only_pipeline"}),
                       VulkanBackend(),
                       VulkanBackend({"use_placeholder_fragment_in_vertex_only_pipeline"}));
+
+}  // anonymous namespace
+}  // namespace dawn

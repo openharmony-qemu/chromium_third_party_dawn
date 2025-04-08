@@ -12,6 +12,9 @@
 #define SRC_DAWN_COMMON_LINKEDLIST_H_
 
 #include "dawn/common/Assert.h"
+#include "partition_alloc/pointers/raw_ptr_exclusion.h"
+
+namespace dawn {
 
 // Simple LinkedList type. (See the Q&A section to understand how this
 // differs from std::list).
@@ -140,7 +143,7 @@ class LinkNode {
 
     // Check if |this| is in a list.
     bool IsInList() const {
-        ASSERT((this->previous_ == nullptr) == (this->next_ == nullptr));
+        DAWN_ASSERT((this->previous_ == nullptr) == (this->next_ == nullptr));
         return this->next_ != nullptr;
     }
 
@@ -169,8 +172,11 @@ class LinkNode {
 
   private:
     friend class LinkedList<T>;
-    LinkNode<T>* previous_;
-    LinkNode<T>* next_;
+    // RAW_PTR_EXCLUSION: Linked lists are used and iterated a lot so these pointers are very hot.
+    // All accesses to the pointers are behind "safe" APIs such that it is not possible (in
+    // single-threaded code) to use them after they are freed.
+    RAW_PTR_EXCLUSION LinkNode<T>* previous_ = nullptr;
+    RAW_PTR_EXCLUSION LinkNode<T>* next_ = nullptr;
 };
 
 template <typename T>
@@ -231,8 +237,11 @@ class LinkedListIterator {
     LinkNode<T>* operator*() const { return current_; }
 
   private:
-    LinkNode<T>* current_;
-    LinkNode<T>* next_;
+    // RAW_PTR_EXCLUSION: Linked lists are used and iterated a lot so these pointers are very hot.
+    // All accesses to the pointers are behind "safe" APIs such that it is not possible (in
+    // single-threaded code) to use them after they are freed.
+    RAW_PTR_EXCLUSION LinkNode<T>* current_ = nullptr;
+    RAW_PTR_EXCLUSION LinkNode<T>* next_ = nullptr;
 };
 
 template <typename T>
@@ -246,5 +255,7 @@ template <typename T>
 LinkedListIterator<T> end(LinkedList<T>& l) {
     return LinkedListIterator<T>(l.tail()->next());
 }
+
+}  // namespace dawn
 
 #endif  // SRC_DAWN_COMMON_LINKEDLIST_H_

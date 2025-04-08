@@ -1,16 +1,29 @@
-// Copyright 2020 The Dawn Authors
+// Copyright 2020 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <vector>
 
@@ -20,19 +33,20 @@
 #include "dawn/utils/TestUtils.h"
 #include "dawn/utils/WGPUHelpers.h"
 
-#define EXPECT_LAZY_CLEAR(N, statement)                                                        \
-    do {                                                                                       \
-        if (UsesWire()) {                                                                      \
-            statement;                                                                         \
-        } else {                                                                               \
-            size_t lazyClearsBefore = dawn::native::GetLazyClearCountForTesting(device.Get()); \
-            statement;                                                                         \
-            size_t lazyClearsAfter = dawn::native::GetLazyClearCountForTesting(device.Get());  \
-            EXPECT_EQ(N, lazyClearsAfter - lazyClearsBefore);                                  \
-        }                                                                                      \
-    } while (0)
-
+namespace dawn {
 namespace {
+
+#define EXPECT_LAZY_CLEAR(N, statement)                                                  \
+    do {                                                                                 \
+        if (UsesWire()) {                                                                \
+            statement;                                                                   \
+        } else {                                                                         \
+            size_t lazyClearsBefore = native::GetLazyClearCountForTesting(device.Get()); \
+            statement;                                                                   \
+            size_t lazyClearsAfter = native::GetLazyClearCountForTesting(device.Get());  \
+            EXPECT_EQ(N, lazyClearsAfter - lazyClearsBefore);                            \
+        }                                                                                \
+    } while (0)
 
 struct BufferZeroInitInCopyT2BSpec {
     wgpu::Extent3D textureSize;
@@ -42,8 +56,6 @@ struct BufferZeroInitInCopyT2BSpec {
     uint32_t rowsPerImage;
     uint32_t lazyClearCount;
 };
-
-}  // anonymous namespace
 
 class BufferZeroInitTest : public DawnTest {
   protected:
@@ -64,26 +76,6 @@ class BufferZeroInitTest : public DawnTest {
         descriptor.usage = usage;
         descriptor.mappedAtCreation = mappedAtCreation;
         return device.CreateBuffer(&descriptor);
-    }
-
-    void MapAsyncAndWait(wgpu::Buffer buffer,
-                         wgpu::MapMode mapMode,
-                         uint64_t offset,
-                         uint64_t size) {
-        ASSERT(mapMode == wgpu::MapMode::Read || mapMode == wgpu::MapMode::Write);
-
-        bool done = false;
-        buffer.MapAsync(
-            mapMode, offset, size,
-            [](WGPUBufferMapAsyncStatus status, void* userdata) {
-                ASSERT_EQ(WGPUBufferMapAsyncStatus_Success, status);
-                *static_cast<bool*>(userdata) = true;
-            },
-            &done);
-
-        while (!done) {
-            WaitABit();
-        }
     }
 
     wgpu::Texture CreateAndInitializeTexture(const wgpu::Extent3D& size,
@@ -121,9 +113,9 @@ class BufferZeroInitTest : public DawnTest {
 
     void TestBufferZeroInitInCopyTextureToBuffer(const BufferZeroInitInCopyT2BSpec& spec) {
         constexpr wgpu::TextureFormat kTextureFormat = wgpu::TextureFormat::R32Float;
-        ASSERT(utils::GetTexelBlockSizeInBytes(kTextureFormat) * spec.textureSize.width %
-                   kTextureBytesPerRowAlignment ==
-               0);
+        DAWN_ASSERT(utils::GetTexelBlockSizeInBytes(kTextureFormat) * spec.textureSize.width %
+                        kTextureBytesPerRowAlignment ==
+                    0);
 
         constexpr wgpu::Color kClearColor = {0.5f, 0.5f, 0.5f, 0.5f};
         wgpu::Texture texture =
@@ -172,7 +164,6 @@ class BufferZeroInitTest : public DawnTest {
         wgpu::ComputePipelineDescriptor pipelineDescriptor;
         pipelineDescriptor.layout = nullptr;
         pipelineDescriptor.compute.module = module;
-        pipelineDescriptor.compute.entryPoint = "main";
         wgpu::ComputePipeline pipeline = device.CreateComputePipeline(&pipelineDescriptor);
 
         const uint64_t bufferSize = expectedBufferData.size() * sizeof(uint32_t);
@@ -217,7 +208,7 @@ class BufferZeroInitTest : public DawnTest {
                 return i_color;
             })");
 
-        ASSERT(vertexBufferCount <= 1u);
+        DAWN_ASSERT(vertexBufferCount <= 1u);
         utils::ComboRenderPipelineDescriptor descriptor;
         descriptor.vertex.module = vsModule;
         descriptor.cFragment.module = fsModule;
@@ -439,7 +430,6 @@ class BufferZeroInitTest : public DawnTest {
         wgpu::ComputePipelineDescriptor pipelineDescriptor;
         pipelineDescriptor.layout = nullptr;
         pipelineDescriptor.compute.module = utils::CreateShaderModule(device, computeShader);
-        pipelineDescriptor.compute.entryPoint = "main";
         wgpu::ComputePipeline pipeline = device.CreateComputePipeline(&pipelineDescriptor);
 
         // Clear the color of outputTexture to green.
@@ -927,6 +917,9 @@ TEST_P(BufferZeroInitTest, CopyBufferToTexture) {
 TEST_P(BufferZeroInitTest, Copy2DTextureToBuffer) {
     constexpr wgpu::Extent3D kTextureSize = {64u, 8u, 1u};
 
+    // TODO(crbug.com/dawn/2295): diagnose this failure on Pixel 4 OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsQualcomm());
+
     // bytesPerRow == texelBlockSizeInBytes * copySize.width && bytesPerRow * copySize.height ==
     // buffer.size
     {
@@ -990,9 +983,6 @@ TEST_P(BufferZeroInitTest, Copy2DArrayTextureToBuffer) {
 // Test that the buffer will be lazy initialized correctly when its first use is to be bound as a
 // uniform buffer.
 TEST_P(BufferZeroInitTest, BoundAsUniformBuffer) {
-    // TODO(crbug.com/dawn/661): Diagnose and fix this backend validation failure on GLES.
-    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsBackendValidationEnabled());
-
     constexpr uint32_t kBoundBufferSize = 16u;
     wgpu::ShaderModule module = utils::CreateShaderModule(device, R"(
         struct UBO {
@@ -1029,9 +1019,6 @@ TEST_P(BufferZeroInitTest, BoundAsUniformBuffer) {
 // Test that the buffer will be lazy initialized correctly when its first use is to be bound as a
 // read-only storage buffer.
 TEST_P(BufferZeroInitTest, BoundAsReadonlyStorageBuffer) {
-    // TODO(crbug.com/dawn/661): Diagnose and fix this backend validation failure on GLES.
-    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsBackendValidationEnabled());
-
     constexpr uint32_t kBoundBufferSize = 16u;
     wgpu::ShaderModule module = utils::CreateShaderModule(device, R"(
         struct SSBO {
@@ -1068,9 +1055,6 @@ TEST_P(BufferZeroInitTest, BoundAsReadonlyStorageBuffer) {
 // Test that the buffer will be lazy initialized correctly when its first use is to be bound as a
 // storage buffer.
 TEST_P(BufferZeroInitTest, BoundAsStorageBuffer) {
-    // TODO(crbug.com/dawn/661): Diagnose and fix this backend validation failure on GLES.
-    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsBackendValidationEnabled());
-
     constexpr uint32_t kBoundBufferSize = 32u;
     wgpu::ShaderModule module = utils::CreateShaderModule(device, R"(
         struct SSBO {
@@ -1138,6 +1122,11 @@ TEST_P(BufferZeroInitTest, SetVertexBuffer) {
 TEST_P(BufferZeroInitTest, PaddingInitialized) {
     DAWN_SUPPRESS_TEST_IF(IsANGLE());                              // TODO(crbug.com/dawn/1084)
     DAWN_SUPPRESS_TEST_IF(IsLinux() && IsVulkan() && IsNvidia());  // TODO(crbug.com/dawn/1214)
+
+    // TODO(crbug.com/dawn/2295): diagnose this failure on Pixel 4 OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsQualcomm());
+    // TODO(crbug.com/dawn/2295): diagnose this failure on Pixel 6 OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsARM());
 
     constexpr wgpu::TextureFormat kColorAttachmentFormat = wgpu::TextureFormat::RGBA8Unorm;
     // A small sub-4-byte format means a single vertex can fit entirely within the padded buffer,
@@ -1296,9 +1285,6 @@ TEST_P(BufferZeroInitTest, IndirectBufferForDrawIndexedIndirect) {
 // Test the buffer will be lazily initialized correctly when its first use is an indirect buffer for
 // DispatchIndirect.
 TEST_P(BufferZeroInitTest, IndirectBufferForDispatchIndirect) {
-    // TODO(crbug.com/dawn/661): Diagnose and fix this backend validation failure on GLES.
-    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsBackendValidationEnabled());
-
     // Bind the whole buffer as an indirect buffer.
     {
         constexpr uint64_t kOffset = 0u;
@@ -1369,7 +1355,7 @@ TEST_P(BufferZeroInitTest, ResolveQuerySet) {
     // destinationOffset > 0 and destinationOffset + 8 * queryCount <= kBufferSize
     {
         constexpr uint32_t kQueryCount = 1;
-        constexpr uint64_t kDestinationOffset = 256u;
+        constexpr uint64_t kDestinationOffset = kQueryResolveAlignment;
 
         wgpu::Buffer destination = CreateBuffer(kBufferSize + kDestinationOffset, kBufferUsage);
         wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
@@ -1382,8 +1368,14 @@ TEST_P(BufferZeroInitTest, ResolveQuerySet) {
 }
 
 DAWN_INSTANTIATE_TEST(BufferZeroInitTest,
+                      D3D11Backend({"nonzero_clear_resources_on_creation_for_testing"}),
                       D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"}),
+                      D3D12Backend({"nonzero_clear_resources_on_creation_for_testing"},
+                                   {"d3d12_create_not_zeroed_heap"}),
                       MetalBackend({"nonzero_clear_resources_on_creation_for_testing"}),
                       OpenGLBackend({"nonzero_clear_resources_on_creation_for_testing"}),
                       OpenGLESBackend({"nonzero_clear_resources_on_creation_for_testing"}),
                       VulkanBackend({"nonzero_clear_resources_on_creation_for_testing"}));
+
+}  // anonymous namespace
+}  // namespace dawn

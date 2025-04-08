@@ -1,16 +1,29 @@
-// Copyright 2019 The Dawn Authors
+// Copyright 2019 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #ifndef SRC_DAWN_NATIVE_ENCODINGCONTEXT_H_
 #define SRC_DAWN_NATIVE_ENCODINGCONTEXT_H_
@@ -24,8 +37,10 @@
 #include "dawn/native/Error.h"
 #include "dawn/native/ErrorData.h"
 #include "dawn/native/IndirectDrawMetadata.h"
+#include "dawn/native/ObjectType_autogen.h"
 #include "dawn/native/PassResourceUsageTracker.h"
 #include "dawn/native/dawn_platform.h"
+#include "partition_alloc/pointers/raw_ptr.h"
 
 namespace dawn::native {
 
@@ -38,6 +53,7 @@ class ApiObjectBase;
 class EncodingContext {
   public:
     EncodingContext(DeviceBase* device, const ApiObjectBase* initialEncoder);
+    EncodingContext(DeviceBase* device, ErrorMonad::ErrorTag tag);
     ~EncodingContext();
 
     // Marks the encoding context as destroyed so that any future encodes will fail, and all
@@ -45,7 +61,6 @@ class EncodingContext {
     void Destroy();
 
     CommandIterator AcquireCommands();
-    CommandIterator* GetIterator();
 
     // Functions to handle encoder errors
     void HandleError(std::unique_ptr<ErrorData> error);
@@ -78,31 +93,48 @@ class EncodingContext {
         return false;
     }
 
-    inline bool CheckCurrentEncoder(const ApiObjectBase* encoder) {
-        if (mDestroyed) {
-            HandleError(DAWN_VALIDATION_ERROR("Recording in a destroyed %s.", mCurrentEncoder));
-            return false;
-        }
+    inline MaybeError ValidateCanEncodeOn(const ApiObjectBase* encoder) {
         if (DAWN_UNLIKELY(encoder != mCurrentEncoder)) {
-            if (mCurrentEncoder != mTopLevelEncoder) {
-                // The top level encoder was used when a pass encoder was current.
-                HandleError(DAWN_VALIDATION_ERROR(
-                    "Command cannot be recorded while %s is locked and %s is currently open.",
-                    mTopLevelEncoder, mCurrentEncoder));
-            } else {
-                HandleError(DAWN_VALIDATION_ERROR("Recording in an error %s.", encoder));
+            switch (mStatus) {
+                case Status::Error:
+                    return DAWN_VALIDATION_ERROR("Recording in an error %s.", encoder);
+                case Status::Destroyed:
+                    return DAWN_VALIDATION_ERROR("Recording in a destroyed %s.", encoder);
+
+                case Status::Finished:
+                    // The encoder has been finished, select the correct error message.
+                    DAWN_INVALID_IF(encoder->GetType() == ObjectType::CommandEncoder ||
+                                        encoder->GetType() == ObjectType::RenderBundleEncoder,
+                                    "%s is already finished.", encoder);
+                    return DAWN_VALIDATION_ERROR("Parent encoder of %s is already finished.",
+                                                 encoder);
+
+                case Status::Open:
+                    // This could happen when an error child encoder is created on an otherwise
+                    // valid EncodingContext that then doesn't get notified of the current encoder
+                    // change.
+                    DAWN_INVALID_IF(encoder->IsError(), "Recording in an error %s.", encoder);
+
+                    // This happens when the CommandEncoder is used while a pass is open.
+                    DAWN_INVALID_IF(encoder == mTopLevelEncoder,
+                                    "Recording in %s which is locked while %s is open.", encoder,
+                                    mCurrentEncoder);
+
+                    // The remaining case is when an encoder is ended but we still try to encode
+                    // commands in it.
+                    return DAWN_VALIDATION_ERROR(
+                        "Commands cannot be recorded in %s which has already been ended.", encoder);
             }
-            return false;
         }
-        return true;
+        return {};
     }
 
     template <typename EncodeFunction>
     inline bool TryEncode(const ApiObjectBase* encoder, EncodeFunction&& encodeFunction) {
-        if (!CheckCurrentEncoder(encoder)) {
+        if (ConsumedError(ValidateCanEncodeOn(encoder))) {
             return false;
         }
-        ASSERT(!mWasMovedToIterator);
+        DAWN_ASSERT(!mWereCommandsAcquired);
         return !ConsumedError(encodeFunction(&mPendingCommands));
     }
 
@@ -111,10 +143,10 @@ class EncodingContext {
                           EncodeFunction&& encodeFunction,
                           const char* formatStr,
                           const Args&... args) {
-        if (!CheckCurrentEncoder(encoder)) {
+        if (ConsumedError(ValidateCanEncodeOn(encoder), formatStr, args...)) {
             return false;
         }
-        ASSERT(!mWasMovedToIterator);
+        DAWN_ASSERT(!mWereCommandsAcquired);
         return !ConsumedError(encodeFunction(&mPendingCommands), formatStr, args...);
     }
 
@@ -140,43 +172,51 @@ class EncodingContext {
     const ComputePassUsages& GetComputePassUsages() const;
     RenderPassUsages AcquireRenderPassUsages();
     ComputePassUsages AcquireComputePassUsages();
+    std::vector<IndirectDrawMetadata> AcquireIndirectDrawMetadata();
 
-    void PushDebugGroupLabel(const char* groupLabel);
+    void PushDebugGroupLabel(std::string_view groupLabel);
     void PopDebugGroupLabel();
 
   private:
     void CommitCommands(CommandAllocator allocator);
 
-    bool IsFinished() const;
-    void MoveToIterator();
-
-    DeviceBase* mDevice;
+    raw_ptr<DeviceBase> mDevice;
 
     // There can only be two levels of encoders. Top-level and render/compute pass.
     // The top level encoder is the encoder the EncodingContext is created with.
-    // It doubles as flag to check if encoding has been Finished.
-    const ApiObjectBase* mTopLevelEncoder;
+    // It doubles as a flag for mStatus != Open when it is nullptr, so that a single comparison
+    // is necessary in ValidateCanEncodeOn.
+    raw_ptr<const ApiObjectBase> mTopLevelEncoder;
     // The current encoder must be the same as the encoder provided to TryEncode,
     // otherwise an error is produced. It may be nullptr if the EncodingContext is an error.
     // The current encoder changes with Enter/ExitPass which should be called by
     // CommandEncoder::Begin/EndPass.
-    const ApiObjectBase* mCurrentEncoder;
+    raw_ptr<const ApiObjectBase> mCurrentEncoder;
 
     RenderPassUsages mRenderPassUsages;
     bool mWereRenderPassUsagesAcquired = false;
     ComputePassUsages mComputePassUsages;
     bool mWereComputePassUsagesAcquired = false;
 
+    // One for each render pass.
+    std::vector<IndirectDrawMetadata> mIndirectDrawMetadata;
+    bool mWereIndirectDrawMetadataAcquired = false;
+
     CommandAllocator mPendingCommands;
 
     std::vector<CommandAllocator> mAllocators;
-    CommandIterator mIterator;
-    bool mWasMovedToIterator = false;
     bool mWereCommandsAcquired = false;
-    bool mDestroyed = false;
+    // Contains pointers to strings allocated inside the command allocators.
+    std::vector<std::string_view> mDebugGroupLabels;
 
+    enum class Status {
+        Open,
+        Finished,
+        Error,
+        Destroyed,
+    };
+    Status mStatus;
     std::unique_ptr<ErrorData> mError;
-    std::vector<std::string> mDebugGroupLabels;
 };
 
 }  // namespace dawn::native

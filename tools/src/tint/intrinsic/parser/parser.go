@@ -1,16 +1,29 @@
-// Copyright 2021 The Tint Authors.
+// Copyright 2021 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // Package parser provides a basic parser for the Tint builtin definition
 // language
@@ -18,6 +31,7 @@ package parser
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 
 	"dawn.googlesource.com/dawn/tools/src/tint/intrinsic/ast"
@@ -27,14 +41,21 @@ import (
 
 // Parse produces a list of tokens for the given source code
 func Parse(source, filepath string) (*ast.AST, error) {
+	out := &ast.AST{}
+	if err := parse(source, filepath, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func parse(source, filepath string, out *ast.AST) error {
 	runes := []rune(source)
 	tokens, err := lexer.Lex(runes, filepath)
 	if err != nil {
-		return nil, err
+		return err
 	}
-
 	p := parser{tokens: tokens}
-	return p.parse()
+	return p.parse(out)
 }
 
 type parser struct {
@@ -42,9 +63,9 @@ type parser struct {
 	err    error
 }
 
-func (p *parser) parse() (*ast.AST, error) {
-	out := ast.AST{}
+func (p *parser) parse(out *ast.AST) error {
 	var attributes ast.Attributes
+	var implicitParams []ast.TemplateParam
 	for p.err == nil {
 		t := p.peek(0)
 		if t == nil {
@@ -57,35 +78,64 @@ func (p *parser) parse() (*ast.AST, error) {
 			if len(attributes) > 0 {
 				p.err = fmt.Errorf("%v unexpected attribute", attributes[0].Source)
 			}
+			if len(implicitParams) > 0 {
+				p.err = fmt.Errorf("%v unexpected implicitParams", implicitParams[0].Source)
+			}
 			out.Enums = append(out.Enums, p.enumDecl())
 		case tok.Match:
 			if len(attributes) > 0 {
 				p.err = fmt.Errorf("%v unexpected attribute", attributes[0].Source)
 			}
+			if len(implicitParams) > 0 {
+				p.err = fmt.Errorf("%v unexpected implicitParams", implicitParams[0].Source)
+			}
 			out.Matchers = append(out.Matchers, p.matcherDecl())
+		case tok.Import:
+			if len(attributes) > 0 {
+				p.err = fmt.Errorf("%v unexpected attribute", attributes[0].Source)
+			}
+			if len(implicitParams) > 0 {
+				p.err = fmt.Errorf("%v unexpected implicitParams", implicitParams[0].Source)
+			}
+			p.importDecl(out)
 		case tok.Type:
+			if len(implicitParams) > 0 {
+				p.err = fmt.Errorf("%v unexpected implicitParams", implicitParams[0].Source)
+			}
 			out.Types = append(out.Types, p.typeDecl(attributes))
 			attributes = nil
 		case tok.Function:
-			out.Builtins = append(out.Builtins, p.builtinDecl(attributes))
+			out.Builtins = append(out.Builtins, p.builtinDecl(attributes, implicitParams))
 			attributes = nil
+			implicitParams = nil
 		case tok.Operator:
-			out.Operators = append(out.Operators, p.operatorDecl(attributes))
+			out.Operators = append(out.Operators, p.operatorDecl(attributes, implicitParams))
 			attributes = nil
+			implicitParams = nil
 		case tok.Constructor:
-			out.Constructors = append(out.Constructors, p.constructorDecl(attributes))
+			out.Constructors = append(out.Constructors, p.constructorDecl(attributes, implicitParams))
 			attributes = nil
+			implicitParams = nil
 		case tok.Converter:
-			out.Converters = append(out.Converters, p.converterDecl(attributes))
+			out.Converters = append(out.Converters, p.converterDecl(attributes, implicitParams))
 			attributes = nil
+			implicitParams = nil
+		case tok.Implicit:
+			p.expect(tok.Implicit, "implicit")
+			p.expect(tok.Lparen, "implicit template parameter list")
+			for p.err == nil && p.peekIs(0, tok.Identifier) {
+				implicitParams = append(implicitParams, p.templateParam())
+			}
+			p.expect(tok.Rparen, "implicit template parameter list")
+
 		default:
 			p.err = fmt.Errorf("%v unexpected token '%v'", t.Source, t.Kind)
 		}
 		if p.err != nil {
-			return nil, p.err
+			return p.err
 		}
 	}
-	return &out, nil
+	return nil
 }
 
 func (p *parser) enumDecl() ast.EnumDecl {
@@ -128,6 +178,20 @@ func (p *parser) matcherDecl() ast.MatcherDecl {
 	return m
 }
 
+func (p *parser) importDecl(out *ast.AST) {
+	p.expect(tok.Import, "import declaration")
+	path := p.string()
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		p.err = fmt.Errorf("%v failed to load '%v': %w",
+			p.tokens[0].Source, path, err)
+		return
+	}
+
+	p.err = parse(string(content), path, out)
+}
+
 func (p *parser) typeDecl(decos ast.Attributes) ast.TypeDecl {
 	p.expect(tok.Type, "type declaration")
 	name := p.expect(tok.Identifier, "type name")
@@ -136,9 +200,8 @@ func (p *parser) typeDecl(decos ast.Attributes) ast.TypeDecl {
 		Attributes: decos,
 		Name:       string(name.Runes),
 	}
-	if p.peekIs(0, tok.Lt) {
-		m.TemplateParams = p.templateParams()
-	}
+	m.TemplateParams = p.typeTemplateParams()
+
 	return m
 }
 
@@ -181,7 +244,7 @@ func (p *parser) attributes() ast.Attributes {
 	return out
 }
 
-func (p *parser) builtinDecl(decos ast.Attributes) ast.IntrinsicDecl {
+func (p *parser) builtinDecl(decos ast.Attributes, implicitParams []ast.TemplateParam) ast.IntrinsicDecl {
 	p.expect(tok.Function, "function declaration")
 	name := p.expect(tok.Identifier, "function name")
 	f := ast.IntrinsicDecl{
@@ -190,9 +253,8 @@ func (p *parser) builtinDecl(decos ast.Attributes) ast.IntrinsicDecl {
 		Attributes: decos,
 		Name:       string(name.Runes),
 	}
-	if p.peekIs(0, tok.Lt) {
-		f.TemplateParams = p.templateParams()
-	}
+	f.ExplicitTemplateParams = p.intrinsicTemplateParams()
+	f.ImplicitTemplateParams = implicitParams
 	f.Parameters = p.parameters()
 	if p.match(tok.Arrow) != nil {
 		ret := p.templatedName()
@@ -201,7 +263,7 @@ func (p *parser) builtinDecl(decos ast.Attributes) ast.IntrinsicDecl {
 	return f
 }
 
-func (p *parser) operatorDecl(decos ast.Attributes) ast.IntrinsicDecl {
+func (p *parser) operatorDecl(decos ast.Attributes, implicitParams []ast.TemplateParam) ast.IntrinsicDecl {
 	p.expect(tok.Operator, "operator declaration")
 	name := p.next()
 	f := ast.IntrinsicDecl{
@@ -210,9 +272,8 @@ func (p *parser) operatorDecl(decos ast.Attributes) ast.IntrinsicDecl {
 		Attributes: decos,
 		Name:       string(name.Runes),
 	}
-	if p.peekIs(0, tok.Lt) {
-		f.TemplateParams = p.templateParams()
-	}
+	f.ExplicitTemplateParams = p.intrinsicTemplateParams()
+	f.ImplicitTemplateParams = implicitParams
 	f.Parameters = p.parameters()
 	if p.match(tok.Arrow) != nil {
 		ret := p.templatedName()
@@ -221,7 +282,7 @@ func (p *parser) operatorDecl(decos ast.Attributes) ast.IntrinsicDecl {
 	return f
 }
 
-func (p *parser) constructorDecl(decos ast.Attributes) ast.IntrinsicDecl {
+func (p *parser) constructorDecl(decos ast.Attributes, implicitParams []ast.TemplateParam) ast.IntrinsicDecl {
 	p.expect(tok.Constructor, "constructor declaration")
 	name := p.next()
 	f := ast.IntrinsicDecl{
@@ -230,9 +291,8 @@ func (p *parser) constructorDecl(decos ast.Attributes) ast.IntrinsicDecl {
 		Attributes: decos,
 		Name:       string(name.Runes),
 	}
-	if p.peekIs(0, tok.Lt) {
-		f.TemplateParams = p.templateParams()
-	}
+	f.ExplicitTemplateParams = p.intrinsicTemplateParams()
+	f.ImplicitTemplateParams = implicitParams
 	f.Parameters = p.parameters()
 	if p.match(tok.Arrow) != nil {
 		ret := p.templatedName()
@@ -241,7 +301,7 @@ func (p *parser) constructorDecl(decos ast.Attributes) ast.IntrinsicDecl {
 	return f
 }
 
-func (p *parser) converterDecl(decos ast.Attributes) ast.IntrinsicDecl {
+func (p *parser) converterDecl(decos ast.Attributes, implicitParams []ast.TemplateParam) ast.IntrinsicDecl {
 	p.expect(tok.Converter, "converter declaration")
 	name := p.next()
 	f := ast.IntrinsicDecl{
@@ -250,9 +310,8 @@ func (p *parser) converterDecl(decos ast.Attributes) ast.IntrinsicDecl {
 		Attributes: decos,
 		Name:       string(name.Runes),
 	}
-	if p.peekIs(0, tok.Lt) {
-		f.TemplateParams = p.templateParams()
-	}
+	f.ExplicitTemplateParams = p.intrinsicTemplateParams()
+	f.ImplicitTemplateParams = implicitParams
 	f.Parameters = p.parameters()
 	if p.match(tok.Arrow) != nil {
 		ret := p.templatedName()
@@ -329,14 +388,26 @@ func (p *parser) templatedName() ast.TemplatedName {
 	return m
 }
 
-func (p *parser) templateParams() ast.TemplateParams {
-	t := ast.TemplateParams{}
-	p.expect(tok.Lt, "template parameter list")
+func (p *parser) typeTemplateParams() []ast.TemplateParam {
+	if p.match(tok.Lt) == nil {
+		return nil
+	}
+	t := []ast.TemplateParam{}
 	for p.err == nil && p.peekIs(0, tok.Identifier) {
 		t = append(t, p.templateParam())
 	}
-	p.expect(tok.Gt, "template parameter list")
+	p.expect(tok.Gt, "type template parameter list")
 	return t
+}
+
+func (p *parser) intrinsicTemplateParams() (explicit []ast.TemplateParam) {
+	if p.match(tok.Lt) != nil { // <...>
+		for p.err == nil && p.peekIs(0, tok.Identifier) {
+			explicit = append(explicit, p.templateParam())
+		}
+		p.expect(tok.Gt, "explicit template parameter list")
+	}
+	return explicit
 }
 
 func (p *parser) templateParam() ast.TemplateParam {

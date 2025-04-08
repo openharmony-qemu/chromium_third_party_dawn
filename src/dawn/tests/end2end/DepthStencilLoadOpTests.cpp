@@ -1,16 +1,29 @@
-// Copyright 2021 The Dawn Authors
+// Copyright 2021 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <algorithm>
 #include <vector>
@@ -19,6 +32,7 @@
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
 
+namespace dawn {
 namespace {
 
 using Format = wgpu::TextureFormat;
@@ -66,9 +80,10 @@ class DepthStencilLoadOpTests : public DawnTestWithParams<DepthStencilLoadOpTest
 
         DAWN_TEST_UNSUPPORTED_IF(!mIsFormatSupported);
 
-        // Readback of Depth/Stencil textures not fully supported on GL right now.
-        // Also depends on glTextureView which is not supported on ES.
-        DAWN_SUPPRESS_TEST_IF(IsOpenGL() || IsOpenGLES());
+        // Skip formats other than Depth24PlusStencil8 if we're specifically testing with the packed
+        // depth24_unorm_stencil8 toggle.
+        DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("use_packed_depth24_unorm_stencil8_format") &&
+                                 GetParam().mFormat != wgpu::TextureFormat::Depth24PlusStencil8);
 
         wgpu::TextureDescriptor descriptor;
         descriptor.size = {kRTSize, kRTSize};
@@ -116,6 +131,8 @@ class DepthStencilLoadOpTests : public DawnTestWithParams<DepthStencilLoadOpTest
         switch (GetParam().mCheck) {
             case Check::SampleDepth: {
                 DAWN_TEST_UNSUPPORTED_IF(utils::IsStencilOnlyFormat(GetParam().mFormat));
+                // textureLoad with texture_depth_xxx is not supported in compat mode.
+                DAWN_TEST_UNSUPPORTED_IF(IsCompatibilityMode());
 
                 std::vector<float> expectedDepth(mipSize * mipSize, kDepthValues[mipLevel]);
                 ExpectSampledDepthData(
@@ -185,6 +202,9 @@ class DepthStencilLoadOpTests : public DawnTestWithParams<DepthStencilLoadOpTest
 
 // Check that clearing a mip level works at all.
 TEST_P(DepthStencilLoadOpTests, ClearMip0) {
+    // TODO(crbug.com/dawn/1828): depth16unorm broken on Apple GPUs.
+    DAWN_SUPPRESS_TEST_IF(IsApple() && GetParam().mFormat == wgpu::TextureFormat::Depth16Unorm);
+
     wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
     encoder.BeginRenderPass(&renderPassDescriptors[0]).End();
     wgpu::CommandBuffer commandBuffer = encoder.Finish();
@@ -205,6 +225,9 @@ TEST_P(DepthStencilLoadOpTests, ClearMip1) {
 
 // Clear first mip then the second mip.  Check both mip levels.
 TEST_P(DepthStencilLoadOpTests, ClearBothMip0Then1) {
+    // TODO(crbug.com/dawn/1828): depth16unorm broken on Apple GPUs.
+    DAWN_SUPPRESS_TEST_IF(IsApple() && GetParam().mFormat == wgpu::TextureFormat::Depth16Unorm);
+
     wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
     encoder.BeginRenderPass(&renderPassDescriptors[0]).End();
     encoder.BeginRenderPass(&renderPassDescriptors[1]).End();
@@ -217,6 +240,9 @@ TEST_P(DepthStencilLoadOpTests, ClearBothMip0Then1) {
 
 // Clear second mip then the first mip. Check both mip levels.
 TEST_P(DepthStencilLoadOpTests, ClearBothMip1Then0) {
+    // TODO(crbug.com/dawn/1828): depth16unorm broken on Apple GPUs.
+    DAWN_SUPPRESS_TEST_IF(IsApple() && GetParam().mFormat == wgpu::TextureFormat::Depth16Unorm);
+
     wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
     encoder.BeginRenderPass(&renderPassDescriptors[1]).End();
     encoder.BeginRenderPass(&renderPassDescriptors[0]).End();
@@ -231,14 +257,14 @@ namespace {
 
 auto GenerateParam() {
     auto params1 = MakeParamGenerator<DepthStencilLoadOpTestParams>(
-        {D3D12Backend(), D3D12Backend({}, {"use_d3d12_render_pass"}), MetalBackend(),
-         OpenGLBackend(), OpenGLESBackend(), VulkanBackend()},
+        {D3D11Backend(), D3D12Backend(), D3D12Backend({}, {"use_d3d12_render_pass"}),
+         MetalBackend(), OpenGLBackend(), OpenGLESBackend(), VulkanBackend()},
         {wgpu::TextureFormat::Depth32Float, wgpu::TextureFormat::Depth16Unorm},
         {Check::CopyDepth, Check::DepthTest, Check::SampleDepth});
 
     auto params2 = MakeParamGenerator<DepthStencilLoadOpTestParams>(
-        {D3D12Backend(), D3D12Backend({}, {"use_d3d12_render_pass"}), MetalBackend(),
-         MetalBackend({"metal_use_combined_depth_stencil_format_for_stencil8"}),
+        {D3D11Backend(), D3D12Backend(), D3D12Backend({}, {"use_d3d12_render_pass"}),
+         MetalBackend(), MetalBackend({"metal_use_combined_depth_stencil_format_for_stencil8"}),
          MetalBackend(
              {"metal_use_both_depth_and_stencil_attachments_for_combined_depth_stencil_formats"}),
          OpenGLBackend(), OpenGLESBackend(), VulkanBackend()},
@@ -294,8 +320,9 @@ TEST_P(StencilClearValueOverflowTest, StencilClearValueOverFlowUint16) {
 }
 
 DAWN_INSTANTIATE_TEST_P(StencilClearValueOverflowTest,
-                        {D3D12Backend(), D3D12Backend({}, {"use_d3d12_render_pass"}),
-                         MetalBackend(), OpenGLBackend(), OpenGLESBackend(), VulkanBackend()},
+                        {D3D11Backend(), D3D12Backend(),
+                         D3D12Backend({}, {"use_d3d12_render_pass"}), MetalBackend(),
+                         OpenGLBackend(), OpenGLESBackend(), VulkanBackend()},
                         {wgpu::TextureFormat::Depth24PlusStencil8,
                          wgpu::TextureFormat::Depth32FloatStencil8, wgpu::TextureFormat::Stencil8},
                         {Check::CopyStencil, Check::StencilTest});
@@ -412,12 +439,14 @@ TEST_P(DepthTextureClearTwiceTest, ClearDepthAspectTwice) {
 }
 
 DAWN_INSTANTIATE_TEST_P(DepthTextureClearTwiceTest,
-                        {D3D12Backend(), MetalBackend(), OpenGLBackend(), OpenGLESBackend(),
-                         VulkanBackend()},
+                        {D3D11Backend(), D3D11Backend({"use_packed_depth24_unorm_stencil8_format"}),
+                         D3D12Backend(), D3D12Backend({"use_packed_depth24_unorm_stencil8_format"}),
+                         MetalBackend(), OpenGLBackend(), OpenGLESBackend(), VulkanBackend()},
                         {wgpu::TextureFormat::Depth16Unorm, wgpu::TextureFormat::Depth24Plus,
                          wgpu::TextureFormat::Depth32Float,
                          wgpu::TextureFormat::Depth32FloatStencil8,
                          wgpu::TextureFormat::Depth24PlusStencil8},
                         {true, false});
 
-}  // namespace
+}  // anonymous namespace
+}  // namespace dawn

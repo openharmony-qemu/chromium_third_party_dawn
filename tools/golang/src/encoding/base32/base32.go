@@ -25,27 +25,43 @@ type Encoding struct {
 }
 
 const (
-	StdPadding rune = '=' // Standard padding character
-	NoPadding  rune = -1  // No padding
+	StdPadding          rune = '=' // Standard padding character
+	NoPadding           rune = -1  // No padding
+	decodeMapInitialize      = "" +
+		"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" +
+		"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" +
+		"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" +
+		"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" +
+		"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" +
+		"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" +
+		"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" +
+		"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" +
+		"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" +
+		"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" +
+		"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" +
+		"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" +
+		"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" +
+		"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" +
+		"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff" +
+		"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff"
 )
 
 const encodeStd = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 const encodeHex = "0123456789ABCDEFGHIJKLMNOPQRSTUV"
 
 // NewEncoding returns a new Encoding defined by the given alphabet,
-// which must be a 32-byte string.
+// which must be a 32-byte string. The alphabet is treated as sequence
+// of byte values without any special treatment for multi-byte UTF-8.
 func NewEncoding(encoder string) *Encoding {
 	if len(encoder) != 32 {
 		panic("encoding alphabet is not 32-bytes long")
 	}
 
 	e := new(Encoding)
-	copy(e.encode[:], encoder)
 	e.padChar = StdPadding
+	copy(e.encode[:], encoder)
+	copy(e.decodeMap[:], decodeMapInitialize)
 
-	for i := 0; i < len(e.decodeMap); i++ {
-		e.decodeMap[i] = 0xFF
-	}
 	for i := 0; i < len(encoder); i++ {
 		e.decodeMap[encoder[i]] = byte(i)
 	}
@@ -56,7 +72,7 @@ func NewEncoding(encoder string) *Encoding {
 // RFC 4648.
 var StdEncoding = NewEncoding(encodeStd)
 
-// HexEncoding is the ``Extended Hex Alphabet'' defined in RFC 4648.
+// HexEncoding is the “Extended Hex Alphabet” defined in RFC 4648.
 // It is typically used in DNS.
 var HexEncoding = NewEncoding(encodeHex)
 
@@ -65,6 +81,8 @@ var HexEncoding = NewEncoding(encodeHex)
 // The padding character must not be '\r' or '\n', must not
 // be contained in the encoding's alphabet and must be a rune equal or
 // below '\xff'.
+// Padding characters above '\x7f' are encoded as their exact byte value
+// rather than using the UTF-8 representation of the codepoint.
 func (enc Encoding) WithPadding(padding rune) *Encoding {
 	if padding == '\r' || padding == '\n' || padding > 0xff {
 		panic("invalid padding")
@@ -444,6 +462,9 @@ func (d *decoder) Read(p []byte) (n int, err error) {
 	d.nbuf += nn
 	if d.nbuf < min {
 		return 0, d.err
+	}
+	if nn > 0 && d.end {
+		return 0, CorruptInputError(0)
 	}
 
 	// Decode chunk into p, or d.out and then p if p is too small.

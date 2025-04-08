@@ -1,19 +1,17 @@
 #version 310 es
 
+
+struct tint_symbol {
+  int tint_symbol_1;
+};
+
+layout(binding = 0, std430)
+buffer s_block_1_ssbo {
+  int inner;
+} v;
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
-void unused_entry_point() {
-  return;
+void main() {
+  tint_symbol c = tint_symbol(0);
+  int d = c.tint_symbol_1;
+  v.inner = (c.tint_symbol_1 + d);
 }
-struct a {
-  int b;
-};
-
-struct a__ {
-  int b__;
-};
-
-void f() {
-  a__ c = a__(0);
-  int d = c.b__;
-}
-

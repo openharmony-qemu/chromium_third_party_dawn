@@ -1,23 +1,39 @@
-// Copyright 2023 The Dawn Authors
+// Copyright 2023 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/native/d3d/SwapChainD3D.h"
 
+#if defined(DAWN_USE_WINDOWS_UI)
 #include <windows.ui.xaml.media.dxinterop.h>
+#endif  // defined(DAWN_USE_WINDOWS_UI)
 
 #include <utility>
 
+#include "dawn/native/BlitTextureToBuffer.h"
 #include "dawn/native/Surface.h"
 #include "dawn/native/d3d/D3DError.h"
 #include "dawn/native/d3d/DeviceD3D.h"
@@ -34,7 +50,10 @@ uint32_t PresentModeToBufferCount(wgpu::PresentMode mode) {
             return 2;
         case wgpu::PresentMode::Mailbox:
             return 3;
+        default:
+            break;
     }
+    DAWN_UNREACHABLE();
 }
 
 uint32_t PresentModeToSwapInterval(wgpu::PresentMode mode) {
@@ -44,7 +63,10 @@ uint32_t PresentModeToSwapInterval(wgpu::PresentMode mode) {
             return 0;
         case wgpu::PresentMode::Fifo:
             return 1;
+        default:
+            break;
     }
+    DAWN_UNREACHABLE();
 }
 
 UINT PresentModeToSwapChainFlags(wgpu::PresentMode mode) {
@@ -57,11 +79,17 @@ UINT PresentModeToSwapChainFlags(wgpu::PresentMode mode) {
     return flags;
 }
 
-DXGI_USAGE ToDXGIUsage(wgpu::TextureUsage usage) {
+DXGI_USAGE ToDXGIUsage(DeviceBase* device, wgpu::TextureFormat format, wgpu::TextureUsage usage) {
     DXGI_USAGE dxgiUsage = DXGI_CPU_ACCESS_NONE;
     if (usage & wgpu::TextureUsage::TextureBinding) {
         dxgiUsage |= DXGI_USAGE_SHADER_INPUT;
     }
+
+    if (usage & wgpu::TextureUsage::CopySrc && device->IsToggleEnabled(Toggle::UseBlitForT2B) &&
+        IsFormatSupportedByTextureToBufferBlit(format)) {
+        dxgiUsage |= DXGI_USAGE_SHADER_INPUT;
+    }
+
     if (usage & wgpu::TextureUsage::StorageBinding) {
         dxgiUsage |= DXGI_USAGE_UNORDERED_ACCESS;
     }
@@ -75,22 +103,17 @@ DXGI_USAGE ToDXGIUsage(wgpu::TextureUsage usage) {
 
 SwapChain::~SwapChain() = default;
 
-void SwapChain::DestroyImpl() {
-    SwapChainBase::DestroyImpl();
-    DetachFromSurface();
-}
-
 // Initializes the swapchain on the surface. Note that `previousSwapChain` may or may not be
 // nullptr. If it is not nullptr it means that it is the swapchain previously in use on the
 // surface and that we have a chance to reuse it's underlying IDXGISwapChain and "buffers".
 MaybeError SwapChain::Initialize(SwapChainBase* previousSwapChain) {
-    ASSERT(GetSurface()->GetType() == Surface::Type::WindowsHWND);
+    DAWN_ASSERT(GetSurface()->GetType() == Surface::Type::WindowsHWND);
 
     // Precompute the configuration parameters we want for the DXGI swapchain.
     mConfig.bufferCount = PresentModeToBufferCount(GetPresentMode());
-    mConfig.format = d3d::DXGITextureFormat(GetFormat());
+    mConfig.format = d3d::DXGITextureFormat(GetDevice(), GetFormat());
     mConfig.swapChainFlags = PresentModeToSwapChainFlags(GetPresentMode());
-    mConfig.usage = ToDXGIUsage(GetUsage());
+    mConfig.usage = ToDXGIUsage(GetDevice(), GetFormat(), GetUsage());
 
     // There is no previous swapchain so we can create one directly and don't have anything else
     // to do.
@@ -158,7 +181,7 @@ MaybeError SwapChain::Initialize(SwapChainBase* previousSwapChain) {
 }
 
 MaybeError SwapChain::InitializeSwapChainFromScratch() {
-    ASSERT(mDXGISwapChain == nullptr);
+    DAWN_ASSERT(mDXGISwapChain == nullptr);
 
     Device* device = ToBackend(GetDevice());
 
@@ -198,6 +221,7 @@ MaybeError SwapChain::InitializeSwapChainFromScratch() {
                 "Creating the IDXGISwapChain1"));
             break;
         }
+#if defined(DAWN_USE_WINDOWS_UI)
         case Surface::Type::WindowsSwapChainPanel: {
             DAWN_TRY(CheckHRESULT(
                 factory2->CreateSwapChainForComposition(GetD3DDeviceForCreatingSwapChain(),
@@ -211,8 +235,9 @@ MaybeError SwapChain::InitializeSwapChainFromScratch() {
                                   "Setting SwapChain"));
             break;
         }
+#endif  // defined(DAWN_USE_WINDOWS_UI)
         default:
-            UNREACHABLE();
+            DAWN_UNREACHABLE();
     }
 
     DAWN_TRY(CheckHRESULT(swapChain1.As(&mDXGISwapChain), "Gettting IDXGISwapChain1"));

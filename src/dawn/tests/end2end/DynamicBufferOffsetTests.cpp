@@ -1,16 +1,29 @@
-// Copyright 2019 The Dawn Authors
+// Copyright 2019 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <algorithm>
 #include <numeric>
@@ -21,6 +34,9 @@
 #include "dawn/tests/DawnTest.h"
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
+
+namespace dawn {
+namespace {
 
 constexpr uint32_t kRTSize = 400;
 constexpr uint32_t kBindingSize = 8;
@@ -195,7 +211,6 @@ class DynamicBufferOffsetTests : public DawnTest {
 
         wgpu::ComputePipelineDescriptor csDesc;
         csDesc.compute.module = csModule;
-        csDesc.compute.entryPoint = "main";
 
         wgpu::PipelineLayoutDescriptor pipelineLayoutDescriptor;
         if (isInheritedPipeline) {
@@ -294,8 +309,109 @@ TEST_P(DynamicBufferOffsetTests, SetDynamicOffsetsComputePipeline) {
                                mMinUniformBufferOffsetAlignment, expectedData.size());
 }
 
+// Test basic inherit on render pipeline
+TEST_P(DynamicBufferOffsetTests, BasicInheritRenderPipeline) {
+    wgpu::ShaderModule vsModule = utils::CreateShaderModule(device, R"(
+            @vertex
+            fn main(@builtin(vertex_index) VertexIndex : u32) -> @builtin(position) vec4f {
+                var pos = array(
+                    vec2f(-1.0, 0.0),
+                    vec2f(-1.0, 1.0),
+                    vec2f( 0.0, 1.0));
+                return vec4f(pos[VertexIndex], 0.0, 1.0);
+            })");
+
+    // Construct fragment shader source
+    std::ostringstream fs;
+    fs << R"(
+            struct Buf {
+                value : vec2u
+            }
+
+            @group(0) @binding(0) var<uniform> uBufferNotDynamic : Buf;
+            @group(0) @binding(1) var<storage, read_write> sBufferNotDynamic : Buf;
+            @group(1) @binding(3) var<uniform> uBuffer : Buf;
+            @group(1) @binding(4) var<storage, read_write> sBuffer : Buf;
+
+            @fragment fn main() -> @location(0) vec4f {
+                sBufferNotDynamic.value = uBufferNotDynamic.value.xy;
+                sBuffer.value = uBuffer.value.xy + uBufferNotDynamic.value.xy;
+                return vec4f(f32(uBuffer.value.x) / 255.0, f32(uBuffer.value.y) / 255.0,
+                                      1.0, 1.0);
+            }
+        )";
+
+    wgpu::ShaderModule fsModule = utils::CreateShaderModule(device, fs.str().c_str());
+
+    utils::ComboRenderPipelineDescriptor pipelineDescriptor;
+    pipelineDescriptor.vertex.module = vsModule;
+    pipelineDescriptor.cFragment.module = fsModule;
+    pipelineDescriptor.cTargets[0].format = wgpu::TextureFormat::RGBA8Unorm;
+
+    wgpu::BindGroupLayout bindGroupLayouts[2];
+    bindGroupLayouts[0] = utils::MakeBindGroupLayout(
+        device, {{0, wgpu::ShaderStage::Compute | wgpu::ShaderStage::Fragment,
+                  wgpu::BufferBindingType::Uniform},
+                 {1, wgpu::ShaderStage::Compute | wgpu::ShaderStage::Fragment,
+                  wgpu::BufferBindingType::Storage}});
+    bindGroupLayouts[1] = utils::MakeBindGroupLayout(
+        device, {{3, wgpu::ShaderStage::Compute | wgpu::ShaderStage::Fragment,
+                  wgpu::BufferBindingType::Uniform, true},
+                 {4, wgpu::ShaderStage::Compute | wgpu::ShaderStage::Fragment,
+                  wgpu::BufferBindingType::Storage, true}});
+
+    wgpu::BindGroup bindGroups[2];
+    bindGroups[0] = utils::MakeBindGroup(device, bindGroupLayouts[0],
+                                         {
+                                             {0, mUniformBuffers[0], 0, kBindingSize},
+                                             {1, mStorageBuffers[0], 0, kBindingSize},
+                                         });
+    bindGroups[1] = utils::MakeBindGroup(
+        device, bindGroupLayouts[1],
+        {{3, mUniformBuffers[1], 0, kBindingSize}, {4, mStorageBuffers[1], 0, kBindingSize}});
+
+    wgpu::PipelineLayoutDescriptor pipelineLayoutDescriptor;
+    pipelineLayoutDescriptor.bindGroupLayoutCount = 2;
+    pipelineLayoutDescriptor.bindGroupLayouts = bindGroupLayouts;
+    pipelineDescriptor.layout = device.CreatePipelineLayout(&pipelineLayoutDescriptor);
+
+    wgpu::RenderPipeline pipeline0 = device.CreateRenderPipeline(&pipelineDescriptor);
+    wgpu::RenderPipeline pipeline1 = device.CreateRenderPipeline(&pipelineDescriptor);
+
+    utils::BasicRenderPass renderPass = utils::CreateBasicRenderPass(device, kRTSize, kRTSize);
+
+    wgpu::CommandEncoder commandEncoder = device.CreateCommandEncoder();
+    std::array<uint32_t, 2> offsets0 = {0, 0};
+    std::array<uint32_t, 2> offsets1 = {mMinUniformBufferOffsetAlignment,
+                                        mMinUniformBufferOffsetAlignment};
+    wgpu::RenderPassEncoder renderPassEncoder =
+        commandEncoder.BeginRenderPass(&renderPass.renderPassInfo);
+    renderPassEncoder.SetPipeline(pipeline0);
+    renderPassEncoder.SetBindGroup(0, bindGroups[0]);
+    renderPassEncoder.SetBindGroup(1, bindGroups[1], offsets0.size(), offsets0.data());
+    renderPassEncoder.Draw(3);
+    renderPassEncoder.SetPipeline(pipeline1);
+    // bind group 0 should be inherited and still available.
+    renderPassEncoder.SetBindGroup(1, bindGroups[1], offsets1.size(), offsets1.data());
+    renderPassEncoder.Draw(3);
+    renderPassEncoder.End();
+    wgpu::CommandBuffer commands = commandEncoder.Finish();
+    queue.Submit(1, &commands);
+
+    std::vector<uint32_t> expectedData = {6, 8};
+    EXPECT_PIXEL_RGBA8_EQ(utils::RGBA8(5, 6, 255, 255), renderPass.color, 0, 0);
+    EXPECT_BUFFER_U32_RANGE_EQ(expectedData.data(), mStorageBuffers[1],
+                               mMinUniformBufferOffsetAlignment, expectedData.size());
+}
+
 // Test inherit dynamic offsets on render pipeline
 TEST_P(DynamicBufferOffsetTests, InheritDynamicOffsetsRenderPipeline) {
+    // TODO(crbug.com/1497726): Remove when test is no longer flaky on M2
+    // devices.
+    DAWN_SUPPRESS_TEST_IF(IsApple());
+    // TODO(crbug.com/40287156): Remove when test is no longer flaky on Pixel 6
+    DAWN_SUPPRESS_TEST_IF(IsVulkan() && IsAndroid() && IsARM());
+
     // Using default pipeline and setting dynamic offsets
     wgpu::RenderPipeline pipeline = CreateRenderPipeline();
     wgpu::RenderPipeline testPipeline = CreateRenderPipeline(true);
@@ -324,11 +440,7 @@ TEST_P(DynamicBufferOffsetTests, InheritDynamicOffsetsRenderPipeline) {
 }
 
 // Test inherit dynamic offsets on compute pipeline
-// TODO(shaobo.yan@intel.com) : Try this test on GTX1080 and cannot reproduce the failure.
-// Suspect it is due to dawn doesn't handle sync between two dispatch and disable this case.
-// Will double check root cause after got GTX1660.
 TEST_P(DynamicBufferOffsetTests, InheritDynamicOffsetsComputePipeline) {
-    DAWN_SUPPRESS_TEST_IF(IsWindows());
     wgpu::ComputePipeline pipeline = CreateComputePipeline();
     wgpu::ComputePipeline testPipeline = CreateComputePipeline(true);
 
@@ -430,7 +542,7 @@ TEST_P(ClampedOOBDynamicBufferOffsetTests, CheckOOBAccess) {
             sourceBindingType = wgpu::BufferBindingType::ReadOnlyStorage;
             break;
         default:
-            UNREACHABLE();
+            DAWN_UNREACHABLE();
     }
     wgpu::BindGroupLayout bgl = utils::MakeBindGroupLayout(
         device, {{0, wgpu::ShaderStage::Compute, sourceBindingType, true},
@@ -470,7 +582,7 @@ TEST_P(ClampedOOBDynamicBufferOffsetTests, CheckOOBAccess) {
                 )";
                 break;
             default:
-                UNREACHABLE();
+                DAWN_UNREACHABLE();
         }
 
         shader << R"(
@@ -489,7 +601,6 @@ TEST_P(ClampedOOBDynamicBufferOffsetTests, CheckOOBAccess) {
         wgpu::ComputePipelineDescriptor pipelineDesc;
         pipelineDesc.layout = layout;
         pipelineDesc.compute.module = utils::CreateShaderModule(device, shader.str().c_str());
-        pipelineDesc.compute.entryPoint = "main";
         pipeline = device.CreateComputePipeline(&pipelineDesc);
     }
 
@@ -524,7 +635,7 @@ TEST_P(ClampedOOBDynamicBufferOffsetTests, CheckOOBAccess) {
             srcBufferByteOffset = storageBufferOffset;
             break;
         default:
-            UNREACHABLE();
+            DAWN_UNREACHABLE();
     }
 
     std::vector<uint32_t> srcData(srcBufferSize / sizeof(uint32_t));
@@ -573,7 +684,9 @@ TEST_P(ClampedOOBDynamicBufferOffsetTests, CheckOOBAccess) {
 }
 
 DAWN_INSTANTIATE_TEST(DynamicBufferOffsetTests,
+                      D3D11Backend(),
                       D3D12Backend(),
+                      D3D12Backend({}, {"d3d12_use_root_signature_version_1_1"}),
                       MetalBackend(),
                       OpenGLBackend(),
                       OpenGLESBackend(),
@@ -582,7 +695,11 @@ DAWN_INSTANTIATE_TEST(DynamicBufferOffsetTests,
 // Only instantiate on D3D12 / Metal where we are sure of the robustness implementation.
 // Tint injects clamping in the shader. OpenGL(ES) / Vulkan robustness is less constrained.
 DAWN_INSTANTIATE_TEST_P(ClampedOOBDynamicBufferOffsetTests,
-                        {D3D12Backend(), MetalBackend()},
+                        {D3D12Backend(), D3D12Backend({}, {"d3d12_use_root_signature_version_1_1"}),
+                         MetalBackend()},
                         {wgpu::BufferUsage::Uniform, wgpu::BufferUsage::Storage},
                         {false, true},
                         {false, true});
+
+}  // anonymous namespace
+}  // namespace dawn

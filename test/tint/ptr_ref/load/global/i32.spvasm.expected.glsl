@@ -2,17 +2,9 @@
 
 int I = 0;
 void main_1() {
-  int x_9 = I;
-  int x_11 = (x_9 + 1);
-  return;
+  int x_11 = (I + 1);
 }
-
-void tint_symbol() {
-  main_1();
-}
-
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 void main() {
-  tint_symbol();
-  return;
+  main_1();
 }

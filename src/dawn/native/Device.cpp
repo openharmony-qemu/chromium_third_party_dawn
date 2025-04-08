@@ -1,27 +1,45 @@
-// Copyright 2017 The Dawn Authors
+// Copyright 2017 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "dawn/native/Device.h"
+
+#include <webgpu/webgpu.h>
 
 #include <algorithm>
 #include <array>
 #include <mutex>
-#include <unordered_set>
+#include <utility>
 
+#include "absl/container/flat_hash_set.h"
+#include "absl/strings/str_format.h"
 #include "dawn/common/Log.h"
+#include "dawn/common/Ref.h"
+#include "dawn/common/StringViewUtils.h"
 #include "dawn/common/Version_autogen.h"
-#include "dawn/native/Adapter.h"
 #include "dawn/native/AsyncTask.h"
 #include "dawn/native/AttachmentState.h"
 #include "dawn/native/BindGroup.h"
@@ -29,12 +47,14 @@
 #include "dawn/native/BlitBufferToDepthStencil.h"
 #include "dawn/native/BlobCache.h"
 #include "dawn/native/Buffer.h"
-#include "dawn/native/ChainUtils_autogen.h"
+#include "dawn/native/ChainUtils.h"
 #include "dawn/native/CommandBuffer.h"
 #include "dawn/native/CommandEncoder.h"
 #include "dawn/native/CompilationMessages.h"
-#include "dawn/native/CreatePipelineAsyncTask.h"
+#include "dawn/native/CreatePipelineAsyncEvent.h"
+#include "dawn/native/DawnNative.h"
 #include "dawn/native/DynamicUploader.h"
+#include "dawn/native/Error.h"
 #include "dawn/native/ErrorData.h"
 #include "dawn/native/ErrorInjector.h"
 #include "dawn/native/ErrorScope.h"
@@ -42,43 +62,33 @@
 #include "dawn/native/Instance.h"
 #include "dawn/native/InternalPipelineStore.h"
 #include "dawn/native/ObjectType_autogen.h"
+#include "dawn/native/PhysicalDevice.h"
 #include "dawn/native/PipelineCache.h"
 #include "dawn/native/QuerySet.h"
 #include "dawn/native/Queue.h"
 #include "dawn/native/RenderBundleEncoder.h"
 #include "dawn/native/RenderPipeline.h"
 #include "dawn/native/Sampler.h"
+#include "dawn/native/SharedBufferMemory.h"
+#include "dawn/native/SharedFence.h"
+#include "dawn/native/SharedTextureMemory.h"
 #include "dawn/native/Surface.h"
 #include "dawn/native/SwapChain.h"
 #include "dawn/native/Texture.h"
 #include "dawn/native/ValidationUtils_autogen.h"
 #include "dawn/native/utils/WGPUHelpers.h"
 #include "dawn/platform/DawnPlatform.h"
+#include "dawn/platform/metrics/HistogramMacros.h"
 #include "dawn/platform/tracing/TraceEvent.h"
+#include "partition_alloc/pointers/raw_ptr.h"
 
 namespace dawn::native {
 
 // DeviceBase sub-structures
 
-// The caches are unordered_sets of pointers with special hash and compare functions
-// to compare the value of the objects, instead of the pointers.
-template <typename Object>
-using ContentLessObjectCache =
-    std::unordered_set<Object*, typename Object::HashFunc, typename Object::EqualityFunc>;
-
 struct DeviceBase::Caches {
-    ~Caches() {
-        ASSERT(attachmentStates.empty());
-        ASSERT(bindGroupLayouts.empty());
-        ASSERT(computePipelines.empty());
-        ASSERT(pipelineLayouts.empty());
-        ASSERT(renderPipelines.empty());
-        ASSERT(samplers.empty());
-        ASSERT(shaderModules.empty());
-    }
-
-    ContentLessObjectCache<AttachmentStateBlueprint> attachmentStates;
-    ContentLessObjectCache<BindGroupLayoutBase> bindGroupLayouts;
+    ContentLessObjectCache<AttachmentState> attachmentStates;
+    ContentLessObjectCache<BindGroupLayoutInternalBase> bindGroupLayouts;
     ContentLessObjectCache<ComputePipelineBase> computePipelines;
     ContentLessObjectCache<PipelineLayoutBase> pipelineLayouts;
     ContentLessObjectCache<RenderPipelineBase> renderPipelines;
@@ -86,12 +96,43 @@ struct DeviceBase::Caches {
     ContentLessObjectCache<ShaderModuleBase> shaderModules;
 };
 
-struct DeviceBase::DeprecationWarnings {
-    std::unordered_set<std::string> emitted;
-    size_t count = 0;
-};
+// Tries to find an object in the cache, creating and inserting into the cache if not found.
+template <typename RefCountedT, typename CreateFn>
+auto GetOrCreate(ContentLessObjectCache<RefCountedT>& cache,
+                 RefCountedT* blueprint,
+                 CreateFn createFn) {
+    using ReturnType = decltype(createFn());
+
+    // If we find the blueprint in the cache we can just return it.
+    Ref<RefCountedT> result = cache.Find(blueprint);
+    if (result != nullptr) {
+        return ReturnType(result);
+    }
+
+    using UnwrappedReturnType = typename detail::UnwrapResultOrError<ReturnType>::type;
+    static_assert(std::is_same_v<UnwrappedReturnType, Ref<RefCountedT>>,
+                  "CreateFn should return an unwrapped type that is the same as Ref<RefCountedT>.");
+
+    // Create the result and try inserting it. Note that inserts can race because the critical
+    // sections here is disjoint, hence the checks to verify whether this thread inserted.
+    if constexpr (!detail::IsResultOrError<ReturnType>::value) {
+        result = createFn();
+    } else {
+        auto resultOrError = createFn();
+        if (DAWN_UNLIKELY(resultOrError.IsError())) {
+            return ReturnType(std::move(resultOrError.AcquireError()));
+        }
+        result = resultOrError.AcquireSuccess();
+    }
+    DAWN_ASSERT(result.Get() != nullptr);
+
+    bool inserted = false;
+    std::tie(result, inserted) = cache.Insert(result.Get());
+    return ReturnType(result);
+}
 
 namespace {
+
 struct LoggingCallbackTask : CallbackTask {
   public:
     LoggingCallbackTask() = delete;
@@ -108,14 +149,16 @@ struct LoggingCallbackTask : CallbackTask {
     }
 
   private:
-    void FinishImpl() override { mCallback(mLoggingType, mMessage.c_str(), mUserdata); }
+    void FinishImpl() override { mCallback(mLoggingType, ToOutputStringView(mMessage), mUserdata); }
 
     void HandleShutDownImpl() override {
         // Do the logging anyway
-        mCallback(mLoggingType, mMessage.c_str(), mUserdata);
+        mCallback(mLoggingType, ToOutputStringView(mMessage), mUserdata);
     }
 
-    void HandleDeviceLossImpl() override { mCallback(mLoggingType, mMessage.c_str(), mUserdata); }
+    void HandleDeviceLossImpl() override {
+        mCallback(mLoggingType, ToOutputStringView(mMessage), mUserdata);
+    }
 
     // As all deferred callback tasks will be triggered before modifying the registered
     // callback or shutting down, we are ensured that callback function and userdata pointer
@@ -123,9 +166,132 @@ struct LoggingCallbackTask : CallbackTask {
     wgpu::LoggingCallback mCallback;
     WGPULoggingType mLoggingType;
     std::string mMessage;
-    void* mUserdata;
+    raw_ptr<void> mUserdata;
 };
+
+void LegacyDeviceLostCallback(WGPUDevice const* device,
+                              WGPUDeviceLostReason reason,
+                              WGPUStringView message,
+                              void* callback,
+                              void* userdata) {
+    if (callback == nullptr) {
+        return;
+    }
+    auto cb = reinterpret_cast<WGPUDeviceLostCallback>(callback);
+    cb(reason, message, userdata);
+}
+
+void LegacyDeviceLostCallback2(WGPUDevice const* device,
+                               WGPUDeviceLostReason reason,
+                               WGPUStringView message,
+                               void* callback,
+                               void* userdata) {
+    if (callback == nullptr) {
+        return;
+    }
+    auto cb = reinterpret_cast<WGPUDeviceLostCallbackNew>(callback);
+    cb(device, reason, message, userdata);
+}
+
+void LegacyUncapturedErrorCallback(WGPUDevice const* device,
+                                   WGPUErrorType type,
+                                   WGPUStringView message,
+                                   void* callback,
+                                   void* userdata) {
+    if (callback == nullptr) {
+        return;
+    }
+    auto cb = reinterpret_cast<WGPUErrorCallback>(callback);
+    cb(type, message, userdata);
+}
+
+static constexpr WGPUUncapturedErrorCallbackInfo2 kEmptyUncapturedErrorCallbackInfo = {
+    nullptr, nullptr, nullptr, nullptr};
+
 }  // anonymous namespace
+
+DeviceBase::DeviceLostEvent::DeviceLostEvent(const WGPUDeviceLostCallbackInfo2& callbackInfo)
+    : TrackedEvent(static_cast<wgpu::CallbackMode>(callbackInfo.mode),
+                   SystemEvent::CreateNonProgressingEvent()),
+      mCallback(callbackInfo.callback),
+      mUserdata1(callbackInfo.userdata1),
+      mUserdata2(callbackInfo.userdata2) {}
+
+DeviceBase::DeviceLostEvent::~DeviceLostEvent() {
+    EnsureComplete(EventCompletionType::Shutdown);
+}
+
+// static
+Ref<DeviceBase::DeviceLostEvent> DeviceBase::DeviceLostEvent::Create(
+    const DeviceDescriptor* descriptor) {
+    DAWN_ASSERT(descriptor != nullptr);
+
+#if defined(DAWN_ENABLE_ASSERTS)
+    // TODO(crbug.com/dawn/2465) Make default AllowSpontaneous once SetDeviceLostCallback is gone.
+    static constexpr WGPUDeviceLostCallbackInfo2 kDefaultDeviceLostCallbackInfo = {
+        nullptr, WGPUCallbackMode_AllowProcessEvents,
+        [](WGPUDevice const*, WGPUDeviceLostReason, WGPUStringView, void*, void*) {
+            static bool calledOnce = false;
+            if (!calledOnce) {
+                calledOnce = true;
+                dawn::WarningLog() << "No Dawn device lost callback was set. This is probably not "
+                                      "intended. If you really want to ignore device lost and "
+                                      "suppress this message, set the callback explicitly.";
+            }
+        },
+        nullptr, nullptr};
+#else
+    static constexpr WGPUDeviceLostCallbackInfo2 kDefaultDeviceLostCallbackInfo = {
+        nullptr, WGPUCallbackMode_AllowProcessEvents, nullptr, nullptr, nullptr};
+#endif  // DAWN_ENABLE_ASSERTS
+
+    WGPUDeviceLostCallbackInfo2 deviceLostCallbackInfo = kDefaultDeviceLostCallbackInfo;
+    if (descriptor->deviceLostCallbackInfo2.callback != nullptr) {
+        deviceLostCallbackInfo = descriptor->deviceLostCallbackInfo2;
+    } else if (descriptor->deviceLostCallbackInfo.callback != nullptr) {
+        auto& callbackInfo = descriptor->deviceLostCallbackInfo;
+        deviceLostCallbackInfo = {
+            ToAPI(callbackInfo.nextInChain), ToAPI(callbackInfo.mode), &LegacyDeviceLostCallback2,
+            reinterpret_cast<void*>(callbackInfo.callback), callbackInfo.userdata};
+    } else if (descriptor->deviceLostCallback != nullptr) {
+        dawn::WarningLog()
+            << "DeviceDescriptor.deviceLostCallback and DeviceDescriptor.deviceLostUserdata are "
+               "deprecated. Use DeviceDescriptor.deviceLostCallbackInfo instead.";
+        deviceLostCallbackInfo = {nullptr, WGPUCallbackMode_AllowProcessEvents,
+                                  &LegacyDeviceLostCallback,
+                                  reinterpret_cast<void*>(descriptor->deviceLostCallback),
+                                  descriptor->deviceLostUserdata};
+    }
+
+    return AcquireRef(new DeviceBase::DeviceLostEvent(deviceLostCallbackInfo));
+}
+
+void DeviceBase::DeviceLostEvent::Complete(EventCompletionType completionType) {
+    if (completionType == EventCompletionType::Shutdown) {
+        mReason = wgpu::DeviceLostReason::InstanceDropped;
+        mMessage = "A valid external Instance reference no longer exists.";
+    }
+
+    auto device = ToAPI(mDevice.Get());
+    void* userdata1 = mUserdata1.ExtractAsDangling();
+    void* userdata2 = mUserdata2.ExtractAsDangling();
+
+    if (mReason == wgpu::DeviceLostReason::InstanceDropped ||
+        mReason == wgpu::DeviceLostReason::FailedCreation) {
+        device = nullptr;
+    }
+    if (mCallback) {
+        mCallback(&device, ToAPI(mReason), ToOutputStringView(mMessage), userdata1, userdata2);
+    }
+
+    // After the device lost callback fires, the uncaptured error callback is no longer valid so we
+    // unset it here.
+    if (mDevice != nullptr) {
+        mDevice->mUncapturedErrorCallbackInfo = kEmptyUncapturedErrorCallbackInfo;
+    }
+
+    mDevice = nullptr;
+}
 
 ResultOrError<Ref<PipelineLayoutBase>> ValidateLayoutAndGetComputePipelineDescriptorWithDefaults(
     DeviceBase* device,
@@ -135,14 +301,16 @@ ResultOrError<Ref<PipelineLayoutBase>> ValidateLayoutAndGetComputePipelineDescri
     *outDescriptor = descriptor;
 
     if (outDescriptor->layout == nullptr) {
-        DAWN_TRY_ASSIGN(layoutRef, PipelineLayoutBase::CreateDefault(
-                                       device, {{
-                                                   SingleShaderStage::Compute,
-                                                   outDescriptor->compute.module,
-                                                   outDescriptor->compute.entryPoint,
-                                                   outDescriptor->compute.constantCount,
-                                                   outDescriptor->compute.constants,
-                                               }}));
+        DAWN_TRY_ASSIGN(layoutRef,
+                        PipelineLayoutBase::CreateDefault(device,
+                                                          {{
+                                                              SingleShaderStage::Compute,
+                                                              outDescriptor->compute.module,
+                                                              outDescriptor->compute.entryPoint,
+                                                              outDescriptor->compute.constantCount,
+                                                              outDescriptor->compute.constants,
+                                                          }},
+                                                          /*allowInternalBinding=*/false));
         outDescriptor->layout = layoutRef.Get();
     }
 
@@ -152,7 +320,8 @@ ResultOrError<Ref<PipelineLayoutBase>> ValidateLayoutAndGetComputePipelineDescri
 ResultOrError<Ref<PipelineLayoutBase>> ValidateLayoutAndGetRenderPipelineDescriptorWithDefaults(
     DeviceBase* device,
     const RenderPipelineDescriptor& descriptor,
-    RenderPipelineDescriptor* outDescriptor) {
+    RenderPipelineDescriptor* outDescriptor,
+    bool allowInternalBinding) {
     Ref<PipelineLayoutBase> layoutRef;
     *outDescriptor = descriptor;
 
@@ -161,7 +330,8 @@ ResultOrError<Ref<PipelineLayoutBase>> ValidateLayoutAndGetRenderPipelineDescrip
         // the pipeline will take another reference.
         DAWN_TRY_ASSIGN(layoutRef,
                         PipelineLayoutBase::CreateDefault(
-                            device, GetRenderStagesAndSetPlaceholderShader(device, &descriptor)));
+                            device, GetRenderStagesAndSetPlaceholderShader(device, &descriptor),
+                            allowInternalBinding));
         outDescriptor->layout = layoutRef.Get();
     }
 
@@ -171,88 +341,145 @@ ResultOrError<Ref<PipelineLayoutBase>> ValidateLayoutAndGetRenderPipelineDescrip
 // DeviceBase
 
 DeviceBase::DeviceBase(AdapterBase* adapter,
-                       const DeviceDescriptor* descriptor,
-                       const TogglesState& deviceToggles)
-    : mAdapter(adapter), mToggles(deviceToggles), mNextPipelineCompatibilityToken(1) {
-    ASSERT(descriptor != nullptr);
+                       const UnpackedPtr<DeviceDescriptor>& descriptor,
+                       const TogglesState& deviceToggles,
+                       Ref<DeviceLostEvent>&& lostEvent)
+    : mLostEvent(std::move(lostEvent)),
+      mAdapter(adapter),
+      mToggles(deviceToggles),
+      mNextPipelineCompatibilityToken(1) {
+    DAWN_ASSERT(descriptor);
 
-    AdapterProperties adapterProperties;
-    adapter->APIGetProperties(&adapterProperties);
+    mLostEvent->mDevice = this;
+
+#if defined(DAWN_ENABLE_ASSERTS)
+    static constexpr WGPUUncapturedErrorCallbackInfo2 kDefaultUncapturedErrorCallbackInfo = {
+        nullptr,
+        [](WGPUDevice const*, WGPUErrorType, WGPUStringView, void*, void*) {
+            static bool calledOnce = false;
+            if (!calledOnce) {
+                calledOnce = true;
+                dawn::WarningLog() << "No Dawn device uncaptured error callback was set. This is "
+                                      "probably not intended. If you really want to ignore errors "
+                                      "and suppress this message, set the callback explicitly.";
+            }
+        },
+        nullptr, nullptr};
+#else
+    static constexpr WGPUUncapturedErrorCallbackInfo2 kDefaultUncapturedErrorCallbackInfo =
+        kEmptyUncapturedErrorCallbackInfo;
+#endif  // DAWN_ENABLE_ASSERTS
+    mUncapturedErrorCallbackInfo = kDefaultUncapturedErrorCallbackInfo;
+    if (descriptor->uncapturedErrorCallbackInfo2.callback != nullptr) {
+        mUncapturedErrorCallbackInfo = descriptor->uncapturedErrorCallbackInfo2;
+    } else if (descriptor->uncapturedErrorCallbackInfo.callback != nullptr) {
+        auto& callbackInfo = descriptor->uncapturedErrorCallbackInfo;
+        mUncapturedErrorCallbackInfo = {
+            ToAPI(callbackInfo.nextInChain), &LegacyUncapturedErrorCallback,
+            reinterpret_cast<void*>(callbackInfo.callback), callbackInfo.userdata};
+    }
+
+    AdapterInfo adapterInfo;
+    adapter->APIGetInfo(&adapterInfo);
 
     ApplyFeatures(descriptor);
 
-    DawnCacheDeviceDescriptor defaultCacheDesc = {};
-    const DawnCacheDeviceDescriptor* cacheDesc = nullptr;
-    FindInChain(descriptor->nextInChain, &cacheDesc);
-    if (cacheDesc == nullptr) {
-        cacheDesc = &defaultCacheDesc;
+    DawnCacheDeviceDescriptor cacheDesc = {};
+    const auto* cacheDescIn = descriptor.Get<DawnCacheDeviceDescriptor>();
+    if (cacheDescIn != nullptr) {
+        cacheDesc = *cacheDescIn;
     }
 
-    if (descriptor->requiredLimits != nullptr) {
-        mLimits.v1 = ReifyDefaultLimits(descriptor->requiredLimits->limits);
-    } else {
-        GetDefaultLimits(&mLimits.v1);
+    if (cacheDesc.loadDataFunction == nullptr && cacheDesc.storeDataFunction == nullptr &&
+        cacheDesc.functionUserdata == nullptr && GetPlatform()->GetCachingInterface() != nullptr) {
+        // Populate cache functions and userdata from legacy cachingInterface.
+        cacheDesc.loadDataFunction = [](const void* key, size_t keySize, void* value,
+                                        size_t valueSize, void* userdata) {
+            auto* cachingInterface = static_cast<dawn::platform::CachingInterface*>(userdata);
+            return cachingInterface->LoadData(key, keySize, value, valueSize);
+        };
+        cacheDesc.storeDataFunction = [](const void* key, size_t keySize, const void* value,
+                                         size_t valueSize, void* userdata) {
+            auto* cachingInterface = static_cast<dawn::platform::CachingInterface*>(userdata);
+            return cachingInterface->StoreData(key, keySize, value, valueSize);
+        };
+        cacheDesc.functionUserdata = GetPlatform()->GetCachingInterface();
     }
+
+    // Disable caching if the toggle is passed, or the WGSL writer is not enabled.
+    // TODO(crbug.com/dawn/1481): Shader caching currently has a dependency on the WGSL writer to
+    // generate cache keys. We can lift the dependency once we also cache frontend parsing,
+    // transformations, and reflection.
+#if TINT_BUILD_WGSL_WRITER
+    if (IsToggleEnabled(Toggle::DisableBlobCache)) {
+#else
+    {
+#endif
+        cacheDesc.loadDataFunction = nullptr;
+        cacheDesc.storeDataFunction = nullptr;
+        cacheDesc.functionUserdata = nullptr;
+    }
+    mBlobCache = std::make_unique<BlobCache>(cacheDesc);
+
+    if (descriptor->requiredLimits != nullptr) {
+        mLimits.v1 =
+            ReifyDefaultLimits(descriptor->requiredLimits->limits, adapter->GetFeatureLevel());
+    } else {
+        GetDefaultLimits(&mLimits.v1, adapter->GetFeatureLevel());
+    }
+    // Get experimentalSubgroupLimits from physical device
+    mLimits.experimentalSubgroupLimits =
+        GetPhysicalDevice()->GetLimits().experimentalSubgroupLimits;
+
+    // Get experimentalImmediateDataRangeByteSizeLimit from physical device
+    mLimits.experimentalImmediateDataLimits =
+        GetPhysicalDevice()->GetLimits().experimentalImmediateDataLimits;
 
     mFormatTable = BuildFormatTable(this);
 
-    if (descriptor->label != nullptr && strlen(descriptor->label) != 0) {
-        mLabel = descriptor->label;
+    if (!descriptor->label.IsUndefined()) {
+        mLabel = std::string(descriptor->label);
     }
 
-    // Record the cache key from the properties. Note that currently, if a new extension
+    mIsImmediateErrorHandlingEnabled = IsToggleEnabled(Toggle::EnableImmediateErrorHandling);
+
+    // Record the cache key from the adapter info. Note that currently, if a new extension
     // descriptor is added (and probably handled here), the cache key recording needs to be
     // updated.
-    StreamIn(&mDeviceCacheKey, kDawnVersion, adapterProperties, mEnabledFeatures.featuresBitSet,
-             mToggles, cacheDesc);
+    StreamIn(&mDeviceCacheKey, kDawnVersion, adapterInfo, mEnabledFeatures.featuresBitSet, mToggles,
+             cacheDesc);
 }
 
 DeviceBase::DeviceBase() : mState(State::Alive), mToggles(ToggleStage::Device) {
-    GetDefaultLimits(&mLimits.v1);
+    GetDefaultLimits(&mLimits.v1, FeatureLevel::Core);
     mFormatTable = BuildFormatTable(this);
+
+    DeviceDescriptor desc = {};
+    desc.deviceLostCallbackInfo2 = {nullptr, WGPUCallbackMode_AllowSpontaneous, nullptr, nullptr,
+                                    nullptr};
+    mLostEvent = DeviceLostEvent::Create(&desc);
+    mLostEvent->mDevice = this;
 }
 
 DeviceBase::~DeviceBase() {
     // We need to explicitly release the Queue before we complete the destructor so that the
     // Queue does not get destroyed after the Device.
     mQueue = nullptr;
+    mLostEvent = nullptr;
 }
 
 MaybeError DeviceBase::Initialize(Ref<QueueBase> defaultQueue) {
-    SetWGSLExtensionAllowList();
-
     mQueue = std::move(defaultQueue);
 
-#if defined(DAWN_ENABLE_ASSERTS)
-    mUncapturedErrorCallback = [](WGPUErrorType, char const*, void*) {
-        static bool calledOnce = false;
-        if (!calledOnce) {
-            calledOnce = true;
-            dawn::WarningLog() << "No Dawn device uncaptured error callback was set. This is "
-                                  "probably not intended. If you really want to ignore errors "
-                                  "and suppress this message, set the callback to null.";
-        }
-    };
-
-    mDeviceLostCallback = [](WGPUDeviceLostReason, char const*, void*) {
-        static bool calledOnce = false;
-        if (!calledOnce) {
-            calledOnce = true;
-            dawn::WarningLog() << "No Dawn device lost callback was set. This is probably not "
-                                  "intended. If you really want to ignore device lost "
-                                  "and suppress this message, set the callback to null.";
-        }
-    };
-#endif  // DAWN_ENABLE_ASSERTS
+    SetWGSLExtensionAllowList();
 
     mCaches = std::make_unique<DeviceBase::Caches>();
     mErrorScopeStack = std::make_unique<ErrorScopeStack>();
     mDynamicUploader = std::make_unique<DynamicUploader>(this);
     mCallbackTaskManager = AcquireRef(new CallbackTaskManager());
-    mDeprecationWarnings = std::make_unique<DeprecationWarnings>();
     mInternalPipelineStore = std::make_unique<InternalPipelineStore>(this);
 
-    ASSERT(GetPlatform() != nullptr);
+    DAWN_ASSERT(GetPlatform() != nullptr);
     mWorkerTaskPool = GetPlatform()->CreateWorkerTaskPool();
     mAsyncTaskManager = std::make_unique<AsyncTaskManager>(mWorkerTaskPool.get());
 
@@ -261,6 +488,7 @@ MaybeError DeviceBase::Initialize(Ref<QueueBase> defaultQueue) {
     mState = State::Alive;
 
     DAWN_TRY_ASSIGN(mEmptyBindGroupLayout, CreateEmptyBindGroupLayout());
+    DAWN_TRY_ASSIGN(mEmptyPipelineLayout, CreateEmptyPipelineLayout());
 
     // If placeholder fragment shader module is needed, initialize it
     if (IsToggleEnabled(Toggle::UsePlaceholderFragmentInVertexOnlyPipeline)) {
@@ -269,8 +497,8 @@ MaybeError DeviceBase::Initialize(Ref<QueueBase> defaultQueue) {
                 @fragment fn fs_empty_main() {}
             )";
         ShaderModuleDescriptor descriptor;
-        ShaderModuleWGSLDescriptor wgslDesc;
-        wgslDesc.source = kEmptyFragmentShader;
+        ShaderSourceWGSL wgslDesc;
+        wgslDesc.code = kEmptyFragmentShader;
         descriptor.nextInChain = &wgslDesc;
 
         DAWN_TRY_ASSIGN(mInternalPipelineStore->placeholderFragmentShader,
@@ -283,11 +511,7 @@ MaybeError DeviceBase::Initialize(Ref<QueueBase> defaultQueue) {
         mMutex = nullptr;
     }
 
-    // mAdapter is not set for mock test devices.
-    // TODO(crbug.com/dawn/1702): using a mock adapter could avoid the null checking.
-    if (mAdapter != nullptr) {
-        mAdapter->GetInstance()->AddDevice(this);
-    }
+    mAdapter->GetInstance()->AddDevice(this);
 
     return {};
 }
@@ -325,31 +549,19 @@ void DeviceBase::WillDropLastExternalRef() {
     } while (!mCallbackTaskManager->IsEmpty());
 
     auto deviceLock(GetScopedLock());
-    // Drop te device's reference to the queue. Because the application dropped the last external
+    // Drop the device's reference to the queue. Because the application dropped the last external
     // references, they can no longer get the queue from APIGetQueue().
     mQueue = nullptr;
 
-    // Reset callbacks since after this, since after dropping the last external reference, the
-    // application may have freed any device-scope memory needed to run the callback.
-    mUncapturedErrorCallback = [](WGPUErrorType, char const* message, void*) {
-        dawn::WarningLog() << "Uncaptured error after last external device reference dropped.\n"
-                           << message;
-    };
+    // Reset callbacks since after dropping the last external reference, the application may have
+    // freed any device-scope memory needed to run the callback.
+    mUncapturedErrorCallbackInfo = kEmptyUncapturedErrorCallbackInfo;
 
-    mDeviceLostCallback = [](WGPUDeviceLostReason, char const* message, void*) {
-        dawn::WarningLog() << "Device lost after last external device reference dropped.\n"
-                           << message;
-    };
+    mAdapter->GetInstance()->RemoveDevice(this);
 
-    // mAdapter is not set for mock test devices.
-    // TODO(crbug.com/dawn/1702): using a mock adapter could avoid the null checking.
-    if (mAdapter != nullptr) {
-        mAdapter->GetInstance()->RemoveDevice(this);
-
-        // Once last external ref dropped, all callbacks should be forwarded to Instance's callback
-        // queue instead.
-        mCallbackTaskManager = mAdapter->GetInstance()->GetCallbackTaskManager();
-    }
+    // Once last external ref dropped, all callbacks should be forwarded to Instance's callback
+    // queue instead.
+    mCallbackTaskManager = mAdapter->GetInstance()->GetCallbackTaskManager();
 }
 
 void DeviceBase::DestroyObjects() {
@@ -365,7 +577,7 @@ void DeviceBase::DestroyObjects() {
     // can destroy the frontend cache.
 
     // clang-format off
-        static constexpr std::array<ObjectType, 18> kObjectTypeDependencyOrder = {
+        static constexpr std::array<ObjectType, 20> kObjectTypeDependencyOrder = {
             ObjectType::ComputePassEncoder,
             ObjectType::RenderPassEncoder,
             ObjectType::RenderBundleEncoder,
@@ -375,10 +587,11 @@ void DeviceBase::DestroyObjects() {
             ObjectType::RenderPipeline,
             ObjectType::ComputePipeline,
             ObjectType::PipelineLayout,
-            ObjectType::SwapChain,
             ObjectType::BindGroup,
             ObjectType::BindGroupLayout,
             ObjectType::ShaderModule,
+            ObjectType::SharedTextureMemory,
+            ObjectType::SharedFence,
             ObjectType::ExternalTexture,
             ObjectType::Texture,  // Note that Textures own the TextureViews.
             ObjectType::QuerySet,
@@ -402,7 +615,7 @@ void DeviceBase::Destroy() {
     // inside which the application may destroy the device. Thus, we should be careful not
     // to delete objects that are needed inside Tick after callbacks have been called.
     //  - mCallbackTaskManager is not deleted since we flush the callback queue at the end
-    // of Tick(). Note: that flush should always be emtpy since all callbacks are drained
+    // of Tick(). Note: that flush should always be empty since all callbacks are drained
     // inside Destroy() so there should be no outstanding tasks holding objects alive.
     //  - Similiarly, mAsyncTaskManager is not deleted since we use it to return a status
     // from Tick() whether or not there is any more pending work.
@@ -410,11 +623,11 @@ void DeviceBase::Destroy() {
     // Skip handling device facilities if they haven't even been created (or failed doing so)
     if (mState != State::BeingCreated) {
         // The device is being destroyed so it will be lost, call the application callback.
-        if (mDeviceLostCallback != nullptr) {
-            mCallbackTaskManager->AddCallbackTask(
-                std::bind(mDeviceLostCallback, WGPUDeviceLostReason_Destroyed,
-                          "Device was destroyed.", mDeviceLostUserdata));
-            mDeviceLostCallback = nullptr;
+        if (mLostEvent != nullptr) {
+            mLostEvent->mReason = wgpu::DeviceLostReason::Destroyed;
+            mLostEvent->mMessage = "Device was destroyed.";
+            GetInstance()->GetEventManager()->SetFutureReady(mLostEvent.Get());
+            mLostEvent = nullptr;
         }
 
         // Call all the callbacks immediately as the device is about to shut down.
@@ -433,15 +646,15 @@ void DeviceBase::Destroy() {
             // Alive is the only state which can have GPU work happening. Wait for all of it to
             // complete before proceeding with destruction.
             // Ignore errors so that we can continue with destruction
-            IgnoreErrors(WaitForIdleForDestruction());
-            AssumeCommandsComplete();
+            IgnoreErrors(mQueue->WaitForIdleForDestruction());
+            mQueue->AssumeCommandsComplete();
             break;
 
         case State::BeingDisconnected:
             // Getting disconnected is a transient state happening in a single API call so there
             // is always an external reference keeping the Device alive, which means the
             // destructor cannot run while BeingDisconnected.
-            UNREACHABLE();
+            DAWN_UNREACHABLE();
             break;
 
         case State::Disconnected:
@@ -449,18 +662,19 @@ void DeviceBase::Destroy() {
 
         case State::Destroyed:
             // If we are already destroyed we should've skipped this work entirely.
-            UNREACHABLE();
+            DAWN_UNREACHABLE();
             break;
     }
-    ASSERT(mCompletedSerial == mLastSubmittedSerial);
 
     if (mState != State::BeingCreated) {
         // The GPU timeline is finished.
+        DAWN_ASSERT(mQueue->GetCompletedCommandSerial() == mQueue->GetLastSubmittedCommandSerial());
+
         // Finish destroying all objects owned by the device and tick the queue-related tasks
         // since they should be complete. This must be done before DestroyImpl() it may
         // relinquish resources that will be freed by backends in the DestroyImpl() call.
         DestroyObjects();
-        mQueue->Tick(GetCompletedCommandSerial());
+        mQueue->Tick(mQueue->GetCompletedCommandSerial());
         // Call TickImpl once last time to clean up resources
         // Ignore errors so that we can continue with destruction
         IgnoreErrors(TickImpl());
@@ -471,14 +685,19 @@ void DeviceBase::Destroy() {
     // implementations of DestroyImpl checks that we are disconnected before doing work.
     mState = State::Disconnected;
 
-    // Note: mQueue is not released here since the application may still get it after calling
-    // Destroy() via APIGetQueue.
     mDynamicUploader = nullptr;
     mEmptyBindGroupLayout = nullptr;
+    mEmptyPipelineLayout = nullptr;
     mInternalPipelineStore = nullptr;
     mExternalTexturePlaceholderView = nullptr;
+    mTemporaryUniformBuffer = nullptr;
 
-    AssumeCommandsComplete();
+    // Note: mQueue is not released here since the application may still get it after calling
+    // Destroy() via APIGetQueue.
+    if (mQueue != nullptr) {
+        mQueue->AssumeCommandsComplete();
+        mQueue->Destroy();
+    }
 
     // Now that the GPU timeline is empty, destroy the backend device.
     DestroyImpl();
@@ -493,11 +712,20 @@ void DeviceBase::APIDestroy() {
 
 void DeviceBase::HandleError(std::unique_ptr<ErrorData> error,
                              InternalErrorType additionalAllowedErrors,
-                             WGPUDeviceLostReason lost_reason) {
+                             WGPUDeviceLostReason lostReason) {
     AppendDebugLayerMessages(error.get());
+
+    InternalErrorType type = error->GetType();
+    if (type != InternalErrorType::Validation) {
+        // D3D device can provide additional device removed reason. We would
+        // like to query and log the the device removed reason if the error is
+        // not validation error.
+        AppendDeviceLostMessage(error.get());
+    }
+
     InternalErrorType allowedErrors =
         InternalErrorType::Validation | InternalErrorType::DeviceLost | additionalAllowedErrors;
-    InternalErrorType type = error->GetType();
+
     if (type == InternalErrorType::DeviceLost) {
         mState = State::Disconnected;
 
@@ -505,12 +733,12 @@ void DeviceBase::HandleError(std::unique_ptr<ErrorData> error,
         // still be executing commands. Force a wait for idle in this case, with State being
         // Disconnected so we can detect this case in WaitForIdleForDestruction.
         if (ErrorInjectorEnabled()) {
-            IgnoreErrors(WaitForIdleForDestruction());
+            IgnoreErrors(mQueue->WaitForIdleForDestruction());
         }
 
         // A real device lost happened. Set the state to disconnected as the device cannot be
         // used. Also tags all commands as completed since the device stopped running.
-        AssumeCommandsComplete();
+        mQueue->AssumeCommandsComplete();
     } else if (!(allowedErrors & type)) {
         // If we receive an error which we did not explicitly allow, assume the backend can't
         // recover and proceed with device destruction. We first wait for all previous commands to
@@ -526,27 +754,25 @@ void DeviceBase::HandleError(std::unique_ptr<ErrorData> error,
 
         // Ignore errors so that we can continue with destruction
         // Assume all commands are complete after WaitForIdleForDestruction (because they were)
-        IgnoreErrors(WaitForIdleForDestruction());
+        IgnoreErrors(mQueue->WaitForIdleForDestruction());
         IgnoreErrors(TickImpl());
-        AssumeCommandsComplete();
+        mQueue->AssumeCommandsComplete();
         mState = State::Disconnected;
 
         // Now everything is as if the device was lost.
         type = InternalErrorType::DeviceLost;
     }
 
-    // TODO(lokokung) Update call sites that take the c-string to take string_view.
     const std::string messageStr = error->GetFormattedMessage();
     if (type == InternalErrorType::DeviceLost) {
-        // The device was lost, schedule the application callback's executation.
+        // The device was lost, schedule the application callback's execution.
         // Note: we don't invoke the callbacks directly here because it could cause re-entrances ->
         // possible deadlock.
-        if (mDeviceLostCallback != nullptr) {
-            mCallbackTaskManager->AddCallbackTask([callback = mDeviceLostCallback, lost_reason,
-                                                   messageStr, userdata = mDeviceLostUserdata] {
-                callback(lost_reason, messageStr.c_str(), userdata);
-            });
-            mDeviceLostCallback = nullptr;
+        if (mLostEvent != nullptr) {
+            mLostEvent->mReason = FromAPI(lostReason);
+            mLostEvent->mMessage = messageStr;
+            GetInstance()->GetEventManager()->SetFutureReady(mLostEvent.Get());
+            mLostEvent = nullptr;
         }
 
         mQueue->HandleDeviceLoss();
@@ -556,45 +782,42 @@ void DeviceBase::HandleError(std::unique_ptr<ErrorData> error,
         mCallbackTaskManager->HandleDeviceLoss();
 
         // Still forward device loss errors to the error scopes so they all reject.
-        mErrorScopeStack->HandleError(ToWGPUErrorType(type), messageStr.c_str());
+        mErrorScopeStack->HandleError(ToWGPUErrorType(type), messageStr);
     } else {
         // Pass the error to the error scope stack and call the uncaptured error callback
         // if it isn't handled. DeviceLost is not handled here because it should be
         // handled by the lost callback.
-        bool captured = mErrorScopeStack->HandleError(ToWGPUErrorType(type), messageStr.c_str());
-        if (!captured && mUncapturedErrorCallback != nullptr) {
-            mCallbackTaskManager->AddCallbackTask([callback = mUncapturedErrorCallback, type,
-                                                   messageStr,
-                                                   userdata = mUncapturedErrorUserdata] {
-                callback(static_cast<WGPUErrorType>(ToWGPUErrorType(type)), messageStr.c_str(),
-                         userdata);
-            });
+        bool captured = mErrorScopeStack->HandleError(ToWGPUErrorType(type), messageStr);
+        if (!captured) {
+            // Only call the uncaptured error callback if the device is alive. After the
+            // device is lost, the uncaptured error callback should cease firing.
+            if (mUncapturedErrorCallbackInfo.callback != nullptr && mState == State::Alive) {
+                auto device = ToAPI(this);
+                mUncapturedErrorCallbackInfo.callback(
+                    &device, ToAPI(ToWGPUErrorType(type)), ToOutputStringView(messageStr),
+                    mUncapturedErrorCallbackInfo.userdata1, mUncapturedErrorCallbackInfo.userdata2);
+            }
         }
     }
 }
 
 void DeviceBase::ConsumeError(std::unique_ptr<ErrorData> error,
                               InternalErrorType additionalAllowedErrors) {
-    ASSERT(error != nullptr);
+    DAWN_ASSERT(error != nullptr);
     HandleError(std::move(error), additionalAllowedErrors);
 }
 
 void DeviceBase::APISetLoggingCallback(wgpu::LoggingCallback callback, void* userdata) {
-    // The registered callback function and userdata pointer are stored and used by deferred
-    // callback tasks, and after setting a different callback (especially in the case of
-    // resetting) the resources pointed by such pointer may be freed. Flush all deferred
-    // callback tasks to guarantee we are never going to use the previous callback after
-    // this call.
-    FlushCallbackTaskQueue();
-    auto deviceLock(GetScopedLock());
-    if (IsLost()) {
-        return;
-    }
+    std::lock_guard<std::shared_mutex> lock(mLoggingMutex);
     mLoggingCallback = callback;
     mLoggingUserdata = userdata;
 }
 
 void DeviceBase::APISetUncapturedErrorCallback(wgpu::ErrorCallback callback, void* userdata) {
+    GetInstance()->EmitDeprecationWarning(
+        "SetUncapturedErrorCallback is deprecated. Pass the callback in the device descriptor "
+        "instead.");
+
     // The registered callback function and userdata pointer are stored and used by deferred
     // callback tasks, and after setting a different callback (especially in the case of
     // resetting) the resources pointed by such pointer may be freed. Flush all deferred
@@ -602,14 +825,23 @@ void DeviceBase::APISetUncapturedErrorCallback(wgpu::ErrorCallback callback, voi
     // this call.
     FlushCallbackTaskQueue();
     auto deviceLock(GetScopedLock());
+    // Clearing the callback and userdata is allowed because in Chromium they should be cleared
+    // after Dawn device is destroyed and before Dawn wire server is destroyed.
+    if (callback == nullptr) {
+        mUncapturedErrorCallbackInfo = kEmptyUncapturedErrorCallbackInfo;
+        return;
+    }
     if (IsLost()) {
         return;
     }
-    mUncapturedErrorCallback = callback;
-    mUncapturedErrorUserdata = userdata;
+    mUncapturedErrorCallbackInfo = {nullptr, &LegacyUncapturedErrorCallback,
+                                    reinterpret_cast<void*>(callback), userdata};
 }
 
 void DeviceBase::APISetDeviceLostCallback(wgpu::DeviceLostCallback callback, void* userdata) {
+    GetInstance()->EmitDeprecationWarning(
+        "SetDeviceLostCallback is deprecated. Pass the callback in the device descriptor instead.");
+
     // The registered callback function and userdata pointer are stored and used by deferred
     // callback tasks, and after setting a different callback (especially in the case of
     // resetting) the resources pointed by such pointer may be freed. Flush all deferred
@@ -617,11 +849,20 @@ void DeviceBase::APISetDeviceLostCallback(wgpu::DeviceLostCallback callback, voi
     // this call.
     FlushCallbackTaskQueue();
     auto deviceLock(GetScopedLock());
+    // Clearing the callback and userdata is allowed because in Chromium they should be cleared
+    // after Dawn device is destroyed and before Dawn wire server is destroyed.
+    if (callback == nullptr) {
+        mLostEvent->mCallback = nullptr;
+        mLostEvent->mUserdata1 = nullptr;
+        mLostEvent->mUserdata2 = nullptr;
+        return;
+    }
     if (IsLost()) {
         return;
     }
-    mDeviceLostCallback = callback;
-    mDeviceLostUserdata = userdata;
+    mLostEvent->mCallback = &LegacyDeviceLostCallback;
+    mLostEvent->mUserdata1 = reinterpret_cast<void*>(callback);
+    mLostEvent->mUserdata2 = userdata;
 }
 
 void DeviceBase::APIPushErrorScope(wgpu::ErrorFilter filter) {
@@ -631,42 +872,87 @@ void DeviceBase::APIPushErrorScope(wgpu::ErrorFilter filter) {
     mErrorScopeStack->Push(filter);
 }
 
-bool DeviceBase::APIPopErrorScope(wgpu::ErrorCallback callback, void* userdata) {
-    // TODO(crbug.com/dawn/1324) Remove return and make function void when users are updated.
-    bool returnValue = true;
-    if (callback == nullptr) {
-        static wgpu::ErrorCallback defaultCallback = [](WGPUErrorType, char const*, void*) {};
-        callback = defaultCallback;
-    }
-    // TODO(crbug.com/dawn/1122): Call callbacks only on wgpuInstanceProcessEvents
-    if (IsLost()) {
-        mCallbackTaskManager->AddCallbackTask(
-            std::bind(callback, WGPUErrorType_DeviceLost, "GPU device disconnected", userdata));
-        return returnValue;
-    }
-    if (mErrorScopeStack->Empty()) {
-        mCallbackTaskManager->AddCallbackTask(
-            std::bind(callback, WGPUErrorType_Unknown, "No error scopes to pop", userdata));
-        return returnValue;
-    }
-    ErrorScope scope = mErrorScopeStack->Pop();
-    mCallbackTaskManager->AddCallbackTask(
-        [callback, errorType = static_cast<WGPUErrorType>(scope.GetErrorType()),
-         message = scope.GetErrorMessage(),
-         userdata] { callback(errorType, message.c_str(), userdata); });
+void DeviceBase::APIPopErrorScope(wgpu::ErrorCallback callback, void* userdata) {
+    static wgpu::ErrorCallback kDefaultCallback = [](WGPUErrorType, WGPUStringView, void*) {};
 
-    return returnValue;
+    APIPopErrorScope2({nullptr, WGPUCallbackMode_AllowProcessEvents,
+                       [](WGPUPopErrorScopeStatus, WGPUErrorType type, WGPUStringView message,
+                          void* callback, void* userdata) {
+                           auto cb = reinterpret_cast<wgpu::ErrorCallback>(callback);
+                           cb(type, message, userdata);
+                       },
+                       reinterpret_cast<void*>(callback != nullptr ? callback : kDefaultCallback),
+                       userdata});
 }
 
-BlobCache* DeviceBase::GetBlobCache() {
-#if TINT_BUILD_WGSL_WRITER
-    // TODO(crbug.com/dawn/1481): Shader caching currently has a dependency on the WGSL writer to
-    // generate cache keys. We can lift the dependency once we also cache frontend parsing,
-    // transformations, and reflection.
-    return mAdapter->GetInstance()->GetBlobCache(!IsToggleEnabled(Toggle::DisableBlobCache));
-#else
-    return mAdapter->GetInstance()->GetBlobCache(false);
-#endif
+Future DeviceBase::APIPopErrorScopeF(const PopErrorScopeCallbackInfo& callbackInfo) {
+    return APIPopErrorScope2({ToAPI(callbackInfo.nextInChain), ToAPI(callbackInfo.mode),
+                              [](WGPUPopErrorScopeStatus status, WGPUErrorType type,
+                                 WGPUStringView message, void* callback, void* userdata) {
+                                  auto cb = reinterpret_cast<WGPUPopErrorScopeCallback>(callback);
+                                  cb(status, type, message, userdata);
+                              },
+                              reinterpret_cast<void*>(callbackInfo.callback),
+                              callbackInfo.userdata});
+}
+
+Future DeviceBase::APIPopErrorScope2(const WGPUPopErrorScopeCallbackInfo2& callbackInfo) {
+    struct PopErrorScopeEvent final : public EventManager::TrackedEvent {
+        WGPUPopErrorScopeCallback2 mCallback;
+        raw_ptr<void> mUserdata1;
+        raw_ptr<void> mUserdata2;
+        std::optional<ErrorScope> mScope;
+
+        PopErrorScopeEvent(const WGPUPopErrorScopeCallbackInfo2& callbackInfo,
+                           std::optional<ErrorScope>&& scope)
+            : TrackedEvent(static_cast<wgpu::CallbackMode>(callbackInfo.mode),
+                           TrackedEvent::Completed{}),
+              mCallback(callbackInfo.callback),
+              mUserdata1(callbackInfo.userdata1),
+              mUserdata2(callbackInfo.userdata2),
+              mScope(scope) {}
+
+        ~PopErrorScopeEvent() override { EnsureComplete(EventCompletionType::Shutdown); }
+
+        void Complete(EventCompletionType completionType) override {
+            WGPUPopErrorScopeStatus status = completionType == EventCompletionType::Ready
+                                                 ? WGPUPopErrorScopeStatus_Success
+                                                 : WGPUPopErrorScopeStatus_InstanceDropped;
+            WGPUErrorType type;
+            WGPUStringView message;
+            if (mScope) {
+                type = static_cast<WGPUErrorType>(mScope->GetErrorType());
+                message = ToOutputStringView(mScope->GetErrorMessage());
+            } else {
+                type = WGPUErrorType_Unknown;
+                message = ToOutputStringView("No error scopes to pop");
+            }
+
+            mCallback(status, type, message, mUserdata1.ExtractAsDangling(),
+                      mUserdata2.ExtractAsDangling());
+        }
+    };
+
+    std::optional<ErrorScope> scope;
+    {
+        // TODO(crbug.com/dawn/831) Manually acquire device lock instead of relying on code-gen for
+        // re-entrancy.
+        auto deviceLock(GetScopedLock());
+
+        if (IsLost()) {
+            scope = ErrorScope(wgpu::ErrorType::DeviceLost, "GPU device disconnected");
+        } else if (!mErrorScopeStack->Empty()) {
+            scope = mErrorScopeStack->Pop();
+        }
+    }
+
+    FutureID futureID = GetInstance()->GetEventManager()->TrackEvent(
+        AcquireRef(new PopErrorScopeEvent(callbackInfo, std::move(scope))));
+    return {futureID};
+}
+
+BlobCache* DeviceBase::GetBlobCache() const {
+    return mBlobCache.get();
 }
 
 Blob DeviceBase::LoadCachedBlob(const CacheKey& key) {
@@ -680,7 +966,7 @@ void DeviceBase::StoreCachedBlob(const CacheKey& key, const Blob& blob) {
 }
 
 MaybeError DeviceBase::ValidateObject(const ApiObjectBase* object) const {
-    ASSERT(object != nullptr);
+    DAWN_ASSERT(object != nullptr);
     DAWN_INVALID_IF(object->GetDevice() != this,
                     "%s is associated with %s, and cannot be used with %s.", object,
                     object->GetDevice(), this);
@@ -696,14 +982,15 @@ MaybeError DeviceBase::ValidateIsAlive() const {
     return {};
 }
 
-void DeviceBase::APIForceLoss(wgpu::DeviceLostReason reason, const char* message) {
+void DeviceBase::APIForceLoss(wgpu::DeviceLostReason reason, StringView messageIn) {
+    std::string_view message = utils::NormalizeMessageString(messageIn);
     if (mState != State::Alive) {
         return;
     }
     // Note that since we are passing None as the allowedErrors, an additional message will be
     // appended noting that the error was unexpected. Since this call is for testing only it is not
     // too important, but useful for users to understand where the extra message is coming from.
-    HandleError(DAWN_INTERNAL_ERROR(message), InternalErrorType::None, ToAPI(reason));
+    HandleError(DAWN_INTERNAL_ERROR(std::string(message)), InternalErrorType::None, ToAPI(reason));
 }
 
 DeviceBase::State DeviceBase::GetState() const {
@@ -711,7 +998,7 @@ DeviceBase::State DeviceBase::GetState() const {
 }
 
 bool DeviceBase::IsLost() const {
-    ASSERT(mState != State::BeingCreated);
+    DAWN_ASSERT(mState != State::BeingCreated);
     return mState != State::Alive;
 }
 
@@ -719,34 +1006,28 @@ ApiObjectList* DeviceBase::GetObjectTrackingList(ObjectType type) {
     return &mObjectLists[type];
 }
 
+const ApiObjectList* DeviceBase::GetObjectTrackingList(ObjectType type) const {
+    return &mObjectLists[type];
+}
+
+InstanceBase* DeviceBase::GetInstance() const {
+    return mAdapter->GetInstance();
+}
+
 AdapterBase* DeviceBase::GetAdapter() const {
     return mAdapter.Get();
+}
+
+PhysicalDeviceBase* DeviceBase::GetPhysicalDevice() const {
+    return mAdapter->GetPhysicalDevice();
 }
 
 dawn::platform::Platform* DeviceBase::GetPlatform() const {
     return GetAdapter()->GetInstance()->GetPlatform();
 }
 
-ExecutionSerial DeviceBase::GetCompletedCommandSerial() const {
-    return mCompletedSerial;
-}
-
-ExecutionSerial DeviceBase::GetLastSubmittedCommandSerial() const {
-    return mLastSubmittedSerial;
-}
-
 InternalPipelineStore* DeviceBase::GetInternalPipelineStore() {
     return mInternalPipelineStore.get();
-}
-
-void DeviceBase::IncrementLastSubmittedCommandSerial() {
-    mLastSubmittedSerial++;
-}
-
-void DeviceBase::AssumeCommandsComplete() {
-    // Bump serials so any pending callbacks can be fired.
-    mLastSubmittedSerial++;
-    mCompletedSerial = mLastSubmittedSerial;
 }
 
 bool DeviceBase::HasPendingTasks() {
@@ -757,27 +1038,7 @@ bool DeviceBase::IsDeviceIdle() {
     if (HasPendingTasks()) {
         return false;
     }
-    return !HasScheduledCommands();
-}
-
-ExecutionSerial DeviceBase::GetPendingCommandSerial() const {
-    return mLastSubmittedSerial + ExecutionSerial(1);
-}
-
-MaybeError DeviceBase::CheckPassedSerials() {
-    ExecutionSerial completedSerial;
-    DAWN_TRY_ASSIGN(completedSerial, CheckAndUpdateCompletedSerials());
-
-    ASSERT(completedSerial <= mLastSubmittedSerial);
-    // completedSerial should not be less than mCompletedSerial unless it is 0.
-    // It can be 0 when there's no fences to check.
-    ASSERT(completedSerial >= mCompletedSerial || completedSerial == ExecutionSerial(0));
-
-    if (completedSerial > mCompletedSerial) {
-        mCompletedSerial = completedSerial;
-    }
-
-    return {};
+    return !mQueue->HasScheduledCommands();
 }
 
 ResultOrError<const Format*> DeviceBase::GetInternalFormat(wgpu::TextureFormat format) const {
@@ -785,51 +1046,57 @@ ResultOrError<const Format*> DeviceBase::GetInternalFormat(wgpu::TextureFormat f
     DAWN_INVALID_IF(index >= mFormatTable.size(), "Unknown texture format %s.", format);
 
     const Format* internalFormat = &mFormatTable[index];
-    DAWN_INVALID_IF(!internalFormat->isSupported, "Unsupported texture format %s.", format);
+    DAWN_INVALID_IF(!internalFormat->IsSupported(), "Unsupported texture format %s, reason: %s.",
+                    format, internalFormat->unsupportedReason);
 
     return internalFormat;
 }
 
 const Format& DeviceBase::GetValidInternalFormat(wgpu::TextureFormat format) const {
     FormatIndex index = ComputeFormatIndex(format);
-    ASSERT(index < mFormatTable.size());
-    ASSERT(mFormatTable[index].isSupported);
+    DAWN_ASSERT(index < mFormatTable.size());
+    DAWN_ASSERT(mFormatTable[index].IsSupported());
     return mFormatTable[index];
 }
 
 const Format& DeviceBase::GetValidInternalFormat(FormatIndex index) const {
-    ASSERT(index < mFormatTable.size());
-    ASSERT(mFormatTable[index].isSupported);
+    DAWN_ASSERT(index < mFormatTable.size());
+    DAWN_ASSERT(mFormatTable[index].IsSupported());
     return mFormatTable[index];
+}
+
+std::vector<const Format*> DeviceBase::GetCompatibleViewFormats(const Format& format) const {
+    wgpu::TextureFormat viewFormat =
+        format.format == format.baseFormat ? format.baseViewFormat : format.baseFormat;
+    if (viewFormat == wgpu::TextureFormat::Undefined) {
+        return {};
+    }
+    const Format& f = mFormatTable[ComputeFormatIndex(viewFormat)];
+    if (!f.IsSupported()) {
+        return {};
+    }
+    return {&f};
 }
 
 ResultOrError<Ref<BindGroupLayoutBase>> DeviceBase::GetOrCreateBindGroupLayout(
     const BindGroupLayoutDescriptor* descriptor,
     PipelineCompatibilityToken pipelineCompatibilityToken) {
-    BindGroupLayoutBase blueprint(this, descriptor, pipelineCompatibilityToken,
-                                  ApiObjectBase::kUntrackedByDevice);
+    BindGroupLayoutInternalBase blueprint(this, descriptor, ApiObjectBase::kUntrackedByDevice);
 
     const size_t blueprintHash = blueprint.ComputeContentHash();
     blueprint.SetContentHash(blueprintHash);
 
-    Ref<BindGroupLayoutBase> result;
-    auto iter = mCaches->bindGroupLayouts.find(&blueprint);
-    if (iter != mCaches->bindGroupLayouts.end()) {
-        result = *iter;
-    } else {
-        DAWN_TRY_ASSIGN(result, CreateBindGroupLayoutImpl(descriptor, pipelineCompatibilityToken));
-        result->SetIsCachedReference();
-        result->SetContentHash(blueprintHash);
-        mCaches->bindGroupLayouts.insert(result.Get());
-    }
-
-    return std::move(result);
-}
-
-void DeviceBase::UncacheBindGroupLayout(BindGroupLayoutBase* obj) {
-    ASSERT(obj->IsCachedReference());
-    size_t removedCount = mCaches->bindGroupLayouts.erase(obj);
-    ASSERT(removedCount == 1);
+    Ref<BindGroupLayoutInternalBase> internal;
+    DAWN_TRY_ASSIGN(internal, GetOrCreate(mCaches->bindGroupLayouts, &blueprint,
+                                          [&]() -> ResultOrError<Ref<BindGroupLayoutInternalBase>> {
+                                              Ref<BindGroupLayoutInternalBase> result;
+                                              DAWN_TRY_ASSIGN(
+                                                  result, CreateBindGroupLayoutImpl(descriptor));
+                                              result->SetContentHash(blueprintHash);
+                                              return result;
+                                          }));
+    return AcquireRef(
+        new BindGroupLayoutBase(this, descriptor->label, internal, pipelineCompatibilityToken));
 }
 
 // Private function used at initialization
@@ -841,60 +1108,44 @@ ResultOrError<Ref<BindGroupLayoutBase>> DeviceBase::CreateEmptyBindGroupLayout()
     return GetOrCreateBindGroupLayout(&desc);
 }
 
+ResultOrError<Ref<PipelineLayoutBase>> DeviceBase::CreateEmptyPipelineLayout() {
+    PipelineLayoutDescriptor desc = {};
+    desc.bindGroupLayoutCount = 0;
+    desc.bindGroupLayouts = nullptr;
+
+    return GetOrCreatePipelineLayout(Unpack(&desc));
+}
+
 BindGroupLayoutBase* DeviceBase::GetEmptyBindGroupLayout() {
-    ASSERT(mEmptyBindGroupLayout != nullptr);
+    DAWN_ASSERT(mEmptyBindGroupLayout != nullptr);
     return mEmptyBindGroupLayout.Get();
+}
+
+PipelineLayoutBase* DeviceBase::GetEmptyPipelineLayout() {
+    DAWN_ASSERT(mEmptyPipelineLayout != nullptr);
+    return mEmptyPipelineLayout.Get();
 }
 
 Ref<ComputePipelineBase> DeviceBase::GetCachedComputePipeline(
     ComputePipelineBase* uninitializedComputePipeline) {
-    Ref<ComputePipelineBase> cachedPipeline;
-    auto iter = mCaches->computePipelines.find(uninitializedComputePipeline);
-    if (iter != mCaches->computePipelines.end()) {
-        cachedPipeline = *iter;
-    }
-
-    return cachedPipeline;
+    return mCaches->computePipelines.Find(uninitializedComputePipeline);
 }
 
 Ref<RenderPipelineBase> DeviceBase::GetCachedRenderPipeline(
     RenderPipelineBase* uninitializedRenderPipeline) {
-    Ref<RenderPipelineBase> cachedPipeline;
-    auto iter = mCaches->renderPipelines.find(uninitializedRenderPipeline);
-    if (iter != mCaches->renderPipelines.end()) {
-        cachedPipeline = *iter;
-    }
-    return cachedPipeline;
+    return mCaches->renderPipelines.Find(uninitializedRenderPipeline);
 }
 
 Ref<ComputePipelineBase> DeviceBase::AddOrGetCachedComputePipeline(
     Ref<ComputePipelineBase> computePipeline) {
-    ASSERT(IsLockedByCurrentThreadIfNeeded());
-    auto [cachedPipeline, inserted] = mCaches->computePipelines.insert(computePipeline.Get());
-    if (inserted) {
-        computePipeline->SetIsCachedReference();
-        return computePipeline;
-    } else {
-        return *cachedPipeline;
-    }
+    auto [pipeline, _] = mCaches->computePipelines.Insert(computePipeline.Get());
+    return std::move(pipeline);
 }
 
 Ref<RenderPipelineBase> DeviceBase::AddOrGetCachedRenderPipeline(
     Ref<RenderPipelineBase> renderPipeline) {
-    ASSERT(IsLockedByCurrentThreadIfNeeded());
-    auto [cachedPipeline, inserted] = mCaches->renderPipelines.insert(renderPipeline.Get());
-    if (inserted) {
-        renderPipeline->SetIsCachedReference();
-        return renderPipeline;
-    } else {
-        return *cachedPipeline;
-    }
-}
-
-void DeviceBase::UncacheComputePipeline(ComputePipelineBase* obj) {
-    ASSERT(obj->IsCachedReference());
-    size_t removedCount = mCaches->computePipelines.erase(obj);
-    ASSERT(removedCount == 1);
+    auto [pipeline, _] = mCaches->renderPipelines.Insert(renderPipeline.Get());
+    return std::move(pipeline);
 }
 
 ResultOrError<Ref<TextureViewBase>>
@@ -927,36 +1178,19 @@ DeviceBase::GetOrCreatePlaceholderTextureViewForExternalTexture() {
 }
 
 ResultOrError<Ref<PipelineLayoutBase>> DeviceBase::GetOrCreatePipelineLayout(
-    const PipelineLayoutDescriptor* descriptor) {
+    const UnpackedPtr<PipelineLayoutDescriptor>& descriptor) {
     PipelineLayoutBase blueprint(this, descriptor, ApiObjectBase::kUntrackedByDevice);
 
     const size_t blueprintHash = blueprint.ComputeContentHash();
     blueprint.SetContentHash(blueprintHash);
 
-    Ref<PipelineLayoutBase> result;
-    auto iter = mCaches->pipelineLayouts.find(&blueprint);
-    if (iter != mCaches->pipelineLayouts.end()) {
-        result = *iter;
-    } else {
-        DAWN_TRY_ASSIGN(result, CreatePipelineLayoutImpl(descriptor));
-        result->SetIsCachedReference();
-        result->SetContentHash(blueprintHash);
-        mCaches->pipelineLayouts.insert(result.Get());
-    }
-
-    return std::move(result);
-}
-
-void DeviceBase::UncachePipelineLayout(PipelineLayoutBase* obj) {
-    ASSERT(obj->IsCachedReference());
-    size_t removedCount = mCaches->pipelineLayouts.erase(obj);
-    ASSERT(removedCount == 1);
-}
-
-void DeviceBase::UncacheRenderPipeline(RenderPipelineBase* obj) {
-    ASSERT(obj->IsCachedReference());
-    size_t removedCount = mCaches->renderPipelines.erase(obj);
-    ASSERT(removedCount == 1);
+    return GetOrCreate(mCaches->pipelineLayouts, &blueprint,
+                       [&]() -> ResultOrError<Ref<PipelineLayoutBase>> {
+                           Ref<PipelineLayoutBase> result;
+                           DAWN_TRY_ASSIGN(result, CreatePipelineLayoutImpl(descriptor));
+                           result->SetContentHash(blueprintHash);
+                           return result;
+                       });
 }
 
 ResultOrError<Ref<SamplerBase>> DeviceBase::GetOrCreateSampler(
@@ -966,101 +1200,82 @@ ResultOrError<Ref<SamplerBase>> DeviceBase::GetOrCreateSampler(
     const size_t blueprintHash = blueprint.ComputeContentHash();
     blueprint.SetContentHash(blueprintHash);
 
-    Ref<SamplerBase> result;
-    auto iter = mCaches->samplers.find(&blueprint);
-    if (iter != mCaches->samplers.end()) {
-        result = *iter;
-    } else {
+    return GetOrCreate(mCaches->samplers, &blueprint, [&]() -> ResultOrError<Ref<SamplerBase>> {
+        Ref<SamplerBase> result;
         DAWN_TRY_ASSIGN(result, CreateSamplerImpl(descriptor));
-        result->SetIsCachedReference();
         result->SetContentHash(blueprintHash);
-        mCaches->samplers.insert(result.Get());
-    }
-
-    return std::move(result);
-}
-
-void DeviceBase::UncacheSampler(SamplerBase* obj) {
-    ASSERT(obj->IsCachedReference());
-    size_t removedCount = mCaches->samplers.erase(obj);
-    ASSERT(removedCount == 1);
+        return result;
+    });
 }
 
 ResultOrError<Ref<ShaderModuleBase>> DeviceBase::GetOrCreateShaderModule(
-    const ShaderModuleDescriptor* descriptor,
+    const UnpackedPtr<ShaderModuleDescriptor>& descriptor,
+    const std::vector<tint::wgsl::Extension>& internalExtensions,
     ShaderModuleParseResult* parseResult,
-    OwnedCompilationMessages* compilationMessages) {
-    ASSERT(parseResult != nullptr);
+    std::unique_ptr<OwnedCompilationMessages>* compilationMessages) {
+    DAWN_ASSERT(parseResult != nullptr);
 
-    ShaderModuleBase blueprint(this, descriptor, ApiObjectBase::kUntrackedByDevice);
+    ShaderModuleBase blueprint(this, descriptor, internalExtensions,
+                               ApiObjectBase::kUntrackedByDevice);
 
     const size_t blueprintHash = blueprint.ComputeContentHash();
     blueprint.SetContentHash(blueprintHash);
 
-    Ref<ShaderModuleBase> result;
-    auto iter = mCaches->shaderModules.find(&blueprint);
-    if (iter != mCaches->shaderModules.end()) {
-        result = *iter;
-    } else {
-        if (!parseResult->HasParsedShader()) {
-            // We skip the parse on creation if validation isn't enabled which let's us quickly
-            // lookup in the cache without validating and parsing. We need the parsed module
-            // now.
-            ASSERT(!IsValidationEnabled());
-            DAWN_TRY(
-                ValidateAndParseShaderModule(this, descriptor, parseResult, compilationMessages));
-        }
-        DAWN_TRY_ASSIGN(result,
-                        CreateShaderModuleImpl(descriptor, parseResult, compilationMessages));
-        result->SetIsCachedReference();
-        result->SetContentHash(blueprintHash);
-        mCaches->shaderModules.insert(result.Get());
-    }
+    return GetOrCreate(
+        mCaches->shaderModules, &blueprint, [&]() -> ResultOrError<Ref<ShaderModuleBase>> {
+            auto* unownedMessages = compilationMessages ? compilationMessages->get() : nullptr;
+            if (!parseResult->HasParsedShader()) {
+                // We skip the parse on creation if validation isn't enabled which let's us quickly
+                // lookup in the cache without validating and parsing. We need the parsed module
+                // now.
+                DAWN_ASSERT(!IsValidationEnabled());
+                DAWN_TRY(ValidateAndParseShaderModule(this, descriptor, internalExtensions,
+                                                      parseResult, unownedMessages));
+            }
 
-    return std::move(result);
+            auto resultOrError = [&]() -> ResultOrError<Ref<ShaderModuleBase>> {
+                SCOPED_DAWN_HISTOGRAM_TIMER_MICROS(GetPlatform(), "CreateShaderModuleUS");
+                return CreateShaderModuleImpl(descriptor, internalExtensions, parseResult,
+                                              unownedMessages);
+            }();
+            DAWN_HISTOGRAM_BOOLEAN(GetPlatform(), "CreateShaderModuleSuccess",
+                                   resultOrError.IsSuccess());
+
+            Ref<ShaderModuleBase> result;
+            DAWN_TRY_ASSIGN(result, std::move(resultOrError));
+            result->SetContentHash(blueprintHash);
+            // Inject compilation messages now, as another thread may get a cache hit and query them
+            // immediately after insert into the cache.
+            if (compilationMessages) {
+                result->InjectCompilationMessages(std::move(*compilationMessages));
+            }
+            return result;
+        });
 }
 
-void DeviceBase::UncacheShaderModule(ShaderModuleBase* obj) {
-    ASSERT(obj->IsCachedReference());
-    size_t removedCount = mCaches->shaderModules.erase(obj);
-    ASSERT(removedCount == 1);
-}
-
-Ref<AttachmentState> DeviceBase::GetOrCreateAttachmentState(AttachmentStateBlueprint* blueprint) {
-    auto iter = mCaches->attachmentStates.find(blueprint);
-    if (iter != mCaches->attachmentStates.end()) {
-        return static_cast<AttachmentState*>(*iter);
-    }
-
-    Ref<AttachmentState> attachmentState = AcquireRef(new AttachmentState(this, *blueprint));
-    attachmentState->SetIsCachedReference();
-    attachmentState->SetContentHash(attachmentState->ComputeContentHash());
-    mCaches->attachmentStates.insert(attachmentState.Get());
-    return attachmentState;
+Ref<AttachmentState> DeviceBase::GetOrCreateAttachmentState(AttachmentState* blueprint) {
+    return GetOrCreate(mCaches->attachmentStates, blueprint, [&]() -> Ref<AttachmentState> {
+        return AcquireRef(new AttachmentState(*blueprint));
+    });
 }
 
 Ref<AttachmentState> DeviceBase::GetOrCreateAttachmentState(
     const RenderBundleEncoderDescriptor* descriptor) {
-    AttachmentStateBlueprint blueprint(descriptor);
+    AttachmentState blueprint(this, descriptor);
     return GetOrCreateAttachmentState(&blueprint);
 }
 
 Ref<AttachmentState> DeviceBase::GetOrCreateAttachmentState(
-    const RenderPipelineDescriptor* descriptor) {
-    AttachmentStateBlueprint blueprint(descriptor);
+    const UnpackedPtr<RenderPipelineDescriptor>& descriptor,
+    const PipelineLayoutBase* layout) {
+    AttachmentState blueprint(this, descriptor, layout);
     return GetOrCreateAttachmentState(&blueprint);
 }
 
 Ref<AttachmentState> DeviceBase::GetOrCreateAttachmentState(
-    const RenderPassDescriptor* descriptor) {
-    AttachmentStateBlueprint blueprint(descriptor);
+    const UnpackedPtr<RenderPassDescriptor>& descriptor) {
+    AttachmentState blueprint(this, descriptor);
     return GetOrCreateAttachmentState(&blueprint);
-}
-
-void DeviceBase::UncacheAttachmentState(AttachmentState* obj) {
-    ASSERT(obj->IsCachedReference());
-    size_t removedCount = mCaches->attachmentStates.erase(obj);
-    ASSERT(removedCount == 1);
 }
 
 Ref<PipelineCacheBase> DeviceBase::GetOrCreatePipelineCache(const CacheKey& key) {
@@ -1073,226 +1288,386 @@ BindGroupBase* DeviceBase::APICreateBindGroup(const BindGroupDescriptor* descrip
     Ref<BindGroupBase> result;
     if (ConsumedError(CreateBindGroup(descriptor), &result, "calling %s.CreateBindGroup(%s).", this,
                       descriptor)) {
-        return BindGroupBase::MakeError(this, descriptor ? descriptor->label : nullptr);
+        return ReturnToAPI(
+            BindGroupBase::MakeError(this, descriptor ? descriptor->label : nullptr));
     }
-    return result.Detach();
+    return ReturnToAPI(std::move(result));
 }
 BindGroupLayoutBase* DeviceBase::APICreateBindGroupLayout(
     const BindGroupLayoutDescriptor* descriptor) {
     Ref<BindGroupLayoutBase> result;
     if (ConsumedError(CreateBindGroupLayout(descriptor), &result,
                       "calling %s.CreateBindGroupLayout(%s).", this, descriptor)) {
-        return BindGroupLayoutBase::MakeError(this, descriptor ? descriptor->label : nullptr);
+        return ReturnToAPI(
+            BindGroupLayoutBase::MakeError(this, descriptor ? descriptor->label : nullptr));
     }
-    return result.Detach();
+    return ReturnToAPI(std::move(result));
 }
 BufferBase* DeviceBase::APICreateBuffer(const BufferDescriptor* descriptor) {
-    Ref<BufferBase> result = nullptr;
-    if (ConsumedError(CreateBuffer(descriptor), &result, InternalErrorType::OutOfMemory,
-                      "calling %s.CreateBuffer(%s).", this, descriptor)) {
-        ASSERT(result == nullptr);
-        return BufferBase::MakeError(this, descriptor);
+    // Search for the host mapped pointer extension struct. If it is present, we will
+    // try to create the buffer without taking the global device-lock. If creation fails,
+    // we'll acquire the device lock and do normal error handling.
+    bool hasHostMapped = false;
+    for (const auto* chain = descriptor->nextInChain; chain != nullptr;
+         chain = chain->nextInChain) {
+        if (chain->sType == wgpu::SType::BufferHostMappedPointer) {
+            hasHostMapped = true;
+            break;
+        }
     }
-    return result.Detach();
+
+    std::optional<ResultOrError<Ref<BufferBase>>> resultOrError;
+    if (hasHostMapped) {
+        // Buffer creation from host-mapped pointer does not need the device lock.
+        resultOrError = CreateBuffer(descriptor);
+        if (resultOrError->IsSuccess()) {
+            return ReturnToAPI(resultOrError->AcquireSuccess());
+        }
+        // Error case continues below, and will acquire the device lock for
+        // thread-safe error handling.
+        // TODO(dawn:1662): Make error handling thread-safe.
+    }
+
+    auto deviceLock(GetScopedLock());
+    if (!hasHostMapped) {
+        resultOrError = CreateBuffer(descriptor);
+    }
+    Ref<BufferBase> result;
+    if (ConsumedError(std::move(*resultOrError), &result, InternalErrorType::OutOfMemory,
+                      "calling %s.CreateBuffer(%s).", this, descriptor)) {
+        DAWN_ASSERT(result == nullptr);
+        result = BufferBase::MakeError(this, descriptor);
+    }
+    return ReturnToAPI(std::move(result));
 }
+
 CommandEncoder* DeviceBase::APICreateCommandEncoder(const CommandEncoderDescriptor* descriptor) {
     Ref<CommandEncoder> result;
     if (ConsumedError(CreateCommandEncoder(descriptor), &result,
                       "calling %s.CreateCommandEncoder(%s).", this, descriptor)) {
-        return CommandEncoder::MakeError(this, descriptor ? descriptor->label : nullptr);
+        result = CommandEncoder::MakeError(this, descriptor ? descriptor->label : nullptr);
     }
-    return result.Detach();
+    return ReturnToAPI(std::move(result));
 }
 ComputePipelineBase* DeviceBase::APICreateComputePipeline(
     const ComputePipelineDescriptor* descriptor) {
+    utils::TraceLabel label = utils::GetLabelForTrace(descriptor->label);
     TRACE_EVENT1(GetPlatform(), General, "DeviceBase::APICreateComputePipeline", "label",
-                 utils::GetLabelForTrace(descriptor->label));
+                 label.label);
 
-    Ref<ComputePipelineBase> result;
-    if (ConsumedError(CreateComputePipeline(descriptor), &result,
-                      "calling %s.CreateComputePipeline(%s).", this, descriptor)) {
-        return ComputePipelineBase::MakeError(this, descriptor ? descriptor->label : nullptr);
+    auto resultOrError = CreateComputePipeline(descriptor);
+    if (resultOrError.IsSuccess()) {
+        return ReturnToAPI(resultOrError.AcquireSuccess());
     }
-    return result.Detach();
+
+    // Acquire the device lock for error handling.
+    // TODO(dawn:1662): Make error handling thread-safe.
+    auto deviceLock(GetScopedLock());
+    Ref<ComputePipelineBase> result;
+    if (ConsumedError(std::move(resultOrError), &result, InternalErrorType::Internal,
+                      "calling %s.CreateComputePipeline(%s).", this, descriptor)) {
+        result = ComputePipelineBase::MakeError(this, descriptor ? descriptor->label : nullptr);
+    }
+    return ReturnToAPI(std::move(result));
 }
 void DeviceBase::APICreateComputePipelineAsync(const ComputePipelineDescriptor* descriptor,
                                                WGPUCreateComputePipelineAsyncCallback callback,
                                                void* userdata) {
+    GetInstance()->EmitDeprecationWarning(
+        "Old CreateComputePipelineAsync APIs are deprecated. If using C please pass a CallbackInfo "
+        "struct that has two userdatas. Otherwise, if using C++, please use templated helpers.");
+
+    APICreateComputePipelineAsync2(
+        descriptor, {nullptr, WGPUCallbackMode_AllowProcessEvents,
+                     [](WGPUCreatePipelineAsyncStatus status, WGPUComputePipeline pipeline,
+                        WGPUStringView message, void* callback, void* userdata) {
+                         auto cb =
+                             reinterpret_cast<WGPUCreateComputePipelineAsyncCallback>(callback);
+                         cb(status, pipeline, message, userdata);
+                     },
+                     reinterpret_cast<void*>(callback), userdata});
+}
+Future DeviceBase::APICreateComputePipelineAsyncF(
+    const ComputePipelineDescriptor* descriptor,
+    const CreateComputePipelineAsyncCallbackInfo& callbackInfo) {
+    GetInstance()->EmitDeprecationWarning(
+        "Old CreateComputePipelineAsync APIs are deprecated. If using C please pass a CallbackInfo "
+        "struct that has two userdatas. Otherwise, if using C++, please use templated helpers.");
+    return APICreateComputePipelineAsync2(
+        descriptor, {ToAPI(callbackInfo.nextInChain), ToAPI(callbackInfo.mode),
+                     [](WGPUCreatePipelineAsyncStatus status, WGPUComputePipeline pipeline,
+                        WGPUStringView message, void* callback, void* userdata) {
+                         auto cb =
+                             reinterpret_cast<WGPUCreateComputePipelineAsyncCallback>(callback);
+                         cb(status, pipeline, message, userdata);
+                     },
+                     reinterpret_cast<void*>(callbackInfo.callback), callbackInfo.userdata});
+}
+Future DeviceBase::APICreateComputePipelineAsync2(
+    const ComputePipelineDescriptor* descriptor,
+    const WGPUCreateComputePipelineAsyncCallbackInfo2& callbackInfo) {
+    utils::TraceLabel label = utils::GetLabelForTrace(descriptor->label);
     TRACE_EVENT1(GetPlatform(), General, "DeviceBase::APICreateComputePipelineAsync", "label",
-                 utils::GetLabelForTrace(descriptor->label));
+                 label.label);
 
-    MaybeError maybeResult = CreateComputePipelineAsync(descriptor, callback, userdata);
+    EventManager* manager = GetInstance()->GetEventManager();
 
-    // Call the callback directly when a validation error has been found in the front-end
-    // validations. If there is no error, then CreateComputePipelineAsync will call the
-    // callback.
-    if (maybeResult.IsError()) {
-        std::unique_ptr<ErrorData> error = maybeResult.AcquireError();
-        WGPUCreatePipelineAsyncStatus status =
-            CreatePipelineAsyncStatusFromErrorType(error->GetType());
-        // TODO(crbug.com/dawn/1122): Call callbacks only on wgpuInstanceProcessEvents
-        mCallbackTaskManager->AddCallbackTask(
-            [callback, status, message = error->GetMessage(), userdata] {
-                callback(status, nullptr, message.c_str(), userdata);
-            });
+    auto GetFuture = [&](Ref<EventManager::TrackedEvent>&& event) {
+        FutureID futureID = manager->TrackEvent(std::move(event));
+        return Future{futureID};
+    };
+
+    if (IsLost()) {
+        // Device lost error: create an async event that completes when created.
+        return GetFuture(AcquireRef(new CreateComputePipelineAsyncEvent(
+            this, callbackInfo, DAWN_DEVICE_LOST_ERROR("Device lost"), descriptor->label)));
     }
+
+    auto resultOrError = CreateUninitializedComputePipeline(descriptor);
+    if (resultOrError.IsError()) {
+        // Validation error: create an async event that completes when created.
+        return GetFuture(AcquireRef(new CreateComputePipelineAsyncEvent(
+            this, callbackInfo, resultOrError.AcquireError(), descriptor->label)));
+    }
+
+    Ref<ComputePipelineBase> uninitializedComputePipeline = resultOrError.AcquireSuccess();
+    Ref<ComputePipelineBase> cachedComputePipeline =
+        GetCachedComputePipeline(uninitializedComputePipeline.Get());
+    if (cachedComputePipeline.Get() != nullptr) {
+        // Cached pipeline: create an async event that completes when created.
+        return GetFuture(AcquireRef(new CreateComputePipelineAsyncEvent(
+            this, callbackInfo, std::move(cachedComputePipeline))));
+    }
+
+    // New pipeline: create an event backed by system event that is really async.
+    Ref<CreateComputePipelineAsyncEvent> event = AcquireRef(new CreateComputePipelineAsyncEvent(
+        this, callbackInfo, std::move(uninitializedComputePipeline),
+        AcquireRef(new SystemEvent())));
+    Future future = GetFuture(event);
+    InitializeComputePipelineAsyncImpl(std::move(event));
+    return future;
 }
 PipelineLayoutBase* DeviceBase::APICreatePipelineLayout(
     const PipelineLayoutDescriptor* descriptor) {
     Ref<PipelineLayoutBase> result;
     if (ConsumedError(CreatePipelineLayout(descriptor), &result,
                       "calling %s.CreatePipelineLayout(%s).", this, descriptor)) {
-        return PipelineLayoutBase::MakeError(this, descriptor ? descriptor->label : nullptr);
+        result = PipelineLayoutBase::MakeError(this, descriptor ? descriptor->label : nullptr);
     }
-    return result.Detach();
+    return ReturnToAPI(std::move(result));
 }
 QuerySetBase* DeviceBase::APICreateQuerySet(const QuerySetDescriptor* descriptor) {
     Ref<QuerySetBase> result;
     if (ConsumedError(CreateQuerySet(descriptor), &result, InternalErrorType::OutOfMemory,
                       "calling %s.CreateQuerySet(%s).", this, descriptor)) {
-        return QuerySetBase::MakeError(this, descriptor);
+        result = QuerySetBase::MakeError(this, descriptor);
     }
-    return result.Detach();
+    return ReturnToAPI(std::move(result));
 }
 SamplerBase* DeviceBase::APICreateSampler(const SamplerDescriptor* descriptor) {
     Ref<SamplerBase> result;
     if (ConsumedError(CreateSampler(descriptor), &result, "calling %s.CreateSampler(%s).", this,
                       descriptor)) {
-        return SamplerBase::MakeError(this, descriptor ? descriptor->label : nullptr);
+        result = SamplerBase::MakeError(this, descriptor ? descriptor->label : nullptr);
     }
-    return result.Detach();
+    return ReturnToAPI(std::move(result));
 }
 void DeviceBase::APICreateRenderPipelineAsync(const RenderPipelineDescriptor* descriptor,
                                               WGPUCreateRenderPipelineAsyncCallback callback,
                                               void* userdata) {
-    TRACE_EVENT1(GetPlatform(), General, "DeviceBase::APICreateRenderPipelineAsync", "label",
-                 utils::GetLabelForTrace(descriptor->label));
-    // TODO(dawn:563): Add validation error context.
-    MaybeError maybeResult = CreateRenderPipelineAsync(descriptor, callback, userdata);
+    GetInstance()->EmitDeprecationWarning(
+        "Old CreateRenderPipelineAsync APIs are deprecated. If using C please pass a CallbackInfo "
+        "struct that has two userdatas. Otherwise, if using C++, please use templated helpers.");
 
-    // Call the callback directly when a validation error has been found in the front-end
-    // validations. If there is no error, then CreateRenderPipelineAsync will call the
-    // callback.
-    if (maybeResult.IsError()) {
-        std::unique_ptr<ErrorData> error = maybeResult.AcquireError();
-        WGPUCreatePipelineAsyncStatus status =
-            CreatePipelineAsyncStatusFromErrorType(error->GetType());
-        // TODO(crbug.com/dawn/1122): Call callbacks only on wgpuInstanceProcessEvents
-        mCallbackTaskManager->AddCallbackTask(
-            [callback, status, message = error->GetMessage(), userdata] {
-                callback(status, nullptr, message.c_str(), userdata);
-            });
+    APICreateRenderPipelineAsync2(
+        descriptor, {nullptr, WGPUCallbackMode_AllowProcessEvents,
+                     [](WGPUCreatePipelineAsyncStatus status, WGPURenderPipeline pipeline,
+                        WGPUStringView message, void* callback, void* userdata) {
+                         auto cb =
+                             reinterpret_cast<WGPUCreateRenderPipelineAsyncCallback>(callback);
+                         cb(status, pipeline, message, userdata);
+                     },
+                     reinterpret_cast<void*>(callback), userdata});
+}
+Future DeviceBase::APICreateRenderPipelineAsyncF(
+    const RenderPipelineDescriptor* descriptor,
+    const CreateRenderPipelineAsyncCallbackInfo& callbackInfo) {
+    GetInstance()->EmitDeprecationWarning(
+        "Old CreateRenderPipelineAsync APIs are deprecated. If using C please pass a CallbackInfo "
+        "struct that has two userdatas. Otherwise, if using C++, please use templated helpers.");
+    return APICreateRenderPipelineAsync2(
+        descriptor, {ToAPI(callbackInfo.nextInChain), ToAPI(callbackInfo.mode),
+                     [](WGPUCreatePipelineAsyncStatus status, WGPURenderPipeline pipeline,
+                        WGPUStringView message, void* callback, void* userdata) {
+                         auto cb =
+                             reinterpret_cast<WGPUCreateRenderPipelineAsyncCallback>(callback);
+                         cb(status, pipeline, message, userdata);
+                     },
+                     reinterpret_cast<void*>(callbackInfo.callback), callbackInfo.userdata});
+}
+Future DeviceBase::APICreateRenderPipelineAsync2(
+    const RenderPipelineDescriptor* descriptor,
+    const WGPUCreateRenderPipelineAsyncCallbackInfo2& callbackInfo) {
+    utils::TraceLabel label = utils::GetLabelForTrace(descriptor->label);
+    TRACE_EVENT1(GetPlatform(), General, "DeviceBase::APICreateRenderPipelineAsync", "label",
+                 label.label);
+
+    EventManager* manager = GetInstance()->GetEventManager();
+
+    auto GetFuture = [&](Ref<EventManager::TrackedEvent>&& event) {
+        FutureID futureID = manager->TrackEvent(std::move(event));
+        return Future{futureID};
+    };
+
+    if (IsLost()) {
+        // Device lost error: create an async event that completes when created.
+        return GetFuture(AcquireRef(new CreateRenderPipelineAsyncEvent(
+            this, callbackInfo, DAWN_DEVICE_LOST_ERROR("Device lost"), descriptor->label)));
     }
+
+    auto resultOrError = CreateUninitializedRenderPipeline(descriptor);
+    if (resultOrError.IsError()) {
+        // Validation error: create an async event that completes when created.
+        return GetFuture(AcquireRef(new CreateRenderPipelineAsyncEvent(
+            this, callbackInfo, resultOrError.AcquireError(), descriptor->label)));
+    }
+
+    Ref<RenderPipelineBase> uninitializedRenderPipeline = resultOrError.AcquireSuccess();
+    Ref<RenderPipelineBase> cachedRenderPipeline =
+        GetCachedRenderPipeline(uninitializedRenderPipeline.Get());
+    if (cachedRenderPipeline.Get() != nullptr) {
+        // Cached pipeline: create an async event that completes when created.
+        return GetFuture(AcquireRef(new CreateRenderPipelineAsyncEvent(
+            this, callbackInfo, std::move(cachedRenderPipeline))));
+    }
+
+    // New pipeline: create an event backed by system event that is really async.
+    Ref<CreateRenderPipelineAsyncEvent> event = AcquireRef(new CreateRenderPipelineAsyncEvent(
+        this, callbackInfo, std::move(uninitializedRenderPipeline), AcquireRef(new SystemEvent())));
+    Future future = GetFuture(event);
+    InitializeRenderPipelineAsyncImpl(std::move(event));
+    return future;
 }
 RenderBundleEncoder* DeviceBase::APICreateRenderBundleEncoder(
     const RenderBundleEncoderDescriptor* descriptor) {
     Ref<RenderBundleEncoder> result;
     if (ConsumedError(CreateRenderBundleEncoder(descriptor), &result,
                       "calling %s.CreateRenderBundleEncoder(%s).", this, descriptor)) {
-        return RenderBundleEncoder::MakeError(this, descriptor ? descriptor->label : nullptr);
+        result = RenderBundleEncoder::MakeError(this, descriptor ? descriptor->label : nullptr);
     }
-    return result.Detach();
+    return ReturnToAPI(std::move(result));
 }
 RenderPipelineBase* DeviceBase::APICreateRenderPipeline(
     const RenderPipelineDescriptor* descriptor) {
+    utils::TraceLabel label = utils::GetLabelForTrace(descriptor->label);
     TRACE_EVENT1(GetPlatform(), General, "DeviceBase::APICreateRenderPipeline", "label",
-                 utils::GetLabelForTrace(descriptor->label));
+                 label.label);
 
-    Ref<RenderPipelineBase> result;
-    if (ConsumedError(CreateRenderPipeline(descriptor), &result,
-                      "calling %s.CreateRenderPipeline(%s).", this, descriptor)) {
-        return RenderPipelineBase::MakeError(this, descriptor ? descriptor->label : nullptr);
+    auto resultOrError = CreateRenderPipeline(descriptor);
+    if (resultOrError.IsSuccess()) {
+        return ReturnToAPI(resultOrError.AcquireSuccess());
     }
-    return result.Detach();
+
+    // Acquire the device lock for error handling.
+    // TODO(dawn:1662): Make error handling thread-safe.
+    auto deviceLock(GetScopedLock());
+    Ref<RenderPipelineBase> result;
+    if (ConsumedError(std::move(resultOrError), &result, InternalErrorType::Internal,
+                      "calling %s.CreateRenderPipeline(%s).", this, descriptor)) {
+        result = RenderPipelineBase::MakeError(this, descriptor ? descriptor->label : nullptr);
+    }
+    return ReturnToAPI(std::move(result));
 }
 ShaderModuleBase* DeviceBase::APICreateShaderModule(const ShaderModuleDescriptor* descriptor) {
-    TRACE_EVENT1(GetPlatform(), General, "DeviceBase::APICreateShaderModule", "label",
-                 utils::GetLabelForTrace(descriptor->label));
+    utils::TraceLabel label = utils::GetLabelForTrace(descriptor->label);
+    TRACE_EVENT1(GetPlatform(), General, "DeviceBase::APICreateShaderModule", "label", label.label);
 
-    Ref<ShaderModuleBase> result;
     std::unique_ptr<OwnedCompilationMessages> compilationMessages(
         std::make_unique<OwnedCompilationMessages>());
-    if (ConsumedError(CreateShaderModule(descriptor, compilationMessages.get()), &result,
-                      "calling %s.CreateShaderModule(%s).", this, descriptor)) {
+    auto resultOrError =
+        CreateShaderModule(descriptor, /*internalExtensions=*/{}, &compilationMessages);
+    if (resultOrError.IsSuccess()) {
+        Ref<ShaderModuleBase> result = resultOrError.AcquireSuccess();
+        EmitCompilationLog(result.Get());
+        return ReturnToAPI(std::move(result));
+    }
+
+    // Acquire the device lock for error handling.
+    auto deviceLock(GetScopedLock());
+    Ref<ShaderModuleBase> result;
+    if (ConsumedError(std::move(resultOrError), &result, "calling %s.CreateShaderModule(%s).", this,
+                      descriptor)) {
         DAWN_ASSERT(result == nullptr);
         result = ShaderModuleBase::MakeError(this, descriptor ? descriptor->label : nullptr);
+        // Emit Tint errors and warnings for the error shader module.
+        // Also move the compilation messages to the shader module so the application can later
+        // retrieve it with GetCompilationInfo.
+        result->InjectCompilationMessages(std::move(compilationMessages));
     }
-    // Move compilation messages into ShaderModuleBase and emit tint errors and warnings
-    // after all other operations are finished, even if any of them is failed and result
-    // is an error shader module.
-    result->InjectCompilationMessages(std::move(compilationMessages));
-
-    return result.Detach();
+    EmitCompilationLog(result.Get());
+    return ReturnToAPI(std::move(result));
 }
-SwapChainBase* DeviceBase::APICreateSwapChain(Surface* surface,
-                                              const SwapChainDescriptor* descriptor) {
-    Ref<SwapChainBase> result;
-    if (ConsumedError(CreateSwapChain(surface, descriptor), &result,
-                      "calling %s.CreateSwapChain(%s).", this, descriptor)) {
-        return SwapChainBase::MakeError(this);
-    }
-    return result.Detach();
+
+ShaderModuleBase* DeviceBase::APICreateErrorShaderModule(const ShaderModuleDescriptor* descriptor,
+                                                         StringView errorMessage) {
+    Ref<ShaderModuleBase> result =
+        ShaderModuleBase::MakeError(this, descriptor ? descriptor->label : nullptr);
+    std::unique_ptr<OwnedCompilationMessages> compilationMessages(
+        std::make_unique<OwnedCompilationMessages>());
+    compilationMessages->AddUnanchoredMessage(errorMessage, wgpu::CompilationMessageType::Error);
+    result->InjectCompilationMessages(std::move(compilationMessages));
+    EmitCompilationLog(result.Get());
+
+    std::unique_ptr<ErrorData> errorData =
+        DAWN_VALIDATION_ERROR("Error in calling %s.CreateShaderModule(%s).", this, descriptor);
+    ConsumeError(std::move(errorData));
+
+    return ReturnToAPI(std::move(result));
 }
 TextureBase* DeviceBase::APICreateTexture(const TextureDescriptor* descriptor) {
     Ref<TextureBase> result;
     if (ConsumedError(CreateTexture(descriptor), &result, InternalErrorType::OutOfMemory,
                       "calling %s.CreateTexture(%s).", this, descriptor)) {
-        return TextureBase::MakeError(this, descriptor);
+        result = TextureBase::MakeError(this, descriptor);
     }
-    return result.Detach();
-}
-
-wgpu::TextureUsage DeviceBase::APIGetSupportedSurfaceUsage(Surface* surface) {
-    wgpu::TextureUsage result;
-    if (ConsumedError(GetSupportedSurfaceUsage(surface), &result,
-                      "calling %s.GetSupportedSurfaceUsage().", this)) {
-        return wgpu::TextureUsage::None;
-    }
-    return result;
+    return ReturnToAPI(std::move(result));
 }
 
 // For Dawn Wire
 
 BufferBase* DeviceBase::APICreateErrorBuffer(const BufferDescriptor* desc) {
-    BufferDescriptor fakeDescriptor = *desc;
-    fakeDescriptor.nextInChain = nullptr;
-
-    // The validation errors on BufferDescriptor should be prior to any OOM errors when
-    // MapppedAtCreation == false.
-    MaybeError maybeError = ValidateBufferDescriptor(this, &fakeDescriptor);
-
-    // Set the size of the error buffer to 0 as this function is called only when an OOM happens at
-    // the client side.
-    fakeDescriptor.size = 0;
-
-    if (maybeError.IsError()) {
-        std::unique_ptr<ErrorData> error = maybeError.AcquireError();
-        error->AppendContext("calling %s.CreateBuffer(%s).", this, desc);
-        HandleError(std::move(error), InternalErrorType::OutOfMemory);
-    } else {
-        const DawnBufferDescriptorErrorInfoFromWireClient* clientErrorInfo = nullptr;
-        FindInChain(desc->nextInChain, &clientErrorInfo);
+    UnpackedPtr<BufferDescriptor> unpacked;
+    if (!ConsumedError(ValidateBufferDescriptor(this, desc), &unpacked,
+                       InternalErrorType::OutOfMemory, "calling %s.CreateBuffer(%s).", this,
+                       desc)) {
+        auto* clientErrorInfo = unpacked.Get<DawnBufferDescriptorErrorInfoFromWireClient>();
         if (clientErrorInfo != nullptr && clientErrorInfo->outOfMemory) {
             HandleError(DAWN_OUT_OF_MEMORY_ERROR("Failed to allocate memory for buffer mapping"),
                         InternalErrorType::OutOfMemory);
         }
     }
 
-    return BufferBase::MakeError(this, &fakeDescriptor);
+    // Set the size of the error buffer to 0 as this function is called only when an OOM happens at
+    // the client side.
+    BufferDescriptor fakeDescriptor = *desc;
+    fakeDescriptor.size = 0;
+    return ReturnToAPI(BufferBase::MakeError(this, &fakeDescriptor));
 }
 
 ExternalTextureBase* DeviceBase::APICreateErrorExternalTexture() {
-    return ExternalTextureBase::MakeError(this);
+    return ReturnToAPI(ExternalTextureBase::MakeError(this));
 }
 
 TextureBase* DeviceBase::APICreateErrorTexture(const TextureDescriptor* desc) {
-    return TextureBase::MakeError(this, desc);
+    return ReturnToAPI(TextureBase::MakeError(this, desc));
 }
 
 // Other Device API methods
 
 // Returns true if future ticking is needed.
 bool DeviceBase::APITick() {
+    // TODO(dawn:1987) Add deprecation warning when Instance.ProcessEvents no longer calls this.
+
     // Tick may trigger callbacks which drop a ref to the device itself. Hold a Ref to ourselves
     // to avoid deleting |this| in the middle of this function call.
     Ref<DeviceBase> self(this);
@@ -1326,56 +1701,111 @@ bool DeviceBase::APITick() {
 }
 
 MaybeError DeviceBase::Tick() {
-    if (IsLost() || !HasScheduledCommands()) {
+    if (IsLost() || !mQueue->HasScheduledCommands()) {
         return {};
     }
 
     // To avoid overly ticking, we only want to tick when:
     // 1. the last submitted serial has moved beyond the completed serial
     // 2. or the backend still has pending commands to submit.
-    DAWN_TRY(CheckPassedSerials());
+    DAWN_TRY(mQueue->CheckPassedSerials());
     DAWN_TRY(TickImpl());
 
     // TODO(crbug.com/dawn/833): decouple TickImpl from updating the serial so that we can
     // tick the dynamic uploader before the backend resource allocators. This would allow
     // reclaiming resources one tick earlier.
-    mDynamicUploader->Deallocate(mCompletedSerial);
-    mQueue->Tick(mCompletedSerial);
+    mDynamicUploader->Deallocate(mQueue->GetCompletedCommandSerial());
+    mQueue->Tick(mQueue->GetCompletedCommandSerial());
 
     return {};
 }
 
 AdapterBase* DeviceBase::APIGetAdapter() {
-    mAdapter->Reference();
+    mAdapter->APIAddRef();
     return mAdapter.Get();
 }
 
 QueueBase* DeviceBase::APIGetQueue() {
     // Backends gave the primary queue during initialization.
-    ASSERT(mQueue != nullptr);
-
-    // Returns a new reference to the queue.
-    mQueue->Reference();
-    return mQueue.Get();
+    DAWN_ASSERT(mQueue != nullptr);
+    auto queue = mQueue;
+    return ReturnToAPI(std::move(queue));
 }
 
 ExternalTextureBase* DeviceBase::APICreateExternalTexture(
     const ExternalTextureDescriptor* descriptor) {
-    Ref<ExternalTextureBase> result = nullptr;
+    Ref<ExternalTextureBase> result;
     if (ConsumedError(CreateExternalTextureImpl(descriptor), &result,
                       "calling %s.CreateExternalTexture(%s).", this, descriptor)) {
-        return ExternalTextureBase::MakeError(this);
+        result = ExternalTextureBase::MakeError(this);
     }
 
+    return ReturnToAPI(std::move(result));
+}
+
+SharedBufferMemoryBase* DeviceBase::APIImportSharedBufferMemory(
+    const SharedBufferMemoryDescriptor* descriptor) {
+    Ref<SharedBufferMemoryBase> result = nullptr;
+    if (ConsumedError(
+            [&]() -> ResultOrError<Ref<SharedBufferMemoryBase>> {
+                DAWN_TRY(ValidateIsAlive());
+                return ImportSharedBufferMemoryImpl(descriptor);
+            }(),
+            &result, "calling %s.ImportSharedBufferMemory(%s).", this, descriptor)) {
+        return SharedBufferMemoryBase::MakeError(this, descriptor);
+    }
     return result.Detach();
 }
 
-void DeviceBase::ApplyFeatures(const DeviceDescriptor* deviceDescriptor) {
-    ASSERT(deviceDescriptor);
-    ASSERT(GetAdapter()->SupportsAllRequiredFeatures(
-        {deviceDescriptor->requiredFeatures, deviceDescriptor->requiredFeaturesCount}));
+ResultOrError<Ref<SharedBufferMemoryBase>> DeviceBase::ImportSharedBufferMemoryImpl(
+    const SharedBufferMemoryDescriptor* descriptor) {
+    return DAWN_UNIMPLEMENTED_ERROR("Not implemented");
+}
 
-    for (uint32_t i = 0; i < deviceDescriptor->requiredFeaturesCount; ++i) {
+SharedTextureMemoryBase* DeviceBase::APIImportSharedTextureMemory(
+    const SharedTextureMemoryDescriptor* descriptor) {
+    Ref<SharedTextureMemoryBase> result;
+    if (ConsumedError(
+            [&]() -> ResultOrError<Ref<SharedTextureMemoryBase>> {
+                DAWN_TRY(ValidateIsAlive());
+                return ImportSharedTextureMemoryImpl(descriptor);
+            }(),
+            &result, "calling %s.ImportSharedTextureMemory(%s).", this, descriptor)) {
+        result = SharedTextureMemoryBase::MakeError(this, descriptor);
+    }
+    return ReturnToAPI(std::move(result));
+}
+
+ResultOrError<Ref<SharedTextureMemoryBase>> DeviceBase::ImportSharedTextureMemoryImpl(
+    const SharedTextureMemoryDescriptor* descriptor) {
+    return DAWN_UNIMPLEMENTED_ERROR("Not implemented");
+}
+
+SharedFenceBase* DeviceBase::APIImportSharedFence(const SharedFenceDescriptor* descriptor) {
+    Ref<SharedFenceBase> result;
+    if (ConsumedError(
+            [&]() -> ResultOrError<Ref<SharedFenceBase>> {
+                DAWN_TRY(ValidateIsAlive());
+                return ImportSharedFenceImpl(descriptor);
+            }(),
+            &result, "calling %s.ImportSharedFence(%s).", this, descriptor)) {
+        result = SharedFenceBase::MakeError(this, descriptor);
+    }
+    return ReturnToAPI(std::move(result));
+}
+
+ResultOrError<Ref<SharedFenceBase>> DeviceBase::ImportSharedFenceImpl(
+    const SharedFenceDescriptor* descriptor) {
+    return DAWN_UNIMPLEMENTED_ERROR("Not implemented");
+}
+
+void DeviceBase::ApplyFeatures(const UnpackedPtr<DeviceDescriptor>& deviceDescriptor) {
+    DAWN_ASSERT(deviceDescriptor);
+    // Validate all required features with device toggles.
+    DAWN_ASSERT(GetPhysicalDevice()->SupportsAllRequiredFeatures(
+        {deviceDescriptor->requiredFeatures, deviceDescriptor->requiredFeatureCount}, mToggles));
+
+    for (uint32_t i = 0; i < deviceDescriptor->requiredFeatureCount; ++i) {
         mEnabledFeatures.EnableFeature(deviceDescriptor->requiredFeatures[i]);
     }
 }
@@ -1385,21 +1815,50 @@ bool DeviceBase::HasFeature(Feature feature) const {
 }
 
 void DeviceBase::SetWGSLExtensionAllowList() {
-    // Set the WGSL extensions allow list based on device's enabled features and other
-    // properties.
-    if (mEnabledFeatures.IsEnabled(Feature::ChromiumExperimentalDp4a)) {
-        mWGSLExtensionAllowList.insert("chromium_experimental_dp4a");
-    }
+    // Set the WGSL extensions and language features allow list based on device's enabled features
+    // and other properties.
     if (mEnabledFeatures.IsEnabled(Feature::ShaderF16)) {
-        mWGSLExtensionAllowList.insert("f16");
+        mWGSLAllowedFeatures.extensions.insert(tint::wgsl::Extension::kF16);
     }
-    if (!IsToggleEnabled(Toggle::DisallowUnsafeAPIs)) {
-        mWGSLExtensionAllowList.insert("chromium_disable_uniformity_analysis");
+    // TODO(349125474): Remove deprecated ChromiumExperimentalSubgroups.
+    if (mEnabledFeatures.IsEnabled(Feature::ChromiumExperimentalSubgroups)) {
+        mWGSLAllowedFeatures.extensions.insert(
+            tint::wgsl::Extension::kChromiumExperimentalSubgroups);
     }
+    if (mEnabledFeatures.IsEnabled(Feature::Subgroups)) {
+        mWGSLAllowedFeatures.extensions.insert(tint::wgsl::Extension::kSubgroups);
+    }
+    if (mEnabledFeatures.IsEnabled(Feature::SubgroupsF16)) {
+        mWGSLAllowedFeatures.extensions.insert(tint::wgsl::Extension::kSubgroupsF16);
+    }
+    if (IsToggleEnabled(Toggle::AllowUnsafeAPIs)) {
+        mWGSLAllowedFeatures.extensions.insert(
+            tint::wgsl::Extension::kChromiumDisableUniformityAnalysis);
+        mWGSLAllowedFeatures.extensions.insert(tint::wgsl::Extension::kChromiumInternalGraphite);
+    }
+    if (mEnabledFeatures.IsEnabled(Feature::DualSourceBlending)) {
+        mWGSLAllowedFeatures.extensions.insert(tint::wgsl::Extension::kDualSourceBlending);
+    }
+    if (mEnabledFeatures.IsEnabled(Feature::PixelLocalStorageNonCoherent) ||
+        mEnabledFeatures.IsEnabled(Feature::PixelLocalStorageCoherent)) {
+        mWGSLAllowedFeatures.extensions.insert(
+            tint::wgsl::Extension::kChromiumExperimentalPixelLocal);
+    }
+    if (mEnabledFeatures.IsEnabled(Feature::FramebufferFetch)) {
+        mWGSLAllowedFeatures.extensions.insert(
+            tint::wgsl::Extension::kChromiumExperimentalFramebufferFetch);
+    }
+    if (mEnabledFeatures.IsEnabled(Feature::ClipDistances)) {
+        mWGSLAllowedFeatures.extensions.insert(tint::wgsl::Extension::kClipDistances);
+    }
+
+    // Language features are enabled instance-wide.
+    const auto& allowedFeatures = GetInstance()->GetAllowedWGSLLanguageFeatures();
+    mWGSLAllowedFeatures.features = {allowedFeatures.begin(), allowedFeatures.end()};
 }
 
-WGSLExtensionSet DeviceBase::GetWGSLExtensionAllowList() const {
-    return mWGSLExtensionAllowList;
+const tint::wgsl::AllowedFeatures& DeviceBase::GetWGSLAllowedFeatures() const {
+    return mWGSLAllowedFeatures;
 }
 
 bool DeviceBase::IsValidationEnabled() const {
@@ -1410,6 +1869,14 @@ bool DeviceBase::IsRobustnessEnabled() const {
     return !IsToggleEnabled(Toggle::DisableRobustness);
 }
 
+bool DeviceBase::IsCompatibilityMode() const {
+    return mAdapter != nullptr && mAdapter->GetFeatureLevel() == FeatureLevel::Compatibility;
+}
+
+bool DeviceBase::IsImmediateErrorHandlingEnabled() const {
+    return mIsImmediateErrorHandlingEnabled;
+}
+
 size_t DeviceBase::GetLazyClearCountForTesting() {
     return mLazyClearCountForTesting;
 }
@@ -1418,37 +1885,124 @@ void DeviceBase::IncrementLazyClearCountForTesting() {
     ++mLazyClearCountForTesting;
 }
 
-size_t DeviceBase::GetDeprecationWarningCountForTesting() {
-    return mDeprecationWarnings->count;
-}
-
-void DeviceBase::EmitDeprecationWarning(const std::string& message) {
-    mDeprecationWarnings->count++;
-    if (mDeprecationWarnings->emitted.insert(message).second) {
-        dawn::WarningLog() << message;
+void DeviceBase::EmitWarningOnce(std::string_view message) {
+    if (mWarnings.insert(std::string{message}).second) {
+        this->EmitLog(WGPULoggingType_Warning, message);
     }
 }
 
-void DeviceBase::EmitLog(const char* message) {
+void DeviceBase::EmitCompilationLog(const ShaderModuleBase* module) {
+    const OwnedCompilationMessages* messages = module->GetCompilationMessages();
+    if (!messages->HasWarningsOrErrors()) {
+        return;
+    }
+
+    // Limit the number of compilation error emitted to avoid spamming the devtools console hard.
+    constexpr uint32_t kCompilationLogSpamLimit = 20;
+    if (mEmittedCompilationLogCount.load(std::memory_order_acquire) > kCompilationLogSpamLimit) {
+        return;
+    }
+
+    if (mEmittedCompilationLogCount.fetch_add(1, std::memory_order_acq_rel) ==
+        kCompilationLogSpamLimit - 1) {
+        // Note: if there are multiple threads emitting logs, this may not actually be the exact
+        // last message. This is probably not a huge problem since this message will be emitted
+        // somewhere near the end.
+        return EmitLog(WGPULoggingType_Warning,
+                       "Reached the WGSL compilation log warning limit. To see all the compilation "
+                       "logs, query them directly on the ShaderModule objects.");
+    }
+
+    // Emit the formatted Tint errors and warnings.
+    std::ostringstream t;
+    t << absl::StrFormat("Compilation log for %s:", module);
+    for (const auto& pMessage : messages->GetFormattedTintMessages()) {
+        t << "\n" << pMessage;
+    }
+
+    EmitLog(WGPULoggingType_Warning, t.str().c_str());
+}
+
+void DeviceBase::EmitLog(std::string_view message) {
     this->EmitLog(WGPULoggingType_Info, message);
 }
 
-void DeviceBase::EmitLog(WGPULoggingType loggingType, const char* message) {
-    if (mLoggingCallback != nullptr) {
-        // Use the thread-safe CallbackTaskManager routine
-        std::unique_ptr<LoggingCallbackTask> callbackTask = std::make_unique<LoggingCallbackTask>(
-            mLoggingCallback, loggingType, message, mLoggingUserdata);
-        mCallbackTaskManager->AddCallbackTask(std::move(callbackTask));
+void DeviceBase::EmitLog(WGPULoggingType loggingType, std::string_view message) {
+    // Acquire a shared lock. This allows multiple threads to emit logs,
+    // or even logs to be emitted re-entrantly. It will block if there is a call
+    // to SetLoggingCallback. Applications should not call SetLoggingCallback inside
+    // the logging callback or they will deadlock.
+    std::shared_lock<std::shared_mutex> lock(mLoggingMutex);
+    if (mLoggingCallback) {
+        mLoggingCallback(loggingType, ToOutputStringView(message), mLoggingUserdata);
     }
 }
 
-bool DeviceBase::APIGetLimits(SupportedLimits* limits) const {
-    ASSERT(limits != nullptr);
-    if (limits->nextInChain != nullptr) {
-        return false;
+wgpu::Status DeviceBase::APIGetAHardwareBufferProperties(void* handle,
+                                                         AHardwareBufferProperties* properties) {
+    if (!HasFeature(Feature::SharedTextureMemoryAHardwareBuffer)) {
+        ConsumeError(
+            DAWN_VALIDATION_ERROR("Queried APIGetAHardwareBufferProperties() on %s "
+                                  "without the %s feature being set.",
+                                  this, ToAPI(Feature::SharedTextureMemoryAHardwareBuffer)));
+        return wgpu::Status::Error;
     }
+
+    // This method makes a Vulkan API call that will return an error if `handle` is invalid. This
+    // is not cause to lose the Dawn device, as it is a client-side error and not a true internal
+    // Dawn error.
+    if (ConsumedError(GetAHardwareBufferPropertiesImpl(handle, properties),
+                      InternalErrorType::Internal)) {
+        return wgpu::Status::Error;
+    }
+
+    return wgpu::Status::Success;
+}
+
+wgpu::Status DeviceBase::APIGetLimits(SupportedLimits* limits) const {
+    DAWN_ASSERT(limits != nullptr);
+    InstanceBase* instance = GetAdapter()->GetInstance();
+
+    UnpackedPtr<SupportedLimits> unpacked;
+    if (instance->ConsumedError(ValidateAndUnpack(limits), &unpacked)) {
+        return wgpu::Status::Error;
+    }
+
     limits->limits = mLimits.v1;
-    return true;
+
+    if (auto* subgroupLimits = unpacked.Get<DawnExperimentalSubgroupLimits>()) {
+        wgpu::ChainedStructOut* originalChain = subgroupLimits->nextInChain;
+        // TODO(349125474): Remove deprecated ChromiumExperimentalSubgroups.
+        if (!(HasFeature(Feature::Subgroups) ||
+              HasFeature(Feature::ChromiumExperimentalSubgroups))) {
+            // If subgroups feature is not enabled, return the default-initialized
+            // DawnExperimentalSubgroupLimits object, where minSubgroupSize and
+            // maxSubgroupSize are WGPU_LIMIT_U32_UNDEFINED.
+            *subgroupLimits = DawnExperimentalSubgroupLimits{};
+        } else {
+            *subgroupLimits = mLimits.experimentalSubgroupLimits;
+        }
+
+        // Recover origin chain.
+        subgroupLimits->nextInChain = originalChain;
+    }
+
+    if (auto* immediateDataLimits = unpacked.Get<DawnExperimentalImmediateDataLimits>()) {
+        wgpu::ChainedStructOut* originalChain = immediateDataLimits->nextInChain;
+        if (!HasFeature(Feature::ChromiumExperimentalImmediateData)) {
+            // If immediate data feature is not enabled, return the default-initialized
+            // DawnExperimentalImmediateDataLimits object, where maxImmediateDataRangeByteSize and
+            // are WGPU_LIMIT_U32_UNDEFINED.
+            *immediateDataLimits = DawnExperimentalImmediateDataLimits{};
+        } else {
+            *immediateDataLimits = mLimits.experimentalImmediateDataLimits;
+        }
+
+        // Recover origin chain.
+        immediateDataLimits->nextInChain = originalChain;
+    }
+
+    return wgpu::Status::Success;
 }
 
 bool DeviceBase::APIHasFeature(wgpu::FeatureName feature) const {
@@ -1459,7 +2013,15 @@ size_t DeviceBase::APIEnumerateFeatures(wgpu::FeatureName* features) const {
     return mEnabledFeatures.EnumerateFeatures(features);
 }
 
-void DeviceBase::APIInjectError(wgpu::ErrorType type, const char* message) {
+void DeviceBase::APIGetFeatures(wgpu::SupportedFeatures* features) const {
+    this->APIGetFeatures(reinterpret_cast<SupportedFeatures*>(features));
+}
+
+void DeviceBase::APIGetFeatures(SupportedFeatures* features) const {
+    mEnabledFeatures.ToSupportedFeatures(features);
+}
+
+void DeviceBase::APIInjectError(wgpu::ErrorType type, StringView message) {
     if (ConsumedError(ValidateErrorType(type))) {
         return;
     }
@@ -1472,15 +2034,30 @@ void DeviceBase::APIInjectError(wgpu::ErrorType type, const char* message) {
         return;
     }
 
-    HandleError(DAWN_MAKE_ERROR(FromWGPUErrorType(type), message), InternalErrorType::OutOfMemory);
+    message = utils::NormalizeMessageString(message);
+    HandleError(DAWN_MAKE_ERROR(FromWGPUErrorType(type), std::string(message)),
+                InternalErrorType::OutOfMemory);
 }
 
-void DeviceBase::APIValidateTextureDescriptor(const TextureDescriptor* desc) {
-    DAWN_UNUSED(ConsumedError(ValidateTextureDescriptor(this, desc)));
+void DeviceBase::APIValidateTextureDescriptor(const TextureDescriptor* descriptorOrig) {
+    AllowMultiPlanarTextureFormat allowMultiPlanar;
+    if (HasFeature(Feature::MultiPlanarFormatExtendedUsages)) {
+        allowMultiPlanar = AllowMultiPlanarTextureFormat::Yes;
+    } else {
+        allowMultiPlanar = AllowMultiPlanarTextureFormat::No;
+    }
+
+    TextureDescriptor rawDescriptor = descriptorOrig->WithTrivialFrontendDefaults();
+
+    UnpackedPtr<TextureDescriptor> unpacked;
+    if (!ConsumedError(ValidateAndUnpack(&rawDescriptor), &unpacked)) {
+        [[maybe_unused]] bool hadError =
+            ConsumedError(ValidateTextureDescriptor(this, unpacked, allowMultiPlanar));
+    }
 }
 
 QueueBase* DeviceBase::GetQueue() const {
-    ASSERT(mQueue != nullptr);
+    DAWN_ASSERT(mQueue != nullptr);
     return mQueue.Get();
 }
 
@@ -1507,10 +2084,13 @@ ResultOrError<Ref<BindGroupLayoutBase>> DeviceBase::CreateBindGroupLayout(
     return GetOrCreateBindGroupLayout(descriptor);
 }
 
-ResultOrError<Ref<BufferBase>> DeviceBase::CreateBuffer(const BufferDescriptor* descriptor) {
+ResultOrError<Ref<BufferBase>> DeviceBase::CreateBuffer(const BufferDescriptor* rawDescriptor) {
     DAWN_TRY(ValidateIsAlive());
+    UnpackedPtr<BufferDescriptor> descriptor;
     if (IsValidationEnabled()) {
-        DAWN_TRY(ValidateBufferDescriptor(this, descriptor));
+        DAWN_TRY_ASSIGN(descriptor, ValidateBufferDescriptor(this, rawDescriptor));
+    } else {
+        descriptor = Unpack(rawDescriptor);
     }
 
     Ref<BufferBase> buffer;
@@ -1525,28 +2105,30 @@ ResultOrError<Ref<BufferBase>> DeviceBase::CreateBuffer(const BufferDescriptor* 
 
 ResultOrError<Ref<ComputePipelineBase>> DeviceBase::CreateComputePipeline(
     const ComputePipelineDescriptor* descriptor) {
-    DAWN_TRY(ValidateIsAlive());
-    if (IsValidationEnabled()) {
-        DAWN_TRY(ValidateComputePipelineDescriptor(this, descriptor));
+    // If a pipeline layout is not specified, we cannot use cached pipelines.
+    bool useCache = descriptor->layout != nullptr;
+
+    Ref<ComputePipelineBase> uninitializedComputePipeline;
+    DAWN_TRY_ASSIGN(uninitializedComputePipeline, CreateUninitializedComputePipeline(descriptor));
+
+    if (useCache) {
+        Ref<ComputePipelineBase> cachedComputePipeline =
+            GetCachedComputePipeline(uninitializedComputePipeline.Get());
+        if (cachedComputePipeline.Get() != nullptr) {
+            return cachedComputePipeline;
+        }
     }
 
-    // Ref will keep the pipeline layout alive until the end of the function where
-    // the pipeline will take another reference.
-    Ref<PipelineLayoutBase> layoutRef;
-    ComputePipelineDescriptor appliedDescriptor;
-    DAWN_TRY_ASSIGN(layoutRef, ValidateLayoutAndGetComputePipelineDescriptorWithDefaults(
-                                   this, *descriptor, &appliedDescriptor));
-
-    Ref<ComputePipelineBase> uninitializedComputePipeline =
-        CreateUninitializedComputePipelineImpl(&appliedDescriptor);
-    Ref<ComputePipelineBase> cachedComputePipeline =
-        GetCachedComputePipeline(uninitializedComputePipeline.Get());
-    if (cachedComputePipeline.Get() != nullptr) {
-        return cachedComputePipeline;
+    MaybeError maybeError;
+    {
+        SCOPED_DAWN_HISTOGRAM_TIMER_MICROS(GetPlatform(), "CreateComputePipelineUS");
+        maybeError = uninitializedComputePipeline->Initialize();
     }
+    DAWN_HISTOGRAM_BOOLEAN(GetPlatform(), "CreateComputePipelineSuccess", maybeError.IsSuccess());
 
-    DAWN_TRY(uninitializedComputePipeline->Initialize());
-    return AddOrGetCachedComputePipeline(std::move(uninitializedComputePipeline));
+    DAWN_TRY(std::move(maybeError));
+    return useCache ? AddOrGetCachedComputePipeline(std::move(uninitializedComputePipeline))
+                    : std::move(uninitializedComputePipeline);
 }
 
 ResultOrError<Ref<CommandEncoder>> DeviceBase::CreateCommandEncoder(
@@ -1557,20 +2139,22 @@ ResultOrError<Ref<CommandEncoder>> DeviceBase::CreateCommandEncoder(
     }
 
     DAWN_TRY(ValidateIsAlive());
+    UnpackedPtr<CommandEncoderDescriptor> unpacked;
     if (IsValidationEnabled()) {
-        DAWN_TRY(ValidateCommandEncoderDescriptor(this, descriptor));
+        DAWN_TRY_ASSIGN(unpacked, ValidateCommandEncoderDescriptor(this, descriptor));
+    } else {
+        unpacked = Unpack(descriptor);
     }
-    return CommandEncoder::Create(this, descriptor);
+    return CommandEncoder::Create(this, unpacked);
 }
 
 // Overwritten on the backends to return pipeline caches if supported.
 Ref<PipelineCacheBase> DeviceBase::GetOrCreatePipelineCacheImpl(const CacheKey& key) {
-    UNREACHABLE();
+    DAWN_UNREACHABLE();
 }
 
-MaybeError DeviceBase::CreateComputePipelineAsync(const ComputePipelineDescriptor* descriptor,
-                                                  WGPUCreateComputePipelineAsyncCallback callback,
-                                                  void* userdata) {
+ResultOrError<Ref<ComputePipelineBase>> DeviceBase::CreateUninitializedComputePipeline(
+    const ComputePipelineDescriptor* descriptor) {
     DAWN_TRY(ValidateIsAlive());
     if (IsValidationEnabled()) {
         DAWN_TRY(ValidateComputePipelineDescriptor(this, descriptor));
@@ -1581,75 +2165,42 @@ MaybeError DeviceBase::CreateComputePipelineAsync(const ComputePipelineDescripto
     DAWN_TRY_ASSIGN(layoutRef, ValidateLayoutAndGetComputePipelineDescriptorWithDefaults(
                                    this, *descriptor, &appliedDescriptor));
 
-    Ref<ComputePipelineBase> uninitializedComputePipeline =
-        CreateUninitializedComputePipelineImpl(&appliedDescriptor);
-
-    // Call the callback directly when we can get a cached compute pipeline object.
-    Ref<ComputePipelineBase> cachedComputePipeline =
-        GetCachedComputePipeline(uninitializedComputePipeline.Get());
-    if (cachedComputePipeline.Get() != nullptr) {
-        // TODO(crbug.com/dawn/1122): Call callbacks only on wgpuInstanceProcessEvents
-        mCallbackTaskManager->AddCallbackTask(
-            std::bind(callback, WGPUCreatePipelineAsyncStatus_Success,
-                      ToAPI(cachedComputePipeline.Detach()), "", userdata));
-    } else {
-        // Otherwise we will create the pipeline object in InitializeComputePipelineAsyncImpl(),
-        // where the pipeline object may be initialized asynchronously and the result will be
-        // saved to mCreatePipelineAsyncTracker.
-        InitializeComputePipelineAsyncImpl(std::move(uninitializedComputePipeline), callback,
-                                           userdata);
-    }
-
-    return {};
+    return CreateUninitializedComputePipelineImpl(Unpack(&appliedDescriptor));
 }
 
-// This function is overwritten with the async version on the backends that supports
-//  initializing compute pipelines asynchronously.
-void DeviceBase::InitializeComputePipelineAsyncImpl(Ref<ComputePipelineBase> computePipeline,
-                                                    WGPUCreateComputePipelineAsyncCallback callback,
-                                                    void* userdata) {
-    MaybeError maybeError = computePipeline->Initialize();
-    if (maybeError.IsError()) {
-        std::unique_ptr<ErrorData> error = maybeError.AcquireError();
-        WGPUCreatePipelineAsyncStatus status =
-            CreatePipelineAsyncStatusFromErrorType(error->GetType());
-        mCallbackTaskManager->AddCallbackTask(
-            std::make_unique<CreateComputePipelineAsyncCallbackTask>(status, error->GetMessage(),
-                                                                     callback, userdata));
-    } else {
-        mCallbackTaskManager->AddCallbackTask(
-            std::make_unique<CreateComputePipelineAsyncCallbackTask>(
-                AddOrGetCachedComputePipeline(std::move(computePipeline)), callback, userdata));
-    }
+// This base version is creating the pipeline synchronously,
+// and is overwritten on the backends that actually support asynchronous pipeline creation.
+void DeviceBase::InitializeComputePipelineAsyncImpl(Ref<CreateComputePipelineAsyncEvent> event) {
+    event->InitializeSync();
 }
 
-// This function is overwritten with the async version on the backends
-// that supports initializing render pipeline asynchronously
-void DeviceBase::InitializeRenderPipelineAsyncImpl(Ref<RenderPipelineBase> renderPipeline,
-                                                   WGPUCreateRenderPipelineAsyncCallback callback,
-                                                   void* userdata) {
-    MaybeError maybeError = renderPipeline->Initialize();
-    if (maybeError.IsError()) {
-        std::unique_ptr<ErrorData> error = maybeError.AcquireError();
-        WGPUCreatePipelineAsyncStatus status =
-            CreatePipelineAsyncStatusFromErrorType(error->GetType());
-        mCallbackTaskManager->AddCallbackTask(
-            std::make_unique<CreateRenderPipelineAsyncCallbackTask>(status, error->GetMessage(),
-                                                                    callback, userdata));
-    } else {
-        mCallbackTaskManager->AddCallbackTask(
-            std::make_unique<CreateRenderPipelineAsyncCallbackTask>(
-                AddOrGetCachedRenderPipeline(std::move(renderPipeline)), callback, userdata));
-    }
+// This base version is creating the pipeline synchronously,
+// and is overwritten on the backends that actually support asynchronous pipeline creation.
+void DeviceBase::InitializeRenderPipelineAsyncImpl(Ref<CreateRenderPipelineAsyncEvent> event) {
+    event->InitializeSync();
 }
 
 ResultOrError<Ref<PipelineLayoutBase>> DeviceBase::CreatePipelineLayout(
-    const PipelineLayoutDescriptor* descriptor) {
+    const PipelineLayoutDescriptor* descriptor,
+    PipelineCompatibilityToken pipelineCompatibilityToken) {
     DAWN_TRY(ValidateIsAlive());
+    UnpackedPtr<PipelineLayoutDescriptor> unpacked;
     if (IsValidationEnabled()) {
-        DAWN_TRY(ValidatePipelineLayoutDescriptor(this, descriptor));
+        DAWN_TRY_ASSIGN(unpacked, ValidatePipelineLayoutDescriptor(this, descriptor,
+                                                                   pipelineCompatibilityToken));
+    } else {
+        unpacked = Unpack(descriptor);
     }
-    return GetOrCreatePipelineLayout(descriptor);
+
+    // When we are not creating explicit pipeline layouts, i.e. we are using 'auto', don't use the
+    // cache.
+    if (pipelineCompatibilityToken != kExplicitPCT) {
+        Ref<PipelineLayoutBase> result;
+        DAWN_TRY_ASSIGN(result, CreatePipelineLayoutImpl(unpacked));
+        result->SetContentHash(result->ComputeContentHash());
+        return result;
+    }
+    return GetOrCreatePipelineLayout(unpacked);
 }
 
 ResultOrError<Ref<ExternalTextureBase>> DeviceBase::CreateExternalTextureImpl(
@@ -1682,10 +2233,45 @@ ResultOrError<Ref<RenderBundleEncoder>> DeviceBase::CreateRenderBundleEncoder(
 }
 
 ResultOrError<Ref<RenderPipelineBase>> DeviceBase::CreateRenderPipeline(
-    const RenderPipelineDescriptor* descriptor) {
+    const RenderPipelineDescriptor* descriptor,
+    bool allowInternalBinding) {
+    // If a pipeline layout is not specified, we cannot use cached pipelines.
+    bool useCache = descriptor->layout != nullptr;
+
+    Ref<RenderPipelineBase> uninitializedRenderPipeline;
+    DAWN_TRY_ASSIGN(uninitializedRenderPipeline,
+                    CreateUninitializedRenderPipeline(descriptor, allowInternalBinding));
+
+    if (useCache) {
+        Ref<RenderPipelineBase> cachedRenderPipeline =
+            GetCachedRenderPipeline(uninitializedRenderPipeline.Get());
+        if (cachedRenderPipeline != nullptr) {
+            return cachedRenderPipeline;
+        }
+    }
+
+    MaybeError maybeError;
+    {
+        SCOPED_DAWN_HISTOGRAM_TIMER_MICROS(GetPlatform(), "CreateRenderPipelineUS");
+        maybeError = uninitializedRenderPipeline->Initialize();
+    }
+    DAWN_HISTOGRAM_BOOLEAN(GetPlatform(), "CreateRenderPipelineSuccess", maybeError.IsSuccess());
+
+    DAWN_TRY(std::move(maybeError));
+    return useCache ? AddOrGetCachedRenderPipeline(std::move(uninitializedRenderPipeline))
+                    : std::move(uninitializedRenderPipeline);
+}
+
+ResultOrError<Ref<RenderPipelineBase>> DeviceBase::CreateUninitializedRenderPipeline(
+    const RenderPipelineDescriptor* descriptor,
+    bool allowInternalBinding) {
     DAWN_TRY(ValidateIsAlive());
     if (IsValidationEnabled()) {
         DAWN_TRY(ValidateRenderPipelineDescriptor(this, descriptor));
+
+        // Validation for kMaxBindGroupsPlusVertexBuffers is skipped because it is not necessary so
+        // far.
+        static_assert(kMaxBindGroups + kMaxVertexBuffers <= kMaxBindGroupsPlusVertexBuffers);
     }
 
     // Ref will keep the pipeline layout alive until the end of the function where
@@ -1693,71 +2279,31 @@ ResultOrError<Ref<RenderPipelineBase>> DeviceBase::CreateRenderPipeline(
     Ref<PipelineLayoutBase> layoutRef;
     RenderPipelineDescriptor appliedDescriptor;
     DAWN_TRY_ASSIGN(layoutRef, ValidateLayoutAndGetRenderPipelineDescriptorWithDefaults(
-                                   this, *descriptor, &appliedDescriptor));
+                                   this, *descriptor, &appliedDescriptor, allowInternalBinding));
 
-    Ref<RenderPipelineBase> uninitializedRenderPipeline =
-        CreateUninitializedRenderPipelineImpl(&appliedDescriptor);
-
-    Ref<RenderPipelineBase> cachedRenderPipeline =
-        GetCachedRenderPipeline(uninitializedRenderPipeline.Get());
-    if (cachedRenderPipeline != nullptr) {
-        return cachedRenderPipeline;
-    }
-
-    DAWN_TRY(uninitializedRenderPipeline->Initialize());
-    return AddOrGetCachedRenderPipeline(std::move(uninitializedRenderPipeline));
+    return CreateUninitializedRenderPipelineImpl(Unpack(&appliedDescriptor));
 }
 
-MaybeError DeviceBase::CreateRenderPipelineAsync(const RenderPipelineDescriptor* descriptor,
-                                                 WGPUCreateRenderPipelineAsyncCallback callback,
-                                                 void* userdata) {
+ResultOrError<Ref<SamplerBase>> DeviceBase::CreateSampler(const SamplerDescriptor* descriptorOrig) {
     DAWN_TRY(ValidateIsAlive());
+
+    SamplerDescriptor descriptor = {};
+    if (descriptorOrig) {
+        descriptor = descriptorOrig->WithTrivialFrontendDefaults();
+    }
+
     if (IsValidationEnabled()) {
-        DAWN_TRY(ValidateRenderPipelineDescriptor(this, descriptor));
+        DAWN_TRY_CONTEXT(ValidateSamplerDescriptor(this, &descriptor), "validating %s",
+                         &descriptor);
     }
 
-    // Ref will keep the pipeline layout alive until the end of the function where
-    // the pipeline will take another reference.
-    Ref<PipelineLayoutBase> layoutRef;
-    RenderPipelineDescriptor appliedDescriptor;
-    DAWN_TRY_ASSIGN(layoutRef, ValidateLayoutAndGetRenderPipelineDescriptorWithDefaults(
-                                   this, *descriptor, &appliedDescriptor));
-
-    Ref<RenderPipelineBase> uninitializedRenderPipeline =
-        CreateUninitializedRenderPipelineImpl(&appliedDescriptor);
-
-    // Call the callback directly when we can get a cached render pipeline object.
-    Ref<RenderPipelineBase> cachedRenderPipeline =
-        GetCachedRenderPipeline(uninitializedRenderPipeline.Get());
-    if (cachedRenderPipeline != nullptr) {
-        // TODO(crbug.com/dawn/1122): Call callbacks only on wgpuInstanceProcessEvents
-        mCallbackTaskManager->AddCallbackTask(
-            std::bind(callback, WGPUCreatePipelineAsyncStatus_Success,
-                      ToAPI(cachedRenderPipeline.Detach()), "", userdata));
-    } else {
-        // Otherwise we will create the pipeline object in InitializeRenderPipelineAsyncImpl(),
-        // where the pipeline object may be initialized asynchronously and the result will be
-        // saved to mCreatePipelineAsyncTracker.
-        InitializeRenderPipelineAsyncImpl(std::move(uninitializedRenderPipeline), callback,
-                                          userdata);
-    }
-
-    return {};
-}
-
-ResultOrError<Ref<SamplerBase>> DeviceBase::CreateSampler(const SamplerDescriptor* descriptor) {
-    const SamplerDescriptor defaultDescriptor = {};
-    DAWN_TRY(ValidateIsAlive());
-    descriptor = descriptor != nullptr ? descriptor : &defaultDescriptor;
-    if (IsValidationEnabled()) {
-        DAWN_TRY_CONTEXT(ValidateSamplerDescriptor(this, descriptor), "validating %s", descriptor);
-    }
-    return GetOrCreateSampler(descriptor);
+    return GetOrCreateSampler(&descriptor);
 }
 
 ResultOrError<Ref<ShaderModuleBase>> DeviceBase::CreateShaderModule(
     const ShaderModuleDescriptor* descriptor,
-    OwnedCompilationMessages* compilationMessages) {
+    const std::vector<tint::wgsl::Extension>& internalExtensions,
+    std::unique_ptr<OwnedCompilationMessages>* compilationMessages) {
     DAWN_TRY(ValidateIsAlive());
 
     // CreateShaderModule can be called from inside dawn_native. If that's the case handle the
@@ -1765,74 +2311,70 @@ ResultOrError<Ref<ShaderModuleBase>> DeviceBase::CreateShaderModule(
     // long as dawn_native don't use the compilationMessages of these internal shader modules.
     ShaderModuleParseResult parseResult;
 
+    UnpackedPtr<ShaderModuleDescriptor> unpacked;
     if (IsValidationEnabled()) {
-        DAWN_TRY_CONTEXT(
-            ValidateAndParseShaderModule(this, descriptor, &parseResult, compilationMessages),
-            "validating %s", descriptor);
+        DAWN_TRY_ASSIGN_CONTEXT(unpacked, ValidateAndUnpack(descriptor),
+                                "validating and unpacking %s", descriptor);
+        DAWN_TRY_CONTEXT(ValidateAndParseShaderModule(
+                             this, unpacked, internalExtensions, &parseResult,
+                             compilationMessages ? compilationMessages->get() : nullptr),
+                         "validating %s", descriptor);
+    } else {
+        unpacked = Unpack(descriptor);
     }
 
-    return GetOrCreateShaderModule(descriptor, &parseResult, compilationMessages);
+    return GetOrCreateShaderModule(unpacked, internalExtensions, &parseResult, compilationMessages);
 }
 
-ResultOrError<Ref<SwapChainBase>> DeviceBase::CreateSwapChain(
-    Surface* surface,
-    const SwapChainDescriptor* descriptor) {
-    DAWN_TRY(ValidateIsAlive());
-    if (IsValidationEnabled()) {
-        DAWN_TRY_CONTEXT(ValidateSwapChainDescriptor(this, surface, descriptor), "validating %s",
-                         descriptor);
-    }
-
-    SwapChainBase* previousSwapChain = surface->GetAttachedSwapChain();
-    ResultOrError<Ref<SwapChainBase>> maybeNewSwapChain =
-        CreateSwapChainImpl(surface, previousSwapChain, descriptor);
-
-    if (previousSwapChain != nullptr) {
-        previousSwapChain->DetachFromSurface();
-    }
-
-    Ref<SwapChainBase> newSwapChain;
-    DAWN_TRY_ASSIGN(newSwapChain, std::move(maybeNewSwapChain));
-
-    newSwapChain->SetIsAttached();
-    surface->SetAttachedSwapChain(newSwapChain.Get());
-    return newSwapChain;
+ResultOrError<Ref<SwapChainBase>> DeviceBase::CreateSwapChain(Surface* surface,
+                                                              SwapChainBase* previousSwapChain,
+                                                              const SurfaceConfiguration* config) {
+    // Nothing to validate here as it is done in Surface::Configure
+    return CreateSwapChainImpl(surface, previousSwapChain, config);
 }
 
-ResultOrError<Ref<TextureBase>> DeviceBase::CreateTexture(const TextureDescriptor* descriptor) {
+ResultOrError<Ref<TextureBase>> DeviceBase::CreateTexture(const TextureDescriptor* descriptorOrig) {
     DAWN_TRY(ValidateIsAlive());
+
+    TextureDescriptor rawDescriptor = descriptorOrig->WithTrivialFrontendDefaults();
+
+    UnpackedPtr<TextureDescriptor> descriptor;
     if (IsValidationEnabled()) {
-        DAWN_TRY_CONTEXT(ValidateTextureDescriptor(this, descriptor), "validating %s.", descriptor);
+        AllowMultiPlanarTextureFormat allowMultiPlanar;
+        if (HasFeature(Feature::MultiPlanarFormatExtendedUsages)) {
+            allowMultiPlanar = AllowMultiPlanarTextureFormat::SingleLayerOnly;
+        } else {
+            allowMultiPlanar = AllowMultiPlanarTextureFormat::No;
+        }
+        DAWN_TRY_ASSIGN_CONTEXT(descriptor, ValidateAndUnpack(&rawDescriptor), "validating %s.",
+                                &rawDescriptor);
+        DAWN_TRY_CONTEXT(ValidateTextureDescriptor(this, descriptor, allowMultiPlanar),
+                         "validating %s.", descriptor);
+    } else {
+        descriptor = Unpack(&rawDescriptor);
     }
+
     return CreateTextureImpl(descriptor);
 }
 
 ResultOrError<Ref<TextureViewBase>> DeviceBase::CreateTextureView(
     TextureBase* texture,
-    const TextureViewDescriptor* descriptor) {
+    const TextureViewDescriptor* descriptorOrig) {
     DAWN_TRY(ValidateIsAlive());
     DAWN_TRY(ValidateObject(texture));
 
     TextureViewDescriptor desc;
-    DAWN_TRY_ASSIGN(desc, GetTextureViewDescriptorWithDefaults(texture, descriptor));
+    DAWN_TRY_ASSIGN(desc, GetTextureViewDescriptorWithDefaults(texture, descriptorOrig));
 
+    UnpackedPtr<TextureViewDescriptor> descriptor;
     if (IsValidationEnabled()) {
-        DAWN_TRY_CONTEXT(ValidateTextureViewDescriptor(this, texture, &desc),
-                         "validating %s against %s.", &desc, texture);
+        DAWN_TRY_ASSIGN_CONTEXT(descriptor, ValidateAndUnpack(&desc), "validating %s.", &desc);
+        DAWN_TRY_CONTEXT(ValidateTextureViewDescriptor(this, texture, descriptor),
+                         "validating %s against %s.", descriptor, texture);
+    } else {
+        descriptor = Unpack(&desc);
     }
-    return CreateTextureViewImpl(texture, &desc);
-}
-
-ResultOrError<wgpu::TextureUsage> DeviceBase::GetSupportedSurfaceUsage(
-    const Surface* surface) const {
-    DAWN_TRY(ValidateIsAlive());
-
-    if (IsValidationEnabled()) {
-        DAWN_INVALID_IF(!HasFeature(Feature::SurfaceCapabilities), "%s is not enabled.",
-                        wgpu::FeatureName::SurfaceCapabilities);
-    }
-
-    return GetSupportedSurfaceUsageImpl(surface);
+    return CreateTextureViewImpl(texture, descriptor);
 }
 
 // Other implementation details
@@ -1851,14 +2393,19 @@ bool DeviceBase::IsToggleEnabled(Toggle toggle) const {
     return mToggles.IsEnabled(toggle);
 }
 
-void DeviceBase::ForceSetToggleForTesting(Toggle toggle, bool isEnabled) {
-    mToggles.ForceSet(toggle, isEnabled);
+const TogglesState& DeviceBase::GetTogglesState() const {
+    return mToggles;
+}
+
+void DeviceBase::ForceEnableFeatureForTesting(Feature feature) {
+    mEnabledFeatures.EnableFeature(feature);
+    mFormatTable = BuildFormatTable(this);
 }
 
 void DeviceBase::FlushCallbackTaskQueue() {
     // Callbacks might cause re-entrances. Mutex shouldn't be locked. So we expect there is no
     // locked mutex before entering this method.
-    ASSERT(mMutex == nullptr || !mMutex->IsLockedByCurrentThread());
+    DAWN_ASSERT(mMutex == nullptr || !mMutex->IsLockedByCurrentThread());
 
     Ref<CallbackTaskManager> callbackTaskManager;
 
@@ -1891,71 +2438,6 @@ dawn::platform::WorkerTaskPool* DeviceBase::GetWorkerTaskPool() const {
     return mWorkerTaskPool.get();
 }
 
-void DeviceBase::AddComputePipelineAsyncCallbackTask(
-    Ref<ComputePipelineBase> pipeline,
-    WGPUCreateComputePipelineAsyncCallback callback,
-    void* userdata) {
-    // CreateComputePipelineAsyncWaitableCallbackTask is declared as an internal class as it
-    // needs to call the private member function DeviceBase::AddOrGetCachedComputePipeline().
-    struct CreateComputePipelineAsyncWaitableCallbackTask final
-        : CreateComputePipelineAsyncCallbackTask {
-        using CreateComputePipelineAsyncCallbackTask::CreateComputePipelineAsyncCallbackTask;
-        void FinishImpl() final {
-            // TODO(dawn:529): call AddOrGetCachedComputePipeline() asynchronously in
-            // CreateComputePipelineAsyncTaskImpl::Run() when the front-end pipeline cache is
-            // thread-safe.
-            ASSERT(mPipeline != nullptr);
-            {
-                // This is called inside a callback, and no lock will be held by default so we have
-                // to lock now to protect the cache.
-                // Note: we don't lock inside AddOrGetCachedComputePipeline() to avoid deadlock
-                // because many places calling that method might already have the lock held. For
-                // example, APICreateComputePipeline()
-                auto deviceLock(mPipeline->GetDevice()->GetScopedLock());
-                mPipeline = mPipeline->GetDevice()->AddOrGetCachedComputePipeline(mPipeline);
-            }
-
-            CreateComputePipelineAsyncCallbackTask::FinishImpl();
-        }
-    };
-
-    mCallbackTaskManager->AddCallbackTask(
-        std::make_unique<CreateComputePipelineAsyncWaitableCallbackTask>(std::move(pipeline),
-                                                                         callback, userdata));
-}
-
-void DeviceBase::AddRenderPipelineAsyncCallbackTask(Ref<RenderPipelineBase> pipeline,
-                                                    WGPUCreateRenderPipelineAsyncCallback callback,
-                                                    void* userdata) {
-    // CreateRenderPipelineAsyncWaitableCallbackTask is declared as an internal class as it
-    // needs to call the private member function DeviceBase::AddOrGetCachedRenderPipeline().
-    struct CreateRenderPipelineAsyncWaitableCallbackTask final
-        : CreateRenderPipelineAsyncCallbackTask {
-        using CreateRenderPipelineAsyncCallbackTask::CreateRenderPipelineAsyncCallbackTask;
-
-        void FinishImpl() final {
-            // TODO(dawn:529): call AddOrGetCachedRenderPipeline() asynchronously in
-            // CreateRenderPipelineAsyncTaskImpl::Run() when the front-end pipeline cache is
-            // thread-safe.
-            if (mPipeline.Get() != nullptr) {
-                // This is called inside a callback, and no lock will be held by default so we have
-                // to lock now to protect the cache.
-                // Note: we don't lock inside AddOrGetCachedRenderPipeline() to avoid deadlock
-                // because many places calling that method might already have the lock held. For
-                // example, APICreateRenderPipeline()
-                auto deviceLock(mPipeline->GetDevice()->GetScopedLock());
-                mPipeline = mPipeline->GetDevice()->AddOrGetCachedRenderPipeline(mPipeline);
-            }
-
-            CreateRenderPipelineAsyncCallbackTask::FinishImpl();
-        }
-    };
-
-    mCallbackTaskManager->AddCallbackTask(
-        std::make_unique<CreateRenderPipelineAsyncWaitableCallbackTask>(std::move(pipeline),
-                                                                        callback, userdata));
-}
-
 PipelineCompatibilityToken DeviceBase::GetNextPipelineCompatibilityToken() {
     return PipelineCompatibilityToken(mNextPipelineCompatibilityToken++);
 }
@@ -1968,12 +2450,14 @@ const std::string& DeviceBase::GetLabel() const {
     return mLabel;
 }
 
-void DeviceBase::APISetLabel(const char* label) {
-    mLabel = label;
+void DeviceBase::APISetLabel(StringView label) {
+    mLabel = utils::NormalizeMessageString(label);
     SetLabelImpl();
 }
 
 void DeviceBase::SetLabelImpl() {}
+
+void DeviceBase::PerformIdleTasksImpl() {}
 
 bool DeviceBase::ShouldDuplicateNumWorkgroupsForDispatchIndirect(
     ComputePipelineBase* computePipeline) const {
@@ -1989,34 +2473,26 @@ bool DeviceBase::ShouldDuplicateParametersForDrawIndirect(
     return false;
 }
 
+bool DeviceBase::BackendWillValidateMultiDraw() const {
+    return false;
+}
+
+bool DeviceBase::ShouldApplyIndexBufferOffsetToFirstIndex() const {
+    return false;
+}
+
+bool DeviceBase::CanTextureLoadResolveTargetInTheSameRenderpass() const {
+    return false;
+}
+
+bool DeviceBase::PreferNotUsingMappableOrUniformBufferAsStorage() const {
+    return false;
+}
+
 uint64_t DeviceBase::GetBufferCopyOffsetAlignmentForDepthStencil() const {
     // For depth-stencil texture, buffer offset must be a multiple of 4, which is required
     // by WebGPU and Vulkan SPEC.
     return 4u;
-}
-
-bool DeviceBase::HasScheduledCommands() const {
-    return mLastSubmittedSerial > mCompletedSerial || HasPendingCommands();
-}
-
-void DeviceBase::AssumeCommandsCompleteForTesting() {
-    AssumeCommandsComplete();
-}
-
-// All prevously submitted works at the moment will supposedly complete at this serial.
-// Internally the serial is computed according to whether frontend and backend have pending
-// commands. There are 4 cases of combination:
-//   1) Frontend(No), Backend(No)
-//   2) Frontend(No), Backend(Yes)
-//   3) Frontend(Yes), Backend(No)
-//   4) Frontend(Yes), Backend(Yes)
-// For case 1, we don't need the serial to track the task as we can ack it right now.
-// For case 2 and 4, there will be at least an eventual submission, so we can use
-// 'GetPendingCommandSerial' as the serial.
-// For case 3, we can't use 'GetPendingCommandSerial' as it won't be submitted surely. Instead we
-// use 'GetLastSubmittedCommandSerial', which must be fired eventually.
-ExecutionSerial DeviceBase::GetScheduledWorkDoneSerial() const {
-    return HasPendingCommands() ? GetPendingCommandSerial() : GetLastSubmittedCommandSerial();
 }
 
 MaybeError DeviceBase::CopyFromStagingToBuffer(BufferBase* source,
@@ -2027,7 +2503,7 @@ MaybeError DeviceBase::CopyFromStagingToBuffer(BufferBase* source,
     DAWN_TRY(
         CopyFromStagingToBufferImpl(source, sourceOffset, destination, destinationOffset, size));
     if (GetDynamicUploader()->ShouldFlush()) {
-        ForceEventualFlushOfCommands();
+        mQueue->ForceEventualFlushOfCommands();
     }
     return {};
 }
@@ -2052,7 +2528,7 @@ MaybeError DeviceBase::CopyFromStagingToTexture(BufferBase* source,
     }
 
     if (GetDynamicUploader()->ShouldFlush()) {
-        ForceEventualFlushOfCommands();
+        mQueue->ForceEventualFlushOfCommands();
     }
     return {};
 }
@@ -2067,6 +2543,56 @@ Mutex::AutoLock DeviceBase::GetScopedLock() {
 
 bool DeviceBase::IsLockedByCurrentThreadIfNeeded() const {
     return mMutex == nullptr || mMutex->IsLockedByCurrentThread();
+}
+
+void DeviceBase::DumpMemoryStatistics(dawn::native::MemoryDump* dump) const {
+    DAWN_ASSERT(IsLockedByCurrentThreadIfNeeded());
+    std::string prefix = absl::StrFormat("device_%p", static_cast<const void*>(this));
+    GetObjectTrackingList(ObjectType::Texture)->ForEach([&](const ApiObjectBase* texture) {
+        static_cast<const TextureBase*>(texture)->DumpMemoryStatistics(dump, prefix.c_str());
+    });
+    GetObjectTrackingList(ObjectType::Buffer)->ForEach([&](const ApiObjectBase* buffer) {
+        static_cast<const BufferBase*>(buffer)->DumpMemoryStatistics(dump, prefix.c_str());
+    });
+}
+
+uint64_t DeviceBase::ComputeEstimatedMemoryUsage() const {
+    DAWN_ASSERT(IsLockedByCurrentThreadIfNeeded());
+    uint64_t size = 0;
+    GetObjectTrackingList(ObjectType::Texture)->ForEach([&](const ApiObjectBase* texture) {
+        size += static_cast<const TextureBase*>(texture)->ComputeEstimatedByteSize();
+    });
+    GetObjectTrackingList(ObjectType::Buffer)->ForEach([&](const ApiObjectBase* buffer) {
+        size += static_cast<const BufferBase*>(buffer)->GetAllocatedSize();
+    });
+    return size;
+}
+
+void DeviceBase::ReduceMemoryUsage() {
+    DAWN_ASSERT(IsLockedByCurrentThreadIfNeeded());
+    if (ConsumedError(GetQueue()->CheckPassedSerials())) {
+        return;
+    }
+    GetDynamicUploader()->Deallocate(GetQueue()->GetCompletedCommandSerial(), /*freeAll=*/true);
+    mInternalPipelineStore->ResetScratchBuffers();
+    mTemporaryUniformBuffer = nullptr;
+}
+
+void DeviceBase::PerformIdleTasks() {
+    DAWN_ASSERT(IsLockedByCurrentThreadIfNeeded());
+    PerformIdleTasksImpl();
+}
+
+ResultOrError<Ref<BufferBase>> DeviceBase::GetOrCreateTemporaryUniformBuffer(size_t size) {
+    if (!mTemporaryUniformBuffer || mTemporaryUniformBuffer->GetSize() != size) {
+        BufferDescriptor desc;
+        desc.label = "Internal_TemporaryUniform";
+        desc.usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::Uniform;
+        desc.size = size;
+        DAWN_TRY_ASSIGN(mTemporaryUniformBuffer, CreateBuffer(&desc));
+    }
+
+    return mTemporaryUniformBuffer;
 }
 
 IgnoreLazyClearCountScope::IgnoreLazyClearCountScope(DeviceBase* device)

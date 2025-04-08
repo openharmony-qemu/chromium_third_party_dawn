@@ -1,16 +1,29 @@
-// Copyright 2020 The Dawn Authors
+// Copyright 2020 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <list>
 #include <set>
@@ -20,13 +33,16 @@
 #include "dawn/native/Toggles.h"
 #include "dawn/native/d3d12/BindGroupLayoutD3D12.h"
 #include "dawn/native/d3d12/DeviceD3D12.h"
+#include "dawn/native/d3d12/QueueD3D12.h"
 #include "dawn/native/d3d12/ShaderVisibleDescriptorAllocatorD3D12.h"
 #include "dawn/native/d3d12/StagingDescriptorAllocatorD3D12.h"
 #include "dawn/tests/DawnTest.h"
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
+#include "partition_alloc/pointers/raw_ptr.h"
 
 namespace dawn::native::d3d12 {
+namespace {
 
 constexpr uint32_t kRTSize = 4;
 
@@ -39,8 +55,14 @@ class D3D12DescriptorHeapTests : public DawnTest {
   protected:
     void SetUp() override {
         DawnTest::SetUp();
+
+        // Tests reach directly in d3d12::Device and friends so skip them on wire and with implicit
+        // device sync.
         DAWN_TEST_UNSUPPORTED_IF(UsesWire());
-        mD3DDevice = reinterpret_cast<Device*>(device.Get());
+        DAWN_TEST_UNSUPPORTED_IF(IsImplicitDeviceSyncEnabled());
+
+        mD3DDevice = ToBackend(FromAPI(device.Get()));
+        mD3DQueue = ToBackend(mD3DDevice->GetQueue());
 
         mSimpleVSModule = utils::CreateShaderModule(device, R"(
 
@@ -86,14 +108,15 @@ class D3D12DescriptorHeapTests : public DawnTest {
     }
 
     std::array<float, 4> GetSolidColor(uint32_t n) const {
-        ASSERT(n >> 24 == 0);
+        DAWN_ASSERT(n >> 24 == 0);
         float b = (n & 0xFF) / 255.0f;
         float g = ((n >> 8) & 0xFF) / 255.0f;
         float r = ((n >> 16) & 0xFF) / 255.0f;
         return {r, g, b, 1};
     }
 
-    Device* mD3DDevice = nullptr;
+    raw_ptr<Device> mD3DDevice = nullptr;
+    raw_ptr<Queue> mD3DQueue = nullptr;
 
     wgpu::ShaderModule mSimpleVSModule;
     wgpu::ShaderModule mSimpleFSModule;
@@ -110,7 +133,7 @@ class PlaceholderStagingDescriptorAllocator {
                      D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER) {}
 
     CPUDescriptorHeapAllocation AllocateCPUDescriptors() {
-        dawn::native::ResultOrError<CPUDescriptorHeapAllocation> result =
+        native::ResultOrError<CPUDescriptorHeapAllocation> result =
             mAllocator.AllocateCPUDescriptors();
         return (result.IsSuccess()) ? result.AcquireSuccess() : CPUDescriptorHeapAllocation{};
     }
@@ -123,8 +146,8 @@ class PlaceholderStagingDescriptorAllocator {
 
 // Verify the shader visible view heaps switch over within a single submit.
 TEST_P(D3D12DescriptorHeapTests, SwitchOverViewHeap) {
-    DAWN_TEST_UNSUPPORTED_IF(!mD3DDevice->IsToggleEnabled(
-        dawn::native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
+    DAWN_TEST_UNSUPPORTED_IF(
+        !mD3DDevice->IsToggleEnabled(native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
 
     utils::ComboRenderPipelineDescriptor renderPipelineDescriptor;
 
@@ -137,8 +160,7 @@ TEST_P(D3D12DescriptorHeapTests, SwitchOverViewHeap) {
     utils::BasicRenderPass renderPass = utils::CreateBasicRenderPass(device, kRTSize, kRTSize);
 
     Device* d3dDevice = reinterpret_cast<Device*>(device.Get());
-    ShaderVisibleDescriptorAllocator* allocator =
-        d3dDevice->GetViewShaderVisibleDescriptorAllocator();
+    auto& allocator = d3dDevice->GetViewShaderVisibleDescriptorAllocator();
     const uint64_t heapSize = allocator->GetShaderVisibleHeapSizeForTesting();
 
     const HeapVersionID heapSerial = allocator->GetShaderVisibleHeapSerialForTesting();
@@ -193,8 +215,7 @@ TEST_P(D3D12DescriptorHeapTests, NoSwitchOverSamplerHeap) {
     wgpu::Sampler sampler = device.CreateSampler();
 
     Device* d3dDevice = reinterpret_cast<Device*>(device.Get());
-    ShaderVisibleDescriptorAllocator* allocator =
-        d3dDevice->GetSamplerShaderVisibleDescriptorAllocator();
+    auto& allocator = d3dDevice->GetSamplerShaderVisibleDescriptorAllocator();
     const uint64_t samplerHeapSize = allocator->GetShaderVisibleHeapSizeForTesting();
 
     const HeapVersionID HeapVersionID = allocator->GetShaderVisibleHeapSerialForTesting();
@@ -223,11 +244,10 @@ TEST_P(D3D12DescriptorHeapTests, NoSwitchOverSamplerHeap) {
 // Verify shader-visible heaps can be recycled for multiple submits.
 TEST_P(D3D12DescriptorHeapTests, PoolHeapsInMultipleSubmits) {
     // Use small heaps to count only pool-allocated switches.
-    DAWN_TEST_UNSUPPORTED_IF(!mD3DDevice->IsToggleEnabled(
-        dawn::native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
+    DAWN_TEST_UNSUPPORTED_IF(
+        !mD3DDevice->IsToggleEnabled(native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
 
-    ShaderVisibleDescriptorAllocator* allocator =
-        mD3DDevice->GetSamplerShaderVisibleDescriptorAllocator();
+    auto& allocator = mD3DDevice->GetSamplerShaderVisibleDescriptorAllocator();
 
     std::list<ComPtr<ID3D12DescriptorHeap>> heaps = {allocator->GetShaderVisibleHeap()};
 
@@ -241,9 +261,9 @@ TEST_P(D3D12DescriptorHeapTests, PoolHeapsInMultipleSubmits) {
         EXPECT_TRUE(std::find(heaps.begin(), heaps.end(), heap) == heaps.end());
         heaps.push_back(heap);
         // CheckPassedSerials() will update the last internally completed serial.
-        EXPECT_TRUE(mD3DDevice->CheckPassedSerials().IsSuccess());
+        EXPECT_TRUE(mD3DQueue->CheckPassedSerials().IsSuccess());
         // NextSerial() will increment the last internally submitted serial.
-        EXPECT_TRUE(mD3DDevice->NextSerial().IsSuccess());
+        EXPECT_TRUE(mD3DQueue->NextSerial().IsSuccess());
     }
 
     // Repeat up to |kFrameDepth| again but ensure heaps are the same in the expected order
@@ -254,8 +274,8 @@ TEST_P(D3D12DescriptorHeapTests, PoolHeapsInMultipleSubmits) {
         ComPtr<ID3D12DescriptorHeap> heap = allocator->GetShaderVisibleHeap();
         EXPECT_TRUE(heaps.front() == heap);
         heaps.pop_front();
-        EXPECT_TRUE(mD3DDevice->CheckPassedSerials().IsSuccess());
-        EXPECT_TRUE(mD3DDevice->NextSerial().IsSuccess());
+        EXPECT_TRUE(mD3DQueue->CheckPassedSerials().IsSuccess());
+        EXPECT_TRUE(mD3DQueue->NextSerial().IsSuccess());
     }
 
     EXPECT_TRUE(heaps.empty());
@@ -265,13 +285,12 @@ TEST_P(D3D12DescriptorHeapTests, PoolHeapsInMultipleSubmits) {
 // Verify shader-visible heaps do not recycle in a pending submit.
 TEST_P(D3D12DescriptorHeapTests, PoolHeapsInPendingSubmit) {
     // Use small heaps to count only pool-allocated switches.
-    DAWN_TEST_UNSUPPORTED_IF(!mD3DDevice->IsToggleEnabled(
-        dawn::native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
+    DAWN_TEST_UNSUPPORTED_IF(
+        !mD3DDevice->IsToggleEnabled(native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
 
     constexpr uint32_t kNumOfSwitches = 5;
 
-    ShaderVisibleDescriptorAllocator* allocator =
-        mD3DDevice->GetSamplerShaderVisibleDescriptorAllocator();
+    auto& allocator = mD3DDevice->GetSamplerShaderVisibleDescriptorAllocator();
 
     const HeapVersionID heapSerial = allocator->GetShaderVisibleHeapSerialForTesting();
 
@@ -297,13 +316,12 @@ TEST_P(D3D12DescriptorHeapTests, PoolHeapsInPendingSubmit) {
 // once no longer pending.
 TEST_P(D3D12DescriptorHeapTests, PoolHeapsInPendingAndMultipleSubmits) {
     // Use small heaps to count only pool-allocated switches.
-    DAWN_TEST_UNSUPPORTED_IF(!mD3DDevice->IsToggleEnabled(
-        dawn::native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
+    DAWN_TEST_UNSUPPORTED_IF(
+        !mD3DDevice->IsToggleEnabled(native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
 
     constexpr uint32_t kNumOfSwitches = 5;
 
-    ShaderVisibleDescriptorAllocator* allocator =
-        mD3DDevice->GetSamplerShaderVisibleDescriptorAllocator();
+    auto& allocator = mD3DDevice->GetSamplerShaderVisibleDescriptorAllocator();
     const HeapVersionID heapSerial = allocator->GetShaderVisibleHeapSerialForTesting();
 
     std::set<ComPtr<ID3D12DescriptorHeap>> heaps = {allocator->GetShaderVisibleHeap()};
@@ -323,7 +341,7 @@ TEST_P(D3D12DescriptorHeapTests, PoolHeapsInPendingAndMultipleSubmits) {
     EXPECT_EQ(allocator->GetShaderVisiblePoolSizeForTesting(), kNumOfSwitches);
 
     // Ensure switched-over heaps can be recycled by advancing the GPU.
-    mD3DDevice->AssumeCommandsCompleteForTesting();
+    mD3DQueue->AssumeCommandsComplete();
 
     // Switch-over |kNumOfSwitches| again reusing the same heaps.
     for (uint32_t i = 0; i < kNumOfSwitches; i++) {
@@ -341,8 +359,7 @@ TEST_P(D3D12DescriptorHeapTests, PoolHeapsInPendingAndMultipleSubmits) {
 
 // Verify shader-visible heaps do not recycle in multiple submits.
 TEST_P(D3D12DescriptorHeapTests, GrowHeapsInMultipleSubmits) {
-    ShaderVisibleDescriptorAllocator* allocator =
-        mD3DDevice->GetSamplerShaderVisibleDescriptorAllocator();
+    auto& allocator = mD3DDevice->GetSamplerShaderVisibleDescriptorAllocator();
 
     const HeapVersionID heapSerial = allocator->GetShaderVisibleHeapSerialForTesting();
 
@@ -367,8 +384,7 @@ TEST_P(D3D12DescriptorHeapTests, GrowHeapsInMultipleSubmits) {
 
 // Verify shader-visible heaps do not recycle in a pending submit.
 TEST_P(D3D12DescriptorHeapTests, GrowHeapsInPendingSubmit) {
-    ShaderVisibleDescriptorAllocator* allocator =
-        mD3DDevice->GetSamplerShaderVisibleDescriptorAllocator();
+    auto& allocator = mD3DDevice->GetSamplerShaderVisibleDescriptorAllocator();
 
     const HeapVersionID heapSerial = allocator->GetShaderVisibleHeapSerialForTesting();
 
@@ -394,8 +410,7 @@ TEST_P(D3D12DescriptorHeapTests, GrowHeapsInPendingSubmit) {
 // once no longer pending.
 // Switches over many times until |kNumOfPooledHeaps| heaps are pool-allocated.
 TEST_P(D3D12DescriptorHeapTests, GrowAndPoolHeapsInPendingAndMultipleSubmits) {
-    ShaderVisibleDescriptorAllocator* allocator =
-        mD3DDevice->GetSamplerShaderVisibleDescriptorAllocator();
+    auto& allocator = mD3DDevice->GetSamplerShaderVisibleDescriptorAllocator();
 
     std::set<ComPtr<ID3D12DescriptorHeap>> heaps = {allocator->GetShaderVisibleHeap()};
 
@@ -412,7 +427,7 @@ TEST_P(D3D12DescriptorHeapTests, GrowAndPoolHeapsInPendingAndMultipleSubmits) {
     EXPECT_EQ(allocator->GetShaderVisiblePoolSizeForTesting(), kNumOfPooledHeaps);
 
     // Ensure switched-over heaps can be recycled by advancing the GPU.
-    mD3DDevice->AssumeCommandsCompleteForTesting();
+    mD3DQueue->AssumeCommandsComplete();
 
     // Switch-over the pool-allocated heaps.
     for (uint32_t i = 0; i < kNumOfPooledHeaps; i++) {
@@ -432,8 +447,8 @@ TEST_P(D3D12DescriptorHeapTests, EncodeManyUBO) {
     // draws, the result is the arithmetic sum of the sequence after the framebuffer is blended
     // by accumulation. By checking for this sum, we ensure each bindgroup was encoded
     // correctly.
-    DAWN_TEST_UNSUPPORTED_IF(!mD3DDevice->IsToggleEnabled(
-        dawn::native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
+    DAWN_TEST_UNSUPPORTED_IF(
+        !mD3DDevice->IsToggleEnabled(native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
 
     utils::BasicRenderPass renderPass =
         MakeRenderPass(kRTSize, kRTSize, wgpu::TextureFormat::R16Float);
@@ -506,11 +521,8 @@ TEST_P(D3D12DescriptorHeapTests, EncodeManyUBO) {
 // The first descriptor's memory will be reused when the second submit encodes |heapSize|
 // descriptors.
 TEST_P(D3D12DescriptorHeapTests, EncodeUBOOverflowMultipleSubmit) {
-    DAWN_TEST_UNSUPPORTED_IF(!mD3DDevice->IsToggleEnabled(
-        dawn::native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
-
-    // TODO(crbug.com/dawn/742): Test output is wrong with D3D12 + WARP.
-    DAWN_SUPPRESS_TEST_IF(IsD3D12() && IsWARP());
+    DAWN_TEST_UNSUPPORTED_IF(
+        !mD3DDevice->IsToggleEnabled(native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
 
     utils::BasicRenderPass renderPass = utils::CreateBasicRenderPass(device, kRTSize, kRTSize);
 
@@ -594,8 +606,8 @@ TEST_P(D3D12DescriptorHeapTests, EncodeUBOOverflowMultipleSubmit) {
 // Shader-visible heaps should switch out once then re-encode the first descriptor at a new
 // offset in the heap.
 TEST_P(D3D12DescriptorHeapTests, EncodeReuseUBOOverflow) {
-    DAWN_TEST_UNSUPPORTED_IF(!mD3DDevice->IsToggleEnabled(
-        dawn::native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
+    DAWN_TEST_UNSUPPORTED_IF(
+        !mD3DDevice->IsToggleEnabled(native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
 
     utils::BasicRenderPass renderPass = utils::CreateBasicRenderPass(device, kRTSize, kRTSize);
 
@@ -655,8 +667,8 @@ TEST_P(D3D12DescriptorHeapTests, EncodeReuseUBOOverflow) {
 // Shader-visible heaps should switch out once then re-encode the
 // first descriptor at the same offset in the heap.
 TEST_P(D3D12DescriptorHeapTests, EncodeReuseUBOMultipleSubmits) {
-    DAWN_TEST_UNSUPPORTED_IF(!mD3DDevice->IsToggleEnabled(
-        dawn::native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
+    DAWN_TEST_UNSUPPORTED_IF(
+        !mD3DDevice->IsToggleEnabled(native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
 
     utils::BasicRenderPass renderPass = utils::CreateBasicRenderPass(device, kRTSize, kRTSize);
 
@@ -735,8 +747,8 @@ TEST_P(D3D12DescriptorHeapTests, EncodeReuseUBOMultipleSubmits) {
 // Verify encoding many sampler and ubo worth of bindgroups.
 // Shader-visible heaps should switch out |kNumOfViewHeaps| times.
 TEST_P(D3D12DescriptorHeapTests, EncodeManyUBOAndSamplers) {
-    DAWN_TEST_UNSUPPORTED_IF(!mD3DDevice->IsToggleEnabled(
-        dawn::native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
+    DAWN_TEST_UNSUPPORTED_IF(
+        !mD3DDevice->IsToggleEnabled(native::Toggle::UseD3D12SmallShaderVisibleHeapForTesting));
 
     // Create a solid filled texture.
     wgpu::TextureDescriptor descriptor;
@@ -817,11 +829,9 @@ TEST_P(D3D12DescriptorHeapTests, EncodeManyUBOAndSamplers) {
         wgpu::SamplerDescriptor samplerDescriptor;
         wgpu::Sampler sampler = device.CreateSampler(&samplerDescriptor);
 
-        ShaderVisibleDescriptorAllocator* viewAllocator =
-            mD3DDevice->GetViewShaderVisibleDescriptorAllocator();
+        auto& viewAllocator = mD3DDevice->GetViewShaderVisibleDescriptorAllocator();
 
-        ShaderVisibleDescriptorAllocator* samplerAllocator =
-            mD3DDevice->GetSamplerShaderVisibleDescriptorAllocator();
+        auto& samplerAllocator = mD3DDevice->GetSamplerShaderVisibleDescriptorAllocator();
 
         const HeapVersionID viewHeapSerial = viewAllocator->GetShaderVisibleHeapSerialForTesting();
         const HeapVersionID samplerHeapSerial =
@@ -1043,8 +1053,27 @@ TEST_P(D3D12DescriptorHeapTests, AllocateDeallocateMany) {
     }
 }
 
+// Verifies that gpu descriptor heap allocations are only valid during the serial they were created
+// on.
+TEST_P(D3D12DescriptorHeapTests, InvalidateAllocationAfterSerial) {
+    auto& gpuAllocator = mD3DDevice->GetViewShaderVisibleDescriptorAllocator();
+
+    GPUDescriptorHeapAllocation gpuHeapDescAllocation;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE baseCPUDescriptor;
+    gpuAllocator->AllocateGPUDescriptors(1, mD3DDevice->GetQueue()->GetPendingCommandSerial(),
+                                         &baseCPUDescriptor, &gpuHeapDescAllocation);
+
+    EXPECT_TRUE(gpuAllocator->IsAllocationStillValid(gpuHeapDescAllocation));
+
+    EXPECT_TRUE(mD3DQueue->NextSerial().IsSuccess());
+
+    EXPECT_FALSE(gpuAllocator->IsAllocationStillValid(gpuHeapDescAllocation));
+}
+
 DAWN_INSTANTIATE_TEST(D3D12DescriptorHeapTests,
                       D3D12Backend(),
                       D3D12Backend({"use_d3d12_small_shader_visible_heap"}));
 
+}  // anonymous namespace
 }  // namespace dawn::native::d3d12

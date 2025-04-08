@@ -9,6 +9,7 @@ import (
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/types"
 	"cmd/internal/src"
+	"internal/types/errors"
 )
 
 func RangeExprType(t *types.Type) *types.Type {
@@ -37,7 +38,7 @@ func typecheckrangeExpr(n *ir.RangeStmt) {
 	toomany := false
 	switch t.Kind() {
 	default:
-		base.ErrorfAt(n.Pos(), "cannot range over %L", n.X)
+		base.ErrorfAt(n.Pos(), errors.InvalidRangeExpr, "cannot range over %L", n.X)
 		return
 
 	case types.TARRAY, types.TSLICE:
@@ -50,7 +51,7 @@ func typecheckrangeExpr(n *ir.RangeStmt) {
 
 	case types.TCHAN:
 		if !t.ChanDir().CanRecv() {
-			base.ErrorfAt(n.Pos(), "invalid operation: range %v (receive from send-only type %v)", n.X, n.X.Type())
+			base.ErrorfAt(n.Pos(), errors.InvalidRangeExpr, "invalid operation: range %v (receive from send-only type %v)", n.X, n.X.Type())
 			return
 		}
 
@@ -66,19 +67,19 @@ func typecheckrangeExpr(n *ir.RangeStmt) {
 	}
 
 	if toomany {
-		base.ErrorfAt(n.Pos(), "too many variables in range")
+		base.ErrorfAt(n.Pos(), errors.InvalidIterVar, "too many variables in range")
 	}
 
 	do := func(nn ir.Node, t *types.Type) {
 		if nn != nil {
-			if ir.DeclaredBy(nn, n) {
+			if ir.DeclaredBy(nn, n) && nn.Type() == nil {
 				nn.SetType(t)
 			} else if nn.Type() != nil {
 				if op, why := Assignop(t, nn.Type()); op == ir.OXXX {
-					base.ErrorfAt(n.Pos(), "cannot assign type %v to %L in range%s", t, nn, why)
+					base.ErrorfAt(n.Pos(), errors.InvalidIterVar, "cannot assign type %v to %L in range%s", t, nn, why)
 				}
 			}
-			checkassign(n, nn)
+			checkassign(nn)
 		}
 	}
 	do(n.Key, tk)
@@ -127,27 +128,14 @@ func assign(stmt ir.Node, lhs, rhs []ir.Node) {
 
 	checkLHS := func(i int, typ *types.Type) {
 		lhs[i] = Resolve(lhs[i])
-		if base.Flag.G != 0 || base.Debug.Unified != 0 {
-			// New logic added in CL 403837 for Go 1.19, which only has -G=3 and unified IR.
-			if n := lhs[i]; typ != nil && ir.DeclaredBy(n, stmt) && n.Type() == nil {
-				base.Assertf(typ.Kind() == types.TNIL, "unexpected untyped nil")
-				n.SetType(defaultType(typ))
-			}
-		} else {
-			// Original logic from Go 1.18, which is still needed for -G=0.
-			if n := lhs[i]; typ != nil && ir.DeclaredBy(n, stmt) && n.Name().Ntype == nil {
-				if typ.Kind() != types.TNIL {
-					n.SetType(defaultType(typ))
-				} else {
-					base.Errorf("use of untyped nil")
-				}
-			}
+		if n := lhs[i]; typ != nil && ir.DeclaredBy(n, stmt) && n.Type() == nil {
+			base.Assertf(typ.Kind() == types.TNIL, "unexpected untyped nil")
+			n.SetType(defaultType(typ))
 		}
-
 		if lhs[i].Typecheck() == 0 {
 			lhs[i] = AssignExpr(lhs[i])
 		}
-		checkassign(stmt, lhs[i])
+		checkassign(lhs[i])
 	}
 
 	assignType := func(i int, typ *types.Type) {
@@ -198,10 +186,10 @@ assignOK:
 	if len(lhs) != cr {
 		if r, ok := rhs[0].(*ir.CallExpr); ok && len(rhs) == 1 {
 			if r.Type() != nil {
-				base.ErrorfAt(stmt.Pos(), "assignment mismatch: %d variable%s but %v returns %d value%s", len(lhs), plural(len(lhs)), r.X, cr, plural(cr))
+				base.ErrorfAt(stmt.Pos(), errors.WrongAssignCount, "assignment mismatch: %d variable%s but %v returns %d value%s", len(lhs), plural(len(lhs)), r.X, cr, plural(cr))
 			}
 		} else {
-			base.ErrorfAt(stmt.Pos(), "assignment mismatch: %d variable%s but %v value%s", len(lhs), plural(len(lhs)), len(rhs), plural(len(rhs)))
+			base.ErrorfAt(stmt.Pos(), errors.WrongAssignCount, "assignment mismatch: %d variable%s but %v value%s", len(lhs), plural(len(lhs)), len(rhs), plural(len(rhs)))
 		}
 
 		for i := range lhs {
@@ -271,9 +259,6 @@ func tcFor(n *ir.ForStmt) ir.Node {
 		}
 	}
 	n.Post = Stmt(n.Post)
-	if n.Op() == ir.OFORUNTIL {
-		Stmts(n.Late)
-	}
 	Stmts(n.Body)
 	return n
 }
@@ -289,9 +274,12 @@ func tcGoDefer(n *ir.GoDeferStmt) {
 	case ir.OCALLINTER,
 		ir.OCALLMETH,
 		ir.OCALLFUNC,
+		ir.OCLEAR,
 		ir.OCLOSE,
 		ir.OCOPY,
 		ir.ODELETE,
+		ir.OMAX,
+		ir.OMIN,
 		ir.OPANIC,
 		ir.OPRINT,
 		ir.OPRINTN,
@@ -313,22 +301,19 @@ func tcGoDefer(n *ir.GoDeferStmt) {
 		if orig := ir.Orig(n.Call); orig.Op() == ir.OCONV {
 			break
 		}
-		base.ErrorfAt(n.Pos(), "%s discards result of %v", what, n.Call)
+		base.ErrorfAt(n.Pos(), errors.UnusedResults, "%s discards result of %v", what, n.Call)
 		return
 	}
 
 	// type is broken or missing, most likely a method call on a broken type
 	// we will warn about the broken type elsewhere. no need to emit a potentially confusing error
-	if n.Call.Type() == nil || n.Call.Type().Broke() {
+	if n.Call.Type() == nil {
 		return
 	}
 
-	if !n.Diag() {
-		// The syntax made sure it was a call, so this must be
-		// a conversion.
-		n.SetDiag(true)
-		base.ErrorfAt(n.Pos(), "%s requires function call, not conversion", what)
-	}
+	// The syntax made sure it was a call, so this must be
+	// a conversion.
+	base.FatalfAt(n.Pos(), "%s requires function call, not conversion", what)
 }
 
 // tcIf typechecks an OIF node.
@@ -397,7 +382,7 @@ func tcSelect(sel *ir.SelectStmt) {
 		if ncase.Comm == nil {
 			// default
 			if def != nil {
-				base.ErrorfAt(ncase.Pos(), "multiple defaults in select (first at %v)", ir.Line(def))
+				base.ErrorfAt(ncase.Pos(), errors.DuplicateDefault, "multiple defaults in select (first at %v)", ir.Line(def))
 			} else {
 				def = ncase
 			}
@@ -421,7 +406,7 @@ func tcSelect(sel *ir.SelectStmt) {
 					// on the same line). This matches the approach before 1.10.
 					pos = ncase.Pos()
 				}
-				base.ErrorfAt(pos, "select case must be receive, send or assign recv")
+				base.ErrorfAt(pos, errors.InvalidSelectCase, "select case must be receive, send or assign recv")
 
 			case ir.OAS:
 				// convert x = <-c into x, _ = <-c
@@ -435,7 +420,7 @@ func tcSelect(sel *ir.SelectStmt) {
 					}
 				}
 				if n.Y.Op() != ir.ORECV {
-					base.ErrorfAt(n.Pos(), "select assignment must have receive on right hand side")
+					base.ErrorfAt(n.Pos(), errors.InvalidSelectCase, "select assignment must have receive on right hand side")
 					break
 				}
 				oselrecv2(n.X, n.Y, n.Def)
@@ -443,7 +428,7 @@ func tcSelect(sel *ir.SelectStmt) {
 			case ir.OAS2RECV:
 				n := n.(*ir.AssignListStmt)
 				if n.Rhs[0].Op() != ir.ORECV {
-					base.ErrorfAt(n.Pos(), "select assignment must have receive on right hand side")
+					base.ErrorfAt(n.Pos(), errors.InvalidSelectCase, "select assignment must have receive on right hand side")
 					break
 				}
 				n.SetOp(ir.OSELRECV2)
@@ -520,21 +505,20 @@ func tcSwitchExpr(n *ir.SwitchStmt) {
 
 		case !types.IsComparable(t):
 			if t.IsStruct() {
-				base.ErrorfAt(n.Pos(), "cannot switch on %L (struct containing %v cannot be compared)", n.Tag, types.IncomparableField(t).Type)
+				base.ErrorfAt(n.Pos(), errors.InvalidExprSwitch, "cannot switch on %L (struct containing %v cannot be compared)", n.Tag, types.IncomparableField(t).Type)
 			} else {
-				base.ErrorfAt(n.Pos(), "cannot switch on %L", n.Tag)
+				base.ErrorfAt(n.Pos(), errors.InvalidExprSwitch, "cannot switch on %L", n.Tag)
 			}
 			t = nil
 		}
 	}
 
 	var defCase ir.Node
-	var cs constSet
 	for _, ncase := range n.Cases {
 		ls := ncase.List
 		if len(ls) == 0 { // default:
 			if defCase != nil {
-				base.ErrorfAt(ncase.Pos(), "multiple defaults in switch (first at %v)", ir.Line(defCase))
+				base.ErrorfAt(ncase.Pos(), errors.DuplicateDefault, "multiple defaults in switch (first at %v)", ir.Line(defCase))
 			} else {
 				defCase = ncase
 			}
@@ -550,29 +534,19 @@ func tcSwitchExpr(n *ir.SwitchStmt) {
 			}
 
 			if nilonly != "" && !ir.IsNil(n1) {
-				base.ErrorfAt(ncase.Pos(), "invalid case %v in switch (can only compare %s %v to nil)", n1, nilonly, n.Tag)
+				base.ErrorfAt(ncase.Pos(), errors.MismatchedTypes, "invalid case %v in switch (can only compare %s %v to nil)", n1, nilonly, n.Tag)
 			} else if t.IsInterface() && !n1.Type().IsInterface() && !types.IsComparable(n1.Type()) {
-				base.ErrorfAt(ncase.Pos(), "invalid case %L in switch (incomparable type)", n1)
+				base.ErrorfAt(ncase.Pos(), errors.UndefinedOp, "invalid case %L in switch (incomparable type)", n1)
 			} else {
 				op1, _ := Assignop(n1.Type(), t)
 				op2, _ := Assignop(t, n1.Type())
 				if op1 == ir.OXXX && op2 == ir.OXXX {
 					if n.Tag != nil {
-						base.ErrorfAt(ncase.Pos(), "invalid case %v in switch on %v (mismatched types %v and %v)", n1, n.Tag, n1.Type(), t)
+						base.ErrorfAt(ncase.Pos(), errors.MismatchedTypes, "invalid case %v in switch on %v (mismatched types %v and %v)", n1, n.Tag, n1.Type(), t)
 					} else {
-						base.ErrorfAt(ncase.Pos(), "invalid case %v in switch (mismatched types %v and bool)", n1, n1.Type())
+						base.ErrorfAt(ncase.Pos(), errors.MismatchedTypes, "invalid case %v in switch (mismatched types %v and bool)", n1, n1.Type())
 					}
 				}
-			}
-
-			// Don't check for duplicate bools. Although the spec allows it,
-			// (1) the compiler hasn't checked it in the past, so compatibility mandates it, and
-			// (2) it would disallow useful things like
-			//       case GOARCH == "arm" && GOARM == "5":
-			//       case GOARCH == "arm":
-			//     which would both evaluate to false for non-ARM compiles.
-			if !n1.Type().IsBoolean() {
-				cs.add(ncase.Pos(), n1, "case", "switch")
 			}
 		}
 
@@ -585,7 +559,7 @@ func tcSwitchType(n *ir.SwitchStmt) {
 	guard.X = Expr(guard.X)
 	t := guard.X.Type()
 	if t != nil && !t.IsInterface() {
-		base.ErrorfAt(n.Pos(), "cannot type switch on non-interface value %L", guard.X)
+		base.ErrorfAt(n.Pos(), errors.InvalidTypeSwitch, "cannot type switch on non-interface value %L", guard.X)
 		t = nil
 	}
 
@@ -593,7 +567,7 @@ func tcSwitchType(n *ir.SwitchStmt) {
 	// declaration itself. So if there are no cases, we won't
 	// notice that it went unused.
 	if v := guard.Tag; v != nil && !ir.IsBlank(v) && len(n.Cases) == 0 {
-		base.ErrorfAt(v.Pos(), "%v declared but not used", v.Sym())
+		base.ErrorfAt(v.Pos(), errors.UnusedVar, "%v declared but not used", v.Sym())
 	}
 
 	var defCase, nilCase ir.Node
@@ -602,7 +576,7 @@ func tcSwitchType(n *ir.SwitchStmt) {
 		ls := ncase.List
 		if len(ls) == 0 { // default:
 			if defCase != nil {
-				base.ErrorfAt(ncase.Pos(), "multiple defaults in switch (first at %v)", ir.Line(defCase))
+				base.ErrorfAt(ncase.Pos(), errors.DuplicateDefault, "multiple defaults in switch (first at %v)", ir.Line(defCase))
 			} else {
 				defCase = ncase
 			}
@@ -615,30 +589,25 @@ func tcSwitchType(n *ir.SwitchStmt) {
 				continue
 			}
 
-			var missing, have *types.Field
-			var ptr int
 			if ir.IsNil(n1) { // case nil:
 				if nilCase != nil {
-					base.ErrorfAt(ncase.Pos(), "multiple nil cases in type switch (first at %v)", ir.Line(nilCase))
+					base.ErrorfAt(ncase.Pos(), errors.DuplicateCase, "multiple nil cases in type switch (first at %v)", ir.Line(nilCase))
 				} else {
 					nilCase = ncase
 				}
 				continue
 			}
-			if n1.Op() != ir.OTYPE {
-				base.ErrorfAt(ncase.Pos(), "%L is not a type", n1)
+			if n1.Op() == ir.ODYNAMICTYPE {
 				continue
 			}
-			if !n1.Type().IsInterface() && !implements(n1.Type(), t, &missing, &have, &ptr) && !missing.Broke() {
-				if have != nil && !have.Broke() {
-					base.ErrorfAt(ncase.Pos(), "impossible type switch case: %L cannot have dynamic type %v"+
-						" (wrong type for %v method)\n\thave %v%S\n\twant %v%S", guard.X, n1.Type(), missing.Sym, have.Sym, have.Type, missing.Sym, missing.Type)
-				} else if ptr != 0 {
-					base.ErrorfAt(ncase.Pos(), "impossible type switch case: %L cannot have dynamic type %v"+
-						" (%v method has pointer receiver)", guard.X, n1.Type(), missing.Sym)
-				} else {
-					base.ErrorfAt(ncase.Pos(), "impossible type switch case: %L cannot have dynamic type %v"+
-						" (missing %v method)", guard.X, n1.Type(), missing.Sym)
+			if n1.Op() != ir.OTYPE {
+				base.ErrorfAt(ncase.Pos(), errors.NotAType, "%L is not a type", n1)
+				continue
+			}
+			if !n1.Type().IsInterface() {
+				why := ImplementsExplain(n1.Type(), t)
+				if why != "" {
+					base.ErrorfAt(ncase.Pos(), errors.ImpossibleAssert, "impossible type switch case: %L cannot have dynamic type %v (%s)", guard.X, n1.Type(), why)
 				}
 				continue
 			}
@@ -650,7 +619,7 @@ func tcSwitchType(n *ir.SwitchStmt) {
 			// Assign the clause variable's type.
 			vt := t
 			if len(ls) == 1 {
-				if ls[0].Op() == ir.OTYPE {
+				if ls[0].Op() == ir.OTYPE || ls[0].Op() == ir.ODYNAMICTYPE {
 					vt = ls[0].Type()
 				} else if !ir.IsNil(ls[0]) {
 					// Invalid single-type case;
@@ -666,7 +635,6 @@ func tcSwitchType(n *ir.SwitchStmt) {
 			} else {
 				// Clause variable is broken; prevent typechecking.
 				nvar.SetTypecheck(1)
-				nvar.SetWalkdef(1)
 			}
 			ncase.Var = nvar
 		}
@@ -686,7 +654,7 @@ func (s *typeSet) add(pos src.XPos, typ *types.Type) {
 
 	ls := typ.LinkString()
 	if prev, ok := s.m[ls]; ok {
-		base.ErrorfAt(pos, "duplicate case %v in type switch\n\tprevious case at %s", typ, base.FmtPos(prev))
+		base.ErrorfAt(pos, errors.DuplicateCase, "duplicate case %v in type switch\n\tprevious case at %s", typ, base.FmtPos(prev))
 		return
 	}
 	s.m[ls] = pos

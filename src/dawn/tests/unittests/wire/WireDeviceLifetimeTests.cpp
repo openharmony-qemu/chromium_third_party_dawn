@@ -1,24 +1,41 @@
-// Copyright 2023 The Dawn Authors
+// Copyright 2023 The Dawn & Tint Authors
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+#include <gtest/gtest.h>
+#include <webgpu/webgpu.h>
 
 #include <memory>
 #include <utility>
 
 #include "dawn/native/Instance.h"
 #include "dawn/utils/WireHelper.h"
-#include "dawn/webgpu.h"
-#include "gtest/gtest.h"
+
+namespace dawn {
+namespace {
 
 static WGPUDevice lastBackendDevice = nullptr;
 
@@ -27,17 +44,18 @@ class WireDeviceLifetimeTests : public testing::Test {
     WireDeviceLifetimeTests()
         : nativeProcs(BuildProcs()),
           wireHelper(utils::CreateWireHelper(nativeProcs, /* useWire */ true)) {
-        WGPUInstanceDescriptor instanceDesc = {};
-        nativeInstance = std::make_unique<dawn::native::Instance>(&instanceDesc);
-        instance = wireHelper->RegisterInstance(nativeInstance->Get());
+        instance = wireHelper->CreateInstances().first;
     }
 
   protected:
     void SetUp() override {
         wgpu::RequestAdapterOptions options = {};
+        options.backendType = wgpu::BackendType::Null;
+
         instance.RequestAdapter(
             &options,
-            [](WGPURequestAdapterStatus status, WGPUAdapter cAdapter, const char*, void* userdata) {
+            [](WGPURequestAdapterStatus status, WGPUAdapter cAdapter, WGPUStringView,
+               void* userdata) {
                 ASSERT_EQ(status, WGPURequestAdapterStatus_Success);
                 *static_cast<wgpu::Adapter*>(userdata) = wgpu::Adapter::Acquire(cAdapter);
             },
@@ -50,7 +68,6 @@ class WireDeviceLifetimeTests : public testing::Test {
     const DawnProcTable nativeProcs;
     std::unique_ptr<utils::WireHelper> wireHelper;
 
-    std::unique_ptr<dawn::native::Instance> nativeInstance;
     wgpu::Instance instance;
     wgpu::Adapter adapter;
 
@@ -59,13 +76,13 @@ class WireDeviceLifetimeTests : public testing::Test {
     // static variable `lastBackendDevice`. This lets tests control the wire device and the native
     // backend device separately.
     DawnProcTable BuildProcs() {
-        DawnProcTable nativeProcs = dawn::native::GetProcs();
-        nativeProcs.adapterRequestDevice = [](WGPUAdapter adapter, const WGPUDeviceDescriptor* desc,
-                                              WGPURequestDeviceCallback callback, void* userdata) {
+        DawnProcTable procs = native::GetProcs();
+        procs.adapterRequestDevice = [](WGPUAdapter self, const WGPUDeviceDescriptor* desc,
+                                        WGPURequestDeviceCallback callback, void* userdata) {
             using WrappedUserdata = std::pair<WGPURequestDeviceCallback, void*>;
-            dawn::native::GetProcs().adapterRequestDevice(
-                adapter, desc,
-                [](WGPURequestDeviceStatus status, WGPUDevice device, char const* message,
+            native::GetProcs().adapterRequestDevice(
+                self, desc,
+                [](WGPURequestDeviceStatus status, WGPUDevice device, WGPUStringView message,
                    void* userdata) {
                     lastBackendDevice = device;
                     auto* wrappedUserdata = static_cast<WrappedUserdata*>(userdata);
@@ -75,7 +92,7 @@ class WireDeviceLifetimeTests : public testing::Test {
                 new WrappedUserdata(callback, userdata));
         };
 
-        return nativeProcs;
+        return procs;
     }
 };
 
@@ -86,17 +103,13 @@ TEST_F(WireDeviceLifetimeTests, DeviceDroppedFromWireThenUncapturedErrorCallback
     wgpu::DeviceDescriptor deviceDesc = {};
     adapter.RequestDevice(
         &deviceDesc,
-        [](WGPURequestDeviceStatus, WGPUDevice cDevice, const char*, void* userdata) {
+        [](WGPURequestDeviceStatus, WGPUDevice cDevice, WGPUStringView, void* userdata) {
             *static_cast<wgpu::Device*>(userdata) = wgpu::Device::Acquire(cDevice);
         },
         &device);
     ASSERT_TRUE(wireHelper->FlushClient());
     ASSERT_TRUE(wireHelper->FlushServer());
     ASSERT_NE(device, nullptr);
-
-    wgpu::BufferDescriptor bufferDesc = {};
-    bufferDesc.size = 128;
-    bufferDesc.usage = wgpu::BufferUsage::Uniform;
 
     // Destroy the device.
     device.Destroy();
@@ -107,13 +120,13 @@ TEST_F(WireDeviceLifetimeTests, DeviceDroppedFromWireThenUncapturedErrorCallback
     // Drop the device, but keep the server-side device alive.
     // This prevents the callbacks from being flushed yet.
     WGPUDevice oldDevice = lastBackendDevice;
-    nativeProcs.deviceReference(oldDevice);
+    nativeProcs.deviceAddRef(oldDevice);
     device = nullptr;
 
     // Request a new device. This overrides the wire's device-related data.
     adapter.RequestDevice(
         &deviceDesc,
-        [](WGPURequestDeviceStatus, WGPUDevice cDevice, const char*, void* userdata) {
+        [](WGPURequestDeviceStatus, WGPUDevice cDevice, WGPUStringView, void* userdata) {
             *static_cast<wgpu::Device*>(userdata) = wgpu::Device::Acquire(cDevice);
         },
         &device);
@@ -133,7 +146,7 @@ TEST_F(WireDeviceLifetimeTests, DeviceDroppedFromWireThenLoggingCallback) {
     wgpu::DeviceDescriptor deviceDesc = {};
     adapter.RequestDevice(
         &deviceDesc,
-        [](WGPURequestDeviceStatus, WGPUDevice cDevice, const char*, void* userdata) {
+        [](WGPURequestDeviceStatus, WGPUDevice cDevice, WGPUStringView, void* userdata) {
             *static_cast<wgpu::Device*>(userdata) = wgpu::Device::Acquire(cDevice);
         },
         &device);
@@ -142,9 +155,9 @@ TEST_F(WireDeviceLifetimeTests, DeviceDroppedFromWireThenLoggingCallback) {
     ASSERT_NE(device, nullptr);
 
     wgpu::ShaderModuleDescriptor shaderModuleDesc = {};
-    wgpu::ShaderModuleWGSLDescriptor wgslDesc = {};
+    wgpu::ShaderSourceWGSL wgslDesc = {};
     shaderModuleDesc.nextInChain = &wgslDesc;
-    wgslDesc.source = "@compute @workgroup_size(64) fn main() {}";
+    wgslDesc.code = "@compute @workgroup_size(64) fn main() {}";
 
     // Create a shader module so the transformed shaders are dumped.
     device.CreateShaderModule(&shaderModuleDesc);
@@ -155,13 +168,13 @@ TEST_F(WireDeviceLifetimeTests, DeviceDroppedFromWireThenLoggingCallback) {
     // Drop the device, but keep the server-side device alive.
     // This prevents the callbacks from being flushed yet.
     WGPUDevice oldDevice = lastBackendDevice;
-    nativeProcs.deviceReference(oldDevice);
+    nativeProcs.deviceAddRef(oldDevice);
     device = nullptr;
 
     // Request a new device. This overrides the wire's device-related data.
     adapter.RequestDevice(
         &deviceDesc,
-        [](WGPURequestDeviceStatus, WGPUDevice cDevice, const char*, void* userdata) {
+        [](WGPURequestDeviceStatus, WGPUDevice cDevice, WGPUStringView, void* userdata) {
             *static_cast<wgpu::Device*>(userdata) = wgpu::Device::Acquire(cDevice);
         },
         &device);
@@ -181,7 +194,7 @@ TEST_F(WireDeviceLifetimeTests, DeviceDroppedFromWireThenLostCallback) {
     wgpu::DeviceDescriptor deviceDesc = {};
     adapter.RequestDevice(
         &deviceDesc,
-        [](WGPURequestDeviceStatus, WGPUDevice cDevice, const char*, void* userdata) {
+        [](WGPURequestDeviceStatus, WGPUDevice cDevice, WGPUStringView, void* userdata) {
             *static_cast<wgpu::Device*>(userdata) = wgpu::Device::Acquire(cDevice);
         },
         &device);
@@ -192,7 +205,7 @@ TEST_F(WireDeviceLifetimeTests, DeviceDroppedFromWireThenLostCallback) {
     // Drop the device, but keep the server-side device alive.
     // This prevents the callbacks from being flushed yet.
     WGPUDevice oldDevice = lastBackendDevice;
-    nativeProcs.deviceReference(oldDevice);
+    nativeProcs.deviceAddRef(oldDevice);
     device = nullptr;
 
     // Destroy the device to enqueue calling the lost callback.
@@ -201,7 +214,7 @@ TEST_F(WireDeviceLifetimeTests, DeviceDroppedFromWireThenLostCallback) {
     // Request a new device. This overrides the wire's device-related data.
     adapter.RequestDevice(
         &deviceDesc,
-        [](WGPURequestDeviceStatus, WGPUDevice cDevice, const char*, void* userdata) {
+        [](WGPURequestDeviceStatus, WGPUDevice cDevice, WGPUStringView, void* userdata) {
             *static_cast<wgpu::Device*>(userdata) = wgpu::Device::Acquire(cDevice);
         },
         &device);
@@ -213,3 +226,6 @@ TEST_F(WireDeviceLifetimeTests, DeviceDroppedFromWireThenLostCallback) {
     // callbacks.
     nativeProcs.deviceRelease(oldDevice);
 }
+
+}  // anonymous namespace
+}  // namespace dawn

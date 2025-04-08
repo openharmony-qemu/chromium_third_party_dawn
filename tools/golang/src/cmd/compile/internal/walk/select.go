@@ -157,7 +157,7 @@ func walkSelectCases(cases []*ir.CommClause) []ir.Node {
 	var pc0, pcs ir.Node
 	if base.Flag.Race {
 		pcs = typecheck.Temp(types.NewArray(types.Types[types.TUINTPTR], int64(ncas)))
-		pc0 = typecheck.Expr(typecheck.NodAddr(ir.NewIndexExpr(base.Pos, pcs, ir.NewInt(0))))
+		pc0 = typecheck.Expr(typecheck.NodAddr(ir.NewIndexExpr(base.Pos, pcs, ir.NewInt(base.Pos, 0))))
 	} else {
 		pc0 = typecheck.NodNil()
 	}
@@ -196,7 +196,7 @@ func walkSelectCases(cases []*ir.CommClause) []ir.Node {
 		casorder[i] = cas
 
 		setField := func(f string, val ir.Node) {
-			r := ir.NewAssignStmt(base.Pos, ir.NewSelectorExpr(base.Pos, ir.ODOT, ir.NewIndexExpr(base.Pos, selv, ir.NewInt(int64(i))), typecheck.Lookup(f)), val)
+			r := ir.NewAssignStmt(base.Pos, ir.NewSelectorExpr(base.Pos, ir.ODOT, ir.NewIndexExpr(base.Pos, selv, ir.NewInt(base.Pos, int64(i))), typecheck.Lookup(f)), val)
 			init = append(init, typecheck.Stmt(r))
 		}
 
@@ -210,7 +210,7 @@ func walkSelectCases(cases []*ir.CommClause) []ir.Node {
 		// TODO(mdempsky): There should be a cleaner way to
 		// handle this.
 		if base.Flag.Race {
-			r := mkcallstmt("selectsetpc", typecheck.NodAddr(ir.NewIndexExpr(base.Pos, pcs, ir.NewInt(int64(i)))))
+			r := mkcallstmt("selectsetpc", typecheck.NodAddr(ir.NewIndexExpr(base.Pos, pcs, ir.NewInt(base.Pos, int64(i)))))
 			init = append(init, r)
 		}
 	}
@@ -226,44 +226,50 @@ func walkSelectCases(cases []*ir.CommClause) []ir.Node {
 	r.Lhs = []ir.Node{chosen, recvOK}
 	fn := typecheck.LookupRuntime("selectgo")
 	var fnInit ir.Nodes
-	r.Rhs = []ir.Node{mkcall1(fn, fn.Type().Results(), &fnInit, bytePtrToIndex(selv, 0), bytePtrToIndex(order, 0), pc0, ir.NewInt(int64(nsends)), ir.NewInt(int64(nrecvs)), ir.NewBool(dflt == nil))}
+	r.Rhs = []ir.Node{mkcall1(fn, fn.Type().Results(), &fnInit, bytePtrToIndex(selv, 0), bytePtrToIndex(order, 0), pc0, ir.NewInt(base.Pos, int64(nsends)), ir.NewInt(base.Pos, int64(nrecvs)), ir.NewBool(base.Pos, dflt == nil))}
 	init = append(init, fnInit...)
 	init = append(init, typecheck.Stmt(r))
 
-	// selv and order are no longer alive after selectgo.
-	init = append(init, ir.NewUnaryExpr(base.Pos, ir.OVARKILL, selv))
-	init = append(init, ir.NewUnaryExpr(base.Pos, ir.OVARKILL, order))
-	if base.Flag.Race {
-		init = append(init, ir.NewUnaryExpr(base.Pos, ir.OVARKILL, pcs))
-	}
+	// selv, order, and pcs (if race) are no longer alive after selectgo.
 
 	// dispatch cases
 	dispatch := func(cond ir.Node, cas *ir.CommClause) {
-		cond = typecheck.Expr(cond)
-		cond = typecheck.DefaultLit(cond, nil)
-
-		r := ir.NewIfStmt(base.Pos, cond, nil, nil)
+		var list ir.Nodes
 
 		if n := cas.Comm; n != nil && n.Op() == ir.OSELRECV2 {
 			n := n.(*ir.AssignListStmt)
 			if !ir.IsBlank(n.Lhs[1]) {
 				x := ir.NewAssignStmt(base.Pos, n.Lhs[1], recvOK)
-				r.Body.Append(typecheck.Stmt(x))
+				list.Append(typecheck.Stmt(x))
 			}
 		}
 
-		r.Body.Append(cas.Body.Take()...)
-		r.Body.Append(ir.NewBranchStmt(base.Pos, ir.OBREAK, nil))
+		list.Append(cas.Body.Take()...)
+		list.Append(ir.NewBranchStmt(base.Pos, ir.OBREAK, nil))
+
+		var r ir.Node
+		if cond != nil {
+			cond = typecheck.Expr(cond)
+			cond = typecheck.DefaultLit(cond, nil)
+			r = ir.NewIfStmt(base.Pos, cond, list, nil)
+		} else {
+			r = ir.NewBlockStmt(base.Pos, list)
+		}
+
 		init = append(init, r)
 	}
 
 	if dflt != nil {
 		ir.SetPos(dflt)
-		dispatch(ir.NewBinaryExpr(base.Pos, ir.OLT, chosen, ir.NewInt(0)), dflt)
+		dispatch(ir.NewBinaryExpr(base.Pos, ir.OLT, chosen, ir.NewInt(base.Pos, 0)), dflt)
 	}
 	for i, cas := range casorder {
 		ir.SetPos(cas)
-		dispatch(ir.NewBinaryExpr(base.Pos, ir.OEQ, chosen, ir.NewInt(int64(i))), cas)
+		if i == len(casorder)-1 {
+			dispatch(nil, cas)
+			break
+		}
+		dispatch(ir.NewBinaryExpr(base.Pos, ir.OEQ, chosen, ir.NewInt(base.Pos, int64(i))), cas)
 	}
 
 	return init
@@ -271,7 +277,7 @@ func walkSelectCases(cases []*ir.CommClause) []ir.Node {
 
 // bytePtrToIndex returns a Node representing "(*byte)(&n[i])".
 func bytePtrToIndex(n ir.Node, i int64) ir.Node {
-	s := typecheck.NodAddr(ir.NewIndexExpr(base.Pos, n, ir.NewInt(i)))
+	s := typecheck.NodAddr(ir.NewIndexExpr(base.Pos, n, ir.NewInt(base.Pos, i)))
 	t := types.NewPtr(types.Types[types.TUINT8])
 	return typecheck.ConvNop(s, t)
 }
@@ -281,7 +287,7 @@ var scase *types.Type
 // Keep in sync with src/runtime/select.go.
 func scasetype() *types.Type {
 	if scase == nil {
-		scase = types.NewStruct(types.NoPkg, []*types.Field{
+		scase = types.NewStruct([]*types.Field{
 			types.NewField(base.Pos, typecheck.Lookup("c"), types.Types[types.TUNSAFEPTR]),
 			types.NewField(base.Pos, typecheck.Lookup("elem"), types.Types[types.TUNSAFEPTR]),
 		})

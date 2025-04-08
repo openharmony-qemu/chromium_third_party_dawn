@@ -97,7 +97,7 @@ func defPredeclaredTypes() {
 		err := NewFunc(nopos, nil, "Error", sig)
 
 		// interface{ Error() string }
-		ityp := &Interface{obj: obj, methods: []*Func{err}, complete: true}
+		ityp := &Interface{methods: []*Func{err}, complete: true}
 		computeInterfaceTypeSet(nil, nopos, ityp) // prevent races due to lazy computation of tset
 
 		typ.SetUnderlying(ityp)
@@ -111,7 +111,7 @@ func defPredeclaredTypes() {
 		typ := NewNamed(obj, nil, nil)
 
 		// interface{} // marked as comparable
-		ityp := &Interface{obj: obj, complete: true, tset: &_TypeSet{nil, allTermlist, true}}
+		ityp := &Interface{complete: true, tset: &_TypeSet{nil, allTermlist, true}}
 
 		typ.SetUnderlying(ityp)
 		def(obj)
@@ -145,6 +145,7 @@ const (
 	// universe scope
 	_Append builtinId = iota
 	_Cap
+	_Clear
 	_Close
 	_Complex
 	_Copy
@@ -152,6 +153,8 @@ const (
 	_Imag
 	_Len
 	_Make
+	_Max
+	_Min
 	_New
 	_Panic
 	_Print
@@ -165,6 +168,9 @@ const (
 	_Offsetof
 	_Sizeof
 	_Slice
+	_SliceData
+	_String
+	_StringData
 
 	// testing support
 	_Assert
@@ -179,6 +185,7 @@ var predeclaredFuncs = [...]struct {
 }{
 	_Append:  {"append", 1, true, expression},
 	_Cap:     {"cap", 1, false, expression},
+	_Clear:   {"clear", 1, false, statement},
 	_Close:   {"close", 1, false, statement},
 	_Complex: {"complex", 2, false, expression},
 	_Copy:    {"copy", 2, false, statement},
@@ -186,6 +193,9 @@ var predeclaredFuncs = [...]struct {
 	_Imag:    {"imag", 1, false, expression},
 	_Len:     {"len", 1, false, expression},
 	_Make:    {"make", 1, true, expression},
+	// To disable max/min, remove the next two lines.
+	_Max:     {"max", 1, true, expression},
+	_Min:     {"min", 1, true, expression},
 	_New:     {"new", 1, false, expression},
 	_Panic:   {"panic", 1, false, statement},
 	_Print:   {"print", 0, true, statement},
@@ -193,11 +203,14 @@ var predeclaredFuncs = [...]struct {
 	_Real:    {"real", 1, false, expression},
 	_Recover: {"recover", 0, false, statement},
 
-	_Add:      {"Add", 2, false, expression},
-	_Alignof:  {"Alignof", 1, false, expression},
-	_Offsetof: {"Offsetof", 1, false, expression},
-	_Sizeof:   {"Sizeof", 1, false, expression},
-	_Slice:    {"Slice", 2, false, expression},
+	_Add:        {"Add", 2, false, expression},
+	_Alignof:    {"Alignof", 1, false, expression},
+	_Offsetof:   {"Offsetof", 1, false, expression},
+	_Sizeof:     {"Sizeof", 1, false, expression},
+	_Slice:      {"Slice", 2, false, expression},
+	_SliceData:  {"SliceData", 1, false, expression},
+	_String:     {"String", 2, false, expression},
+	_StringData: {"StringData", 1, false, expression},
 
 	_Assert: {"assert", 1, false, statement},
 	_Trace:  {"trace", 0, true, statement},
@@ -245,7 +258,6 @@ func init() {
 // Objects with names containing blanks are internal and not entered into
 // a scope. Objects with exported names are inserted in the unsafe package
 // scope; other objects are inserted in the universe scope.
-//
 func def(obj Object) {
 	assert(obj.color() == black)
 	name := obj.Name()
