@@ -9,3 +9,8 @@
 *.wgsl   eol=lf
 *.h      eol=lf
 *.cpp    eol=lf
+tools/golang/bin/go filter=lfs diff=lfs merge=lfs -text
+tools/golang/pkg/tool/linux_amd64/trace filter=lfs diff=lfs merge=lfs -text
+tools/golang/pkg/tool/linux_amd64/compile filter=lfs diff=lfs merge=lfs -text
+tools/golang/pkg/tool/linux_amd64/pprof filter=lfs diff=lfs merge=lfs -text
+third_party/gn/webgpu-cts/test_list.txt filter=lfs diff=lfs merge=lfs -text
