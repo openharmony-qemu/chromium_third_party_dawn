@@ -1,0 +1,11 @@
+[
+    {
+        "Name": "dawn",
+        "License":"Apache-2.0",
+        "License File": "LICENSE",
+        "Version Number": "73dbf565079c89a531e6e01c4e8fc048a8a9660b",
+        "Owner": "huamengzheng@huawei.com",
+        "Upstream URL": "https://dawn.googlesource.com/dawn.git@73dbf565079c89a531e6e01c4e8fc048a8a9660b",
+        "Description": "Dawn 是正在发展的WebGPU标准的开源的、跨平台的实现"
+    }
+]
