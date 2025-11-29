@@ -27,6 +27,7 @@
 
 #include "src/dawn/node/binding/GPUDevice.h"
 
+#include <cassert>
 #include <memory>
 #include <type_traits>
 #include <utility>
@@ -34,6 +35,7 @@
 
 #include "src/dawn/node/binding/Converter.h"
 #include "src/dawn/node/binding/Errors.h"
+#include "src/dawn/node/binding/GPUAdapterInfo.h"
 #include "src/dawn/node/binding/GPUBindGroup.h"
 #include "src/dawn/node/binding/GPUBindGroupLayout.h"
 #include "src/dawn/node/binding/GPUBuffer.h"
@@ -57,15 +59,15 @@ namespace wgpu::binding {
 namespace {
 
 // Returns a string representation of the WGPULoggingType
-const char* str(WGPULoggingType ty) {
+const char* str(wgpu::LoggingType ty) {
     switch (ty) {
-        case WGPULoggingType_Verbose:
+        case wgpu::LoggingType::Verbose:
             return "verbose";
-        case WGPULoggingType_Info:
+        case wgpu::LoggingType::Info:
             return "info";
-        case WGPULoggingType_Warning:
+        case wgpu::LoggingType::Warning:
             return "warning";
-        case WGPULoggingType_Error:
+        case wgpu::LoggingType::Error:
             return "error";
         default:
             return "unknown";
@@ -147,12 +149,10 @@ GPUDevice::GPUDevice(Napi::Env env,
       async_(async),
       lost_promise_(lost_promise),
       label_(CopyLabel(desc.label)) {
-    device_.SetLoggingCallback(
-        [](WGPULoggingType type, WGPUStringView message, void* userdata) {
-            printf("%s:\n", str(type));
-            chunkedWrite(message);
-        },
-        nullptr);
+    device_.SetLoggingCallback([](wgpu::LoggingType type, wgpu::StringView message) {
+        printf("%s:\n", str(type));
+        chunkedWrite(message);
+    });
 }
 
 GPUDevice::~GPUDevice() {
@@ -182,32 +182,19 @@ interop::Interface<interop::GPUSupportedFeatures> GPUDevice::getFeatures(Napi::E
 }
 
 interop::Interface<interop::GPUSupportedLimits> GPUDevice::getLimits(Napi::Env env) {
-    wgpu::SupportedLimits limits{};
-    wgpu::DawnExperimentalSubgroupLimits subgroupLimits{};
-    wgpu::DawnExperimentalImmediateDataLimits immediateDataLimits{};
-
-    auto InsertInChain = [&](wgpu::ChainedStructOut* node) {
-        node->nextInChain = limits.nextInChain;
-        limits.nextInChain = node;
-    };
-
-    // Query the subgroup limits only if subgroups feature is enabled on the device.
-    // TODO(349125474): Remove deprecated ChromiumExperimentalSubgroups.
-    if (device_.HasFeature(wgpu::FeatureName::Subgroups) ||
-        device_.HasFeature(wgpu::FeatureName::ChromiumExperimentalSubgroups)) {
-        InsertInChain(&subgroupLimits);
-    }
-
-    // Query the immediate data limits only if ChromiumExperimentalImmediateData feature
-    // is available on device.
-    if (device_.HasFeature(FeatureName::ChromiumExperimentalImmediateData)) {
-        InsertInChain(&subgroupLimits);
-    }
-
+    wgpu::Limits limits{};
     if (!device_.GetLimits(&limits)) {
         Napi::Error::New(env, "failed to get device limits").ThrowAsJavaScriptException();
     }
+
     return interop::GPUSupportedLimits::Create<GPUSupportedLimits>(env, limits);
+}
+
+interop::Interface<interop::GPUAdapterInfo> GPUDevice::getAdapterInfo(Napi::Env env) {
+    wgpu::AdapterInfo adapterInfo = {};
+    device_.GetAdapterInfo(&adapterInfo);
+
+    return interop::GPUAdapterInfo::Create<GPUAdapterInfo>(env, adapterInfo);
 }
 
 interop::Interface<interop::GPUQueue> GPUDevice::getQueue(Napi::Env env) {
@@ -234,6 +221,17 @@ interop::Interface<interop::GPUBuffer> GPUDevice::createBuffer(
         !conv(desc.size, descriptor.size) || !conv(desc.usage, descriptor.usage)) {
         return {};
     }
+
+    wgpu::Buffer dawnBuffer = device_.CreateBuffer(&desc);
+    // Buffer creation may return nullptr if it fails to map at creation. Translate that to a
+    // RangeError as required by the spec.
+    if (dawnBuffer == nullptr) {
+        assert(descriptor.mappedAtCreation);
+        Napi::RangeError::New(env, "createBuffer failed to allocate a buffer mapped at creation.")
+            .ThrowAsJavaScriptException();
+        return {};
+    }
+
     return interop::GPUBuffer::Create<GPUBuffer>(env, device_.CreateBuffer(&desc), desc, device_,
                                                  async_);
 }
@@ -536,9 +534,22 @@ interop::Promise<std::optional<interop::Interface<interop::GPUError>>> GPUDevice
 
     device_.PopErrorScope(
         wgpu::CallbackMode::AllowProcessEvents,
-        [ctx = std::move(ctx)](wgpu::PopErrorScopeStatus, wgpu::ErrorType type,
+        [ctx = std::move(ctx)](wgpu::PopErrorScopeStatus status, wgpu::ErrorType type,
                                wgpu::StringView message) {
             auto env = ctx->env;
+            switch (status) {
+                case wgpu::PopErrorScopeStatus::Error:
+                    // PopErrorScope itself failed, e.g. the error scope stack was empty.
+                    ctx->promise.Reject(Errors::OperationError(env, std::string(message)));
+                    return;
+                case wgpu::PopErrorScopeStatus::CallbackCancelled:
+                    // The instance has been dropped. Shouldn't happen except maybe during shutdown.
+                    return;
+                case wgpu::PopErrorScopeStatus::Success:
+                    // This is the only case where `type` is set to a meaningful value.
+                    break;
+            }
+
             switch (type) {
                 case wgpu::ErrorType::NoError:
                     ctx->promise.Resolve({});
@@ -564,15 +575,10 @@ interop::Promise<std::optional<interop::Interface<interop::GPUError>>> GPUDevice
                     break;
                 }
                 case wgpu::ErrorType::Unknown:
-                case wgpu::ErrorType::DeviceLost:
-                    ctx->promise.Reject(Errors::OperationError(env, std::string(message)));
-                    break;
-                default:
-                    ctx->promise.Reject(
-                        "unhandled error type (" +
-                        std::to_string(
-                            static_cast<std::underlying_type<wgpu::ErrorType>::type>(type)) +
-                        ")");
+                    // This error type is reserved for when translating an error type from a newer
+                    // implementation (e.g. the browser added a new error type) to another (e.g.
+                    // you're using an older version of Emscripten). It shouldn't happen in Dawn.
+                    assert(false);
                     break;
             }
         });
@@ -618,7 +624,7 @@ void GPUDevice::removeEventListener(
     UNIMPLEMENTED(env);
 }
 
-bool GPUDevice::dispatchEvent(Napi::Env env, interop::Interface<interop::Event> event) {
+bool GPUDevice::dispatchEvent(Napi::Env env, interop::Event event) {
     // TODO(dawn:1348): Implement support for the "unhandlederror" event.
     UNIMPLEMENTED(env, {});
 }

@@ -4,6 +4,7 @@
 //
 // This file is distributed under the University of Illinois Open Source
 // License. See LICENSE.TXT for details.
+//
 //===----------------------------------------------------------------------===//
 //
 //  This file defines a SPIR-V emitter class that takes in HLSL AST and emits
@@ -491,6 +492,15 @@ private:
   /// Processes the 'lit' intrinsic function.
   SpirvInstruction *processIntrinsicLit(const CallExpr *);
 
+  /// Processes the 'vk::static_pointer_cast' and 'vk_reinterpret_pointer_cast'
+  /// intrinsic functions.
+  SpirvInstruction *processIntrinsicPointerCast(const CallExpr *,
+                                                bool isStatic);
+
+  /// Processes the vk::BufferPointer intrinsic function 'Get'.
+  SpirvInstruction *
+  processIntrinsicGetBufferContents(const CXXMemberCallExpr *);
+
   /// Processes the 'GroupMemoryBarrier', 'GroupMemoryBarrierWithGroupSync',
   /// 'DeviceMemoryBarrier', 'DeviceMemoryBarrierWithGroupSync',
   /// 'AllMemoryBarrier', and 'AllMemoryBarrierWithGroupSync' intrinsic
@@ -657,6 +667,10 @@ private:
   SpirvInstruction *processWaveQuadWideShuffle(const CallExpr *,
                                                hlsl::IntrinsicOp op);
 
+  /// Processes SM6.7 quad any/all.
+  SpirvInstruction *processWaveQuadAnyAll(const CallExpr *,
+                                          hlsl::IntrinsicOp op);
+
   /// Generates the Spir-V instructions needed to implement the given call to
   /// WaveActiveAllEqual. Returns a pointer to the instruction that produces the
   /// final result.
@@ -764,12 +778,28 @@ private:
   SpirvInstruction *processCooperativeMatrixGetLength(const CallExpr *call);
 
   /// Process vk::ext_execution_mode intrinsic
-  SpirvInstruction *processIntrinsicExecutionMode(const CallExpr *expr,
-                                                  bool useIdParams);
+  SpirvInstruction *processIntrinsicExecutionMode(const CallExpr *expr);
+  /// Process vk::ext_execution_mode_id intrinsic
+  SpirvInstruction *processIntrinsicExecutionModeId(const CallExpr *expr);
 
   /// Processes the 'firstbit{high|low}' intrinsic functions.
   SpirvInstruction *processIntrinsicFirstbit(const CallExpr *,
                                              GLSLstd450 glslOpcode);
+
+  SpirvInstruction *
+  processMatrixDerivativeIntrinsic(hlsl::IntrinsicOp hlslOpcode,
+                                   const Expr *arg, SourceLocation loc,
+                                   SourceRange range);
+
+  SpirvInstruction *processDerivativeIntrinsic(hlsl::IntrinsicOp hlslOpcode,
+                                               const Expr *arg,
+                                               SourceLocation loc,
+                                               SourceRange range);
+
+  SpirvInstruction *processDerivativeIntrinsic(hlsl::IntrinsicOp hlslOpcode,
+                                               SpirvInstruction *arg,
+                                               SourceLocation loc,
+                                               SourceRange range);
 
 private:
   /// Returns the <result-id> for constant value 0 of the given type.
@@ -848,8 +878,14 @@ private:
   processMeshOrAmplificationShaderAttributes(const FunctionDecl *decl,
                                              uint32_t *outVerticesArraySize);
 
-  /// \brief Emits a wrapper function for the entry function and returns true
-  /// on success.
+  /// \brief Emits a SpirvDebugFunction to match given SpirvFunction, and
+  /// returns a pointer to it.
+  SpirvDebugFunction *emitDebugFunction(const FunctionDecl *decl,
+                                        SpirvFunction *func,
+                                        RichDebugInfo **info, std::string name);
+
+  /// \brief Emits a wrapper function for the entry function and returns a
+  /// pointer to the wrapper SpirvFunction on success.
   ///
   /// The wrapper function loads the values of all stage input variables and
   /// creates composites as expected by the source code entry function. It then
@@ -859,8 +895,10 @@ private:
   ///
   /// The wrapper function is also responsible for initializing global static
   /// variables for some cases.
-  bool emitEntryFunctionWrapper(const FunctionDecl *entryFunction,
-                                SpirvFunction *entryFuncId);
+  SpirvFunction *emitEntryFunctionWrapper(const FunctionDecl *entryFunction,
+                                          RichDebugInfo **info,
+                                          SpirvDebugFunction **debugFunction,
+                                          SpirvFunction *entryFuncId);
 
   /// \brief Emits a wrapper function for the entry functions for raytracing
   /// stages and returns true on success.
@@ -870,6 +908,7 @@ private:
   /// The wrapper function is also responsible for initializing global static
   /// variables for some cases.
   bool emitEntryFunctionWrapperForRayTracing(const FunctionDecl *entryFunction,
+                                             SpirvDebugFunction *debugFunction,
                                              SpirvFunction *entryFuncId);
 
   /// \brief Performs the following operations for the Hull shader:

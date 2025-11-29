@@ -39,12 +39,10 @@ constexpr uint32_t kRTSize = 4;
 
 class MultiDrawIndexedIndirectTest : public DawnTest {
   protected:
-    wgpu::RequiredLimits GetRequiredLimits(const wgpu::SupportedLimits& supported) override {
+    wgpu::Limits GetRequiredLimits(const wgpu::Limits& supported) override {
         // Force larger limits, that might reach into the upper 32 bits of the 64bit limit values,
         // to help detect integer arithmetic bugs like overflows and truncations.
-        wgpu::RequiredLimits required = {};
-        required.limits = supported.limits;
-        return required;
+        return supported;
     }
 
     std::vector<wgpu::FeatureName> GetRequiredFeatures() override {
@@ -249,7 +247,7 @@ TEST_P(MultiDrawIndexedIndirectTest, DrawCount) {
 
 TEST_P(MultiDrawIndexedIndirectTest, ValidateWithOffsets) {
     // It doesn't make sense to test invalid inputs when validation is disabled.
-    DAWN_SUPPRESS_TEST_IF(HasToggleEnabled("skip_validation"));
+    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("skip_validation"));
 
     utils::RGBA8 filled(0, 255, 0, 255);
     utils::RGBA8 notFilled(0, 0, 0, 0);
@@ -274,7 +272,7 @@ TEST_P(MultiDrawIndexedIndirectTest, ValidateWithOffsets) {
 
 TEST_P(MultiDrawIndexedIndirectTest, ValidateMultiplePasses) {
     // It doesn't make sense to test invalid inputs when validation is disabled.
-    DAWN_SUPPRESS_TEST_IF(HasToggleEnabled("skip_validation"));
+    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("skip_validation"));
 
     utils::RGBA8 filled(0, 255, 0, 255);
     utils::RGBA8 notFilled(0, 0, 0, 0);
@@ -298,7 +296,7 @@ TEST_P(MultiDrawIndexedIndirectTest, ValidateMultiplePasses) {
 
 TEST_P(MultiDrawIndexedIndirectTest, ValidateEncodeMultipleThenSubmitInOrder) {
     // It doesn't make sense to test invalid inputs when validation is disabled.
-    DAWN_SUPPRESS_TEST_IF(HasToggleEnabled("skip_validation"));
+    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("skip_validation"));
 
     utils::RGBA8 filled(0, 255, 0, 255);
     utils::RGBA8 notFilled(0, 0, 0, 0);
@@ -323,7 +321,7 @@ TEST_P(MultiDrawIndexedIndirectTest, ValidateEncodeMultipleThenSubmitInOrder) {
 
 TEST_P(MultiDrawIndexedIndirectTest, ValidateEncodeMultipleThenSubmitOutOfOrder) {
     // It doesn't make sense to test invalid inputs when validation is disabled.
-    DAWN_SUPPRESS_TEST_IF(HasToggleEnabled("skip_validation"));
+    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("skip_validation"));
 
     utils::RGBA8 filled(0, 255, 0, 255);
     utils::RGBA8 notFilled(0, 0, 0, 0);
@@ -348,7 +346,7 @@ TEST_P(MultiDrawIndexedIndirectTest, ValidateEncodeMultipleThenSubmitOutOfOrder)
 
 TEST_P(MultiDrawIndexedIndirectTest, ValidateEncodeMultipleThenSubmitAtOnce) {
     // It doesn't make sense to test invalid inputs when validation is disabled.
-    DAWN_SUPPRESS_TEST_IF(HasToggleEnabled("skip_validation"));
+    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("skip_validation"));
 
     utils::RGBA8 filled(0, 255, 0, 255);
     utils::RGBA8 notFilled(0, 0, 0, 0);
@@ -369,7 +367,7 @@ TEST_P(MultiDrawIndexedIndirectTest, ValidateEncodeMultipleThenSubmitAtOnce) {
 
 TEST_P(MultiDrawIndexedIndirectTest, ValidateMultiDrawMixed) {
     // It doesn't make sense to test invalid inputs when validation is disabled.
-    DAWN_SUPPRESS_TEST_IF(HasToggleEnabled("skip_validation"));
+    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("skip_validation"));
 
     utils::RGBA8 filled(0, 255, 0, 255);
     utils::RGBA8 notFilled(0, 0, 0, 0);
@@ -400,7 +398,7 @@ TEST_P(MultiDrawIndexedIndirectTest, ValidateMultiDrawMixed) {
 
 TEST_P(MultiDrawIndexedIndirectTest, ValidateMultiAndSingleDrawsInSingleRenderPass) {
     // It doesn't make sense to test invalid inputs when validation is disabled.
-    DAWN_SUPPRESS_TEST_IF(HasToggleEnabled("skip_validation"));
+    DAWN_TEST_UNSUPPORTED_IF(HasToggleEnabled("skip_validation"));
 
     utils::RGBA8 filled(0, 255, 0, 255);
 

@@ -79,32 +79,20 @@ TEST_F(SpirvReader_ShaderIOTest, NoInputsOrOutputs) {
 
 TEST_F(SpirvReader_ShaderIOTest, Inputs) {
     auto* front_facing = b.Var("front_facing", ty.ptr(core::AddressSpace::kIn, ty.bool_()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kFrontFacing;
-        front_facing->SetAttributes(std::move(attributes));
-    }
+    front_facing->SetBuiltin(core::BuiltinValue::kFrontFacing);
+
     auto* position = b.Var("position", ty.ptr(core::AddressSpace::kIn, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kPosition;
-        attributes.invariant = true;
-        position->SetAttributes(std::move(attributes));
-    }
+    position->SetBuiltin(core::BuiltinValue::kPosition);
+    position->SetInvariant(true);
+
     auto* color1 = b.Var("color1", ty.ptr(core::AddressSpace::kIn, ty.f32()));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 0;
-        color1->SetAttributes(std::move(attributes));
-    }
+    color1->SetLocation(0);
+
     auto* color2 = b.Var("color2", ty.ptr(core::AddressSpace::kIn, ty.f32()));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 1;
-        attributes.interpolation = core::Interpolation{core::InterpolationType::kLinear,
-                                                       core::InterpolationSampling::kSample};
-        color2->SetAttributes(std::move(attributes));
-    }
+    color2->SetLocation(1);
+    color2->SetInterpolation(core::Interpolation{core::InterpolationType::kLinear,
+                                                 core::InterpolationSampling::kSample});
+
     mod.root_block->Append(front_facing);
     mod.root_block->Append(position);
     mod.root_block->Append(color1);
@@ -125,10 +113,10 @@ TEST_F(SpirvReader_ShaderIOTest, Inputs) {
 
     auto* src = R"(
 $B1: {  # root
-  %front_facing:ptr<__in, bool, read> = var @builtin(front_facing)
-  %position:ptr<__in, vec4<f32>, read> = var @invariant @builtin(position)
-  %color1:ptr<__in, f32, read> = var @location(0)
-  %color2:ptr<__in, f32, read> = var @location(1) @interpolate(linear, sample)
+  %front_facing:ptr<__in, bool, read> = var undef @builtin(front_facing)
+  %position:ptr<__in, vec4<f32>, read> = var undef @invariant @builtin(position)
+  %color1:ptr<__in, f32, read> = var undef @location(0)
+  %color2:ptr<__in, f32, read> = var undef @location(1) @interpolate(linear, sample)
 }
 
 %foo = @fragment func():void {
@@ -172,32 +160,20 @@ $B1: {  # root
 
 TEST_F(SpirvReader_ShaderIOTest, Inputs_UsedByHelper) {
     auto* front_facing = b.Var("front_facing", ty.ptr(core::AddressSpace::kIn, ty.bool_()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kFrontFacing;
-        front_facing->SetAttributes(std::move(attributes));
-    }
+    front_facing->SetBuiltin(core::BuiltinValue::kFrontFacing);
+
     auto* position = b.Var("position", ty.ptr(core::AddressSpace::kIn, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kPosition;
-        attributes.invariant = true;
-        position->SetAttributes(std::move(attributes));
-    }
+    position->SetBuiltin(core::BuiltinValue::kPosition);
+    position->SetInvariant(true);
+
     auto* color1 = b.Var("color1", ty.ptr(core::AddressSpace::kIn, ty.f32()));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 0;
-        color1->SetAttributes(std::move(attributes));
-    }
+    color1->SetLocation(0);
+
     auto* color2 = b.Var("color2", ty.ptr(core::AddressSpace::kIn, ty.f32()));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 1;
-        attributes.interpolation = core::Interpolation{core::InterpolationType::kLinear,
-                                                       core::InterpolationSampling::kSample};
-        color2->SetAttributes(std::move(attributes));
-    }
+    color2->SetLocation(1);
+    color2->SetInterpolation(core::Interpolation{core::InterpolationType::kLinear,
+                                                 core::InterpolationSampling::kSample});
+
     mod.root_block->Append(front_facing);
     mod.root_block->Append(position);
     mod.root_block->Append(color1);
@@ -236,10 +212,10 @@ TEST_F(SpirvReader_ShaderIOTest, Inputs_UsedByHelper) {
 
     auto* src = R"(
 $B1: {  # root
-  %front_facing:ptr<__in, bool, read> = var @builtin(front_facing)
-  %position:ptr<__in, vec4<f32>, read> = var @invariant @builtin(position)
-  %color1:ptr<__in, f32, read> = var @location(0)
-  %color2:ptr<__in, f32, read> = var @location(1) @interpolate(linear, sample)
+  %front_facing:ptr<__in, bool, read> = var undef @builtin(front_facing)
+  %position:ptr<__in, vec4<f32>, read> = var undef @invariant @builtin(position)
+  %color1:ptr<__in, f32, read> = var undef @location(0)
+  %color2:ptr<__in, f32, read> = var undef @location(1) @interpolate(linear, sample)
 }
 
 %foo = func(%existing_param:f32):void {
@@ -309,23 +285,14 @@ $B1: {  # root
 
 TEST_F(SpirvReader_ShaderIOTest, Inputs_UsedEntryPointAndHelper) {
     auto* gid = b.Var("gid", ty.ptr(core::AddressSpace::kIn, ty.vec3<u32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kGlobalInvocationId;
-        gid->SetAttributes(std::move(attributes));
-    }
+    gid->SetBuiltin(core::BuiltinValue::kGlobalInvocationId);
+
     auto* lid = b.Var("lid", ty.ptr(core::AddressSpace::kIn, ty.vec3<u32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kLocalInvocationId;
-        lid->SetAttributes(std::move(attributes));
-    }
+    lid->SetBuiltin(core::BuiltinValue::kLocalInvocationId);
+
     auto* group_id = b.Var("group_id", ty.ptr(core::AddressSpace::kIn, ty.vec3<u32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kWorkgroupId;
-        group_id->SetAttributes(std::move(attributes));
-    }
+    group_id->SetBuiltin(core::BuiltinValue::kWorkgroupId);
+
     mod.root_block->Append(gid);
     mod.root_block->Append(lid);
     mod.root_block->Append(group_id);
@@ -351,9 +318,9 @@ TEST_F(SpirvReader_ShaderIOTest, Inputs_UsedEntryPointAndHelper) {
 
     auto* src = R"(
 $B1: {  # root
-  %gid:ptr<__in, vec3<u32>, read> = var @builtin(global_invocation_id)
-  %lid:ptr<__in, vec3<u32>, read> = var @builtin(local_invocation_id)
-  %group_id:ptr<__in, vec3<u32>, read> = var @builtin(workgroup_id)
+  %gid:ptr<__in, vec3<u32>, read> = var undef @builtin(global_invocation_id)
+  %lid:ptr<__in, vec3<u32>, read> = var undef @builtin(local_invocation_id)
+  %group_id:ptr<__in, vec3<u32>, read> = var undef @builtin(workgroup_id)
 }
 
 %foo = func():void {
@@ -399,23 +366,14 @@ $B1: {  # root
 
 TEST_F(SpirvReader_ShaderIOTest, Inputs_UsedEntryPointAndHelper_ForwardReference) {
     auto* gid = b.Var("gid", ty.ptr(core::AddressSpace::kIn, ty.vec3<u32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kGlobalInvocationId;
-        gid->SetAttributes(std::move(attributes));
-    }
+    gid->SetBuiltin(core::BuiltinValue::kGlobalInvocationId);
+
     auto* lid = b.Var("lid", ty.ptr(core::AddressSpace::kIn, ty.vec3<u32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kLocalInvocationId;
-        lid->SetAttributes(std::move(attributes));
-    }
+    lid->SetBuiltin(core::BuiltinValue::kLocalInvocationId);
+
     auto* group_id = b.Var("group_id", ty.ptr(core::AddressSpace::kIn, ty.vec3<u32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kWorkgroupId;
-        group_id->SetAttributes(std::move(attributes));
-    }
+    group_id->SetBuiltin(core::BuiltinValue::kWorkgroupId);
+
     mod.root_block->Append(gid);
     mod.root_block->Append(lid);
     mod.root_block->Append(group_id);
@@ -442,9 +400,9 @@ TEST_F(SpirvReader_ShaderIOTest, Inputs_UsedEntryPointAndHelper_ForwardReference
 
     auto* src = R"(
 $B1: {  # root
-  %gid:ptr<__in, vec3<u32>, read> = var @builtin(global_invocation_id)
-  %lid:ptr<__in, vec3<u32>, read> = var @builtin(local_invocation_id)
-  %group_id:ptr<__in, vec3<u32>, read> = var @builtin(workgroup_id)
+  %gid:ptr<__in, vec3<u32>, read> = var undef @builtin(global_invocation_id)
+  %lid:ptr<__in, vec3<u32>, read> = var undef @builtin(local_invocation_id)
+  %group_id:ptr<__in, vec3<u32>, read> = var undef @builtin(workgroup_id)
 }
 
 %main1 = @compute @workgroup_size(1u, 1u, 1u) func():void {
@@ -490,23 +448,14 @@ $B1: {  # root
 
 TEST_F(SpirvReader_ShaderIOTest, Inputs_UsedByMultipleEntryPoints) {
     auto* gid = b.Var("gid", ty.ptr(core::AddressSpace::kIn, ty.vec3<u32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kGlobalInvocationId;
-        gid->SetAttributes(std::move(attributes));
-    }
+    gid->SetBuiltin(core::BuiltinValue::kGlobalInvocationId);
+
     auto* lid = b.Var("lid", ty.ptr(core::AddressSpace::kIn, ty.vec3<u32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kLocalInvocationId;
-        lid->SetAttributes(std::move(attributes));
-    }
+    lid->SetBuiltin(core::BuiltinValue::kLocalInvocationId);
+
     auto* group_id = b.Var("group_id", ty.ptr(core::AddressSpace::kIn, ty.vec3<u32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kWorkgroupId;
-        group_id->SetAttributes(std::move(attributes));
-    }
+    group_id->SetBuiltin(core::BuiltinValue::kWorkgroupId);
+
     mod.root_block->Append(gid);
     mod.root_block->Append(lid);
     mod.root_block->Append(group_id);
@@ -538,9 +487,9 @@ TEST_F(SpirvReader_ShaderIOTest, Inputs_UsedByMultipleEntryPoints) {
 
     auto* src = R"(
 $B1: {  # root
-  %gid:ptr<__in, vec3<u32>, read> = var @builtin(global_invocation_id)
-  %lid:ptr<__in, vec3<u32>, read> = var @builtin(local_invocation_id)
-  %group_id:ptr<__in, vec3<u32>, read> = var @builtin(workgroup_id)
+  %gid:ptr<__in, vec3<u32>, read> = var undef @builtin(global_invocation_id)
+  %lid:ptr<__in, vec3<u32>, read> = var undef @builtin(local_invocation_id)
+  %group_id:ptr<__in, vec3<u32>, read> = var undef @builtin(workgroup_id)
 }
 
 %foo = func():void {
@@ -597,11 +546,8 @@ $B1: {  # root
 
 TEST_F(SpirvReader_ShaderIOTest, Input_LoadVectorElement) {
     auto* lid = b.Var("lid", ty.ptr(core::AddressSpace::kIn, ty.vec3<u32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kLocalInvocationId;
-        lid->SetAttributes(std::move(attributes));
-    }
+    lid->SetBuiltin(core::BuiltinValue::kLocalInvocationId);
+
     mod.root_block->Append(lid);
 
     auto* ep = b.ComputeFunction("foo");
@@ -612,7 +558,7 @@ TEST_F(SpirvReader_ShaderIOTest, Input_LoadVectorElement) {
 
     auto* src = R"(
 $B1: {  # root
-  %lid:ptr<__in, vec3<u32>, read> = var @builtin(local_invocation_id)
+  %lid:ptr<__in, vec3<u32>, read> = var undef @builtin(local_invocation_id)
 }
 
 %foo = @compute @workgroup_size(1u, 1u, 1u) func():void {
@@ -679,7 +625,7 @@ Colors = struct @align(16) {
 }
 
 $B1: {  # root
-  %colors:ptr<__in, Colors, read> = var
+  %colors:ptr<__in, Colors, read> = var undef
 }
 
 %foo = func():void {
@@ -730,34 +676,25 @@ Colors = struct @align(16) {
 }
 
 TEST_F(SpirvReader_ShaderIOTest, Inputs_Struct_LocationOnVariable) {
-    auto* colors_str =
-        ty.Struct(mod.symbols.New("Colors"),
-                  Vector{
-                      core::type::Manager::StructMemberDesc{
-                          mod.symbols.New("color1"),
-                          ty.vec4<f32>(),
-                      },
-                      core::type::Manager::StructMemberDesc{
-                          mod.symbols.New("color2"),
-                          ty.vec4<f32>(),
-                          core::IOAttributes{
-                              /* location */ std::nullopt,
-                              /* index */ std::nullopt,
-                              /* color */ std::nullopt,
-                              /* builtin */ std::nullopt,
-                              /* interpolation */
-                              core::Interpolation{core::InterpolationType::kPerspective,
-                                                  core::InterpolationSampling::kCentroid},
-                              /* invariant */ false,
-                          },
-                      },
-                  });
+    auto* colors_str = ty.Struct(
+        mod.symbols.New("Colors"),
+        Vector{
+            core::type::Manager::StructMemberDesc{
+                mod.symbols.New("color1"),
+                ty.vec4<f32>(),
+            },
+            core::type::Manager::StructMemberDesc{
+                mod.symbols.New("color2"),
+                ty.vec4<f32>(),
+                core::IOAttributes{
+                    .interpolation = core::Interpolation{core::InterpolationType::kPerspective,
+                                                         core::InterpolationSampling::kCentroid},
+                },
+            },
+        });
     auto* colors = b.Var("colors", ty.ptr(core::AddressSpace::kIn, colors_str));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 1u;
-        colors->SetAttributes(attributes);
-    }
+    colors->SetLocation(1u);
+
     mod.root_block->Append(colors);
 
     auto* foo = b.Function("foo", ty.void_());
@@ -782,7 +719,7 @@ Colors = struct @align(16) {
 }
 
 $B1: {  # root
-  %colors:ptr<__in, Colors, read> = var @location(1)
+  %colors:ptr<__in, Colors, read> = var undef @location(1)
 }
 
 %foo = func():void {
@@ -849,12 +786,9 @@ TEST_F(SpirvReader_ShaderIOTest, Inputs_Struct_InterpolateOnVariable) {
             },
         });
     auto* colors = b.Var("colors", ty.ptr(core::AddressSpace::kIn, colors_str));
-    {
-        core::IOAttributes attributes;
-        attributes.interpolation = core::Interpolation{core::InterpolationType::kPerspective,
-                                                       core::InterpolationSampling::kCentroid};
-        colors->SetAttributes(attributes);
-    }
+    colors->SetInterpolation(core::Interpolation{core::InterpolationType::kPerspective,
+                                                 core::InterpolationSampling::kCentroid});
+
     mod.root_block->Append(colors);
 
     auto* foo = b.Function("foo", ty.void_());
@@ -879,7 +813,7 @@ Colors = struct @align(16) {
 }
 
 $B1: {  # root
-  %colors:ptr<__in, Colors, read> = var @interpolate(perspective, centroid)
+  %colors:ptr<__in, Colors, read> = var undef @interpolate(perspective, centroid)
 }
 
 %foo = func():void {
@@ -970,7 +904,7 @@ Colors = struct @align(16) {
 }
 
 $B1: {  # root
-  %colors:ptr<__in, Colors, read> = var
+  %colors:ptr<__in, Colors, read> = var undef
 }
 
 %foo = func():void {
@@ -1020,11 +954,8 @@ Colors = struct @align(16) {
 
 TEST_F(SpirvReader_ShaderIOTest, SingleOutput_Builtin) {
     auto* position = b.Var("position", ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kPosition;
-        position->SetAttributes(std::move(attributes));
-    }
+    position->SetBuiltin(core::BuiltinValue::kPosition);
+
     mod.root_block->Append(position);
 
     auto* ep = b.Function("foo", ty.void_(), core::ir::Function::PipelineStage::kVertex);
@@ -1035,7 +966,7 @@ TEST_F(SpirvReader_ShaderIOTest, SingleOutput_Builtin) {
 
     auto* src = R"(
 $B1: {  # root
-  %position:ptr<__out, vec4<f32>, read_write> = var @builtin(position)
+  %position:ptr<__out, vec4<f32>, read_write> = var undef @builtin(position)
 }
 
 %foo = @vertex func():void {
@@ -1049,7 +980,7 @@ $B1: {  # root
 
     auto* expect = R"(
 $B1: {  # root
-  %position:ptr<private, vec4<f32>, read_write> = var
+  %position:ptr<private, vec4<f32>, read_write> = var undef
 }
 
 %foo_inner = func():void {
@@ -1074,12 +1005,9 @@ $B1: {  # root
 
 TEST_F(SpirvReader_ShaderIOTest, SingleOutput_Builtin_WithInvariant) {
     auto* position = b.Var("position", ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kPosition;
-        attributes.invariant = true;
-        position->SetAttributes(std::move(attributes));
-    }
+    position->SetBuiltin(core::BuiltinValue::kPosition);
+    position->SetInvariant(true);
+
     mod.root_block->Append(position);
 
     auto* ep = b.Function("foo", ty.void_(), core::ir::Function::PipelineStage::kVertex);
@@ -1090,7 +1018,7 @@ TEST_F(SpirvReader_ShaderIOTest, SingleOutput_Builtin_WithInvariant) {
 
     auto* src = R"(
 $B1: {  # root
-  %position:ptr<__out, vec4<f32>, read_write> = var @invariant @builtin(position)
+  %position:ptr<__out, vec4<f32>, read_write> = var undef @invariant @builtin(position)
 }
 
 %foo = @vertex func():void {
@@ -1104,7 +1032,7 @@ $B1: {  # root
 
     auto* expect = R"(
 $B1: {  # root
-  %position:ptr<private, vec4<f32>, read_write> = var
+  %position:ptr<private, vec4<f32>, read_write> = var undef
 }
 
 %foo_inner = func():void {
@@ -1129,11 +1057,8 @@ $B1: {  # root
 
 TEST_F(SpirvReader_ShaderIOTest, SingleOutput_Location) {
     auto* color = b.Var("color", ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 1u;
-        color->SetAttributes(std::move(attributes));
-    }
+    color->SetLocation(1u);
+
     mod.root_block->Append(color);
 
     auto* ep = b.Function("foo", ty.void_(), core::ir::Function::PipelineStage::kFragment);
@@ -1144,7 +1069,7 @@ TEST_F(SpirvReader_ShaderIOTest, SingleOutput_Location) {
 
     auto* src = R"(
 $B1: {  # root
-  %color:ptr<__out, vec4<f32>, read_write> = var @location(1)
+  %color:ptr<__out, vec4<f32>, read_write> = var undef @location(1)
 }
 
 %foo = @fragment func():void {
@@ -1158,7 +1083,7 @@ $B1: {  # root
 
     auto* expect = R"(
 $B1: {  # root
-  %color:ptr<private, vec4<f32>, read_write> = var
+  %color:ptr<private, vec4<f32>, read_write> = var undef
 }
 
 %foo_inner = func():void {
@@ -1183,13 +1108,10 @@ $B1: {  # root
 
 TEST_F(SpirvReader_ShaderIOTest, SingleOutput_Location_WithInterpolation) {
     auto* color = b.Var("color", ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 1u;
-        attributes.interpolation = core::Interpolation{core::InterpolationType::kPerspective,
-                                                       core::InterpolationSampling::kCentroid};
-        color->SetAttributes(std::move(attributes));
-    }
+    color->SetLocation(1u);
+    color->SetInterpolation(core::Interpolation{core::InterpolationType::kPerspective,
+                                                core::InterpolationSampling::kCentroid});
+
     mod.root_block->Append(color);
 
     auto* ep = b.Function("foo", ty.void_(), core::ir::Function::PipelineStage::kFragment);
@@ -1200,7 +1122,7 @@ TEST_F(SpirvReader_ShaderIOTest, SingleOutput_Location_WithInterpolation) {
 
     auto* src = R"(
 $B1: {  # root
-  %color:ptr<__out, vec4<f32>, read_write> = var @location(1) @interpolate(perspective, centroid)
+  %color:ptr<__out, vec4<f32>, read_write> = var undef @location(1) @interpolate(perspective, centroid)
 }
 
 %foo = @fragment func():void {
@@ -1214,7 +1136,7 @@ $B1: {  # root
 
     auto* expect = R"(
 $B1: {  # root
-  %color:ptr<private, vec4<f32>, read_write> = var
+  %color:ptr<private, vec4<f32>, read_write> = var undef
 }
 
 %foo_inner = func():void {
@@ -1239,26 +1161,17 @@ $B1: {  # root
 
 TEST_F(SpirvReader_ShaderIOTest, MultipleOutputs) {
     auto* position = b.Var("position", ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kPosition;
-        attributes.invariant = true;
-        position->SetAttributes(std::move(attributes));
-    }
+    position->SetBuiltin(core::BuiltinValue::kPosition);
+    position->SetInvariant(true);
+
     auto* color1 = b.Var("color1", ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 1u;
-        color1->SetAttributes(std::move(attributes));
-    }
+    color1->SetLocation(1u);
+
     auto* color2 = b.Var("color2", ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 1u;
-        attributes.interpolation = core::Interpolation{core::InterpolationType::kPerspective,
-                                                       core::InterpolationSampling::kCentroid};
-        color2->SetAttributes(std::move(attributes));
-    }
+    color2->SetLocation(1u);
+    color2->SetInterpolation(core::Interpolation{core::InterpolationType::kPerspective,
+                                                 core::InterpolationSampling::kCentroid});
+
     mod.root_block->Append(position);
     mod.root_block->Append(color1);
     mod.root_block->Append(color2);
@@ -1273,9 +1186,9 @@ TEST_F(SpirvReader_ShaderIOTest, MultipleOutputs) {
 
     auto* src = R"(
 $B1: {  # root
-  %position:ptr<__out, vec4<f32>, read_write> = var @invariant @builtin(position)
-  %color1:ptr<__out, vec4<f32>, read_write> = var @location(1)
-  %color2:ptr<__out, vec4<f32>, read_write> = var @location(1) @interpolate(perspective, centroid)
+  %position:ptr<__out, vec4<f32>, read_write> = var undef @invariant @builtin(position)
+  %color1:ptr<__out, vec4<f32>, read_write> = var undef @location(1)
+  %color2:ptr<__out, vec4<f32>, read_write> = var undef @location(1) @interpolate(perspective, centroid)
 }
 
 %foo = @vertex func():void {
@@ -1297,9 +1210,9 @@ tint_symbol = struct @align(16) {
 }
 
 $B1: {  # root
-  %position:ptr<private, vec4<f32>, read_write> = var
-  %color1:ptr<private, vec4<f32>, read_write> = var
-  %color2:ptr<private, vec4<f32>, read_write> = var
+  %position:ptr<private, vec4<f32>, read_write> = var undef
+  %color1:ptr<private, vec4<f32>, read_write> = var undef
+  %color2:ptr<private, vec4<f32>, read_write> = var undef
 }
 
 %foo_inner = func():void {
@@ -1377,8 +1290,8 @@ Colors = struct @align(16) {
 }
 
 $B1: {  # root
-  %builtins:ptr<__out, Builtins, read_write> = var
-  %colors:ptr<__out, Colors, read_write> = var
+  %builtins:ptr<__out, Builtins, read_write> = var undef
+  %colors:ptr<__out, Colors, read_write> = var undef
 }
 
 %foo = @vertex func():void {
@@ -1412,8 +1325,8 @@ tint_symbol = struct @align(16) {
 }
 
 $B1: {  # root
-  %builtins:ptr<private, Builtins, read_write> = var
-  %colors:ptr<private, Colors, read_write> = var
+  %builtins:ptr<private, Builtins, read_write> = var undef
+  %colors:ptr<private, Colors, read_write> = var undef
 }
 
 %foo_inner = func():void {
@@ -1456,36 +1369,27 @@ TEST_F(SpirvReader_ShaderIOTest, Outputs_Struct_LocationOnVariable) {
                                                        BuiltinAttrs(core::BuiltinValue::kPosition),
                                                    },
                                                });
-    auto* colors_str =
-        ty.Struct(mod.symbols.New("Colors"),
-                  Vector{
-                      core::type::Manager::StructMemberDesc{
-                          mod.symbols.New("color1"),
-                          ty.vec4<f32>(),
-                      },
-                      core::type::Manager::StructMemberDesc{
-                          mod.symbols.New("color2"),
-                          ty.vec4<f32>(),
-                          core::IOAttributes{
-                              /* location */ std::nullopt,
-                              /* index */ std::nullopt,
-                              /* color */ std::nullopt,
-                              /* builtin */ std::nullopt,
-                              /* interpolation */
-                              core::Interpolation{core::InterpolationType::kPerspective,
-                                                  core::InterpolationSampling::kCentroid},
-                              /* invariant */ false,
-                          },
-                      },
-                  });
+    auto* colors_str = ty.Struct(
+        mod.symbols.New("Colors"),
+        Vector{
+            core::type::Manager::StructMemberDesc{
+                mod.symbols.New("color1"),
+                ty.vec4<f32>(),
+            },
+            core::type::Manager::StructMemberDesc{
+                mod.symbols.New("color2"),
+                ty.vec4<f32>(),
+                core::IOAttributes{
+                    .interpolation = core::Interpolation{core::InterpolationType::kPerspective,
+                                                         core::InterpolationSampling::kCentroid},
+                },
+            },
+        });
 
     auto* builtins = b.Var("builtins", ty.ptr(core::AddressSpace::kOut, builtin_str));
     auto* colors = b.Var("colors", ty.ptr(core::AddressSpace::kOut, colors_str));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 1u;
-        colors->SetAttributes(attributes);
-    }
+    colors->SetLocation(1u);
+
     mod.root_block->Append(builtins);
     mod.root_block->Append(colors);
 
@@ -1509,8 +1413,8 @@ Colors = struct @align(16) {
 }
 
 $B1: {  # root
-  %builtins:ptr<__out, Builtins, read_write> = var
-  %colors:ptr<__out, Colors, read_write> = var @location(1)
+  %builtins:ptr<__out, Builtins, read_write> = var undef
+  %colors:ptr<__out, Colors, read_write> = var undef @location(1)
 }
 
 %foo = @vertex func():void {
@@ -1544,8 +1448,8 @@ tint_symbol = struct @align(16) {
 }
 
 $B1: {  # root
-  %builtins:ptr<private, Builtins, read_write> = var
-  %colors:ptr<private, Colors, read_write> = var
+  %builtins:ptr<private, Builtins, read_write> = var undef
+  %colors:ptr<private, Colors, read_write> = var undef
 }
 
 %foo_inner = func():void {
@@ -1605,12 +1509,9 @@ TEST_F(SpirvReader_ShaderIOTest, Outputs_Struct_InterpolateOnVariable) {
 
     auto* builtins = b.Var("builtins", ty.ptr(core::AddressSpace::kOut, builtin_str));
     auto* colors = b.Var("colors", ty.ptr(core::AddressSpace::kOut, colors_str));
-    {
-        core::IOAttributes attributes;
-        attributes.interpolation = core::Interpolation{core::InterpolationType::kPerspective,
-                                                       core::InterpolationSampling::kCentroid};
-        colors->SetAttributes(attributes);
-    }
+    colors->SetInterpolation(core::Interpolation{core::InterpolationType::kPerspective,
+                                                 core::InterpolationSampling::kCentroid});
+
     mod.root_block->Append(builtins);
     mod.root_block->Append(colors);
 
@@ -1634,8 +1535,8 @@ Colors = struct @align(16) {
 }
 
 $B1: {  # root
-  %builtins:ptr<__out, Builtins, read_write> = var
-  %colors:ptr<__out, Colors, read_write> = var @interpolate(perspective, centroid)
+  %builtins:ptr<__out, Builtins, read_write> = var undef
+  %colors:ptr<__out, Colors, read_write> = var undef @interpolate(perspective, centroid)
 }
 
 %foo = @vertex func():void {
@@ -1669,8 +1570,8 @@ tint_symbol = struct @align(16) {
 }
 
 $B1: {  # root
-  %builtins:ptr<private, Builtins, read_write> = var
-  %colors:ptr<private, Colors, read_write> = var
+  %builtins:ptr<private, Builtins, read_write> = var undef
+  %colors:ptr<private, Colors, read_write> = var undef
 }
 
 %foo_inner = func():void {
@@ -1706,26 +1607,17 @@ $B1: {  # root
 
 TEST_F(SpirvReader_ShaderIOTest, Outputs_UsedByMultipleEntryPoints) {
     auto* position = b.Var("position", ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kPosition;
-        attributes.invariant = true;
-        position->SetAttributes(std::move(attributes));
-    }
+    position->SetBuiltin(core::BuiltinValue::kPosition);
+    position->SetInvariant(true);
+
     auto* color1 = b.Var("color1", ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 1u;
-        color1->SetAttributes(std::move(attributes));
-    }
+    color1->SetLocation(1u);
+
     auto* color2 = b.Var("color2", ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 1u;
-        attributes.interpolation = core::Interpolation{core::InterpolationType::kPerspective,
-                                                       core::InterpolationSampling::kCentroid};
-        color2->SetAttributes(std::move(attributes));
-    }
+    color2->SetLocation(1u);
+    color2->SetInterpolation(core::Interpolation{core::InterpolationType::kPerspective,
+                                                 core::InterpolationSampling::kCentroid});
+
     mod.root_block->Append(position);
     mod.root_block->Append(color1);
     mod.root_block->Append(color2);
@@ -1752,9 +1644,9 @@ TEST_F(SpirvReader_ShaderIOTest, Outputs_UsedByMultipleEntryPoints) {
 
     auto* src = R"(
 $B1: {  # root
-  %position:ptr<__out, vec4<f32>, read_write> = var @invariant @builtin(position)
-  %color1:ptr<__out, vec4<f32>, read_write> = var @location(1)
-  %color2:ptr<__out, vec4<f32>, read_write> = var @location(1) @interpolate(perspective, centroid)
+  %position:ptr<__out, vec4<f32>, read_write> = var undef @invariant @builtin(position)
+  %color1:ptr<__out, vec4<f32>, read_write> = var undef @location(1)
+  %color2:ptr<__out, vec4<f32>, read_write> = var undef @location(1) @interpolate(perspective, centroid)
 }
 
 %main1 = @vertex func():void {
@@ -1792,9 +1684,9 @@ tint_symbol_1 = struct @align(16) {
 }
 
 $B1: {  # root
-  %position:ptr<private, vec4<f32>, read_write> = var
-  %color1:ptr<private, vec4<f32>, read_write> = var
-  %color2:ptr<private, vec4<f32>, read_write> = var
+  %position:ptr<private, vec4<f32>, read_write> = var undef
+  %color1:ptr<private, vec4<f32>, read_write> = var undef
+  %color2:ptr<private, vec4<f32>, read_write> = var undef
 }
 
 %main1_inner = func():void {
@@ -1851,11 +1743,8 @@ $B1: {  # root
 
 TEST_F(SpirvReader_ShaderIOTest, Output_LoadAndStore) {
     auto* color = b.Var("color", ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 1u;
-        color->SetAttributes(std::move(attributes));
-    }
+    color->SetLocation(1u);
+
     mod.root_block->Append(color);
 
     auto* ep = b.Function("foo", ty.void_(), core::ir::Function::PipelineStage::kFragment);
@@ -1869,7 +1758,7 @@ TEST_F(SpirvReader_ShaderIOTest, Output_LoadAndStore) {
 
     auto* src = R"(
 $B1: {  # root
-  %color:ptr<__out, vec4<f32>, read_write> = var @location(1)
+  %color:ptr<__out, vec4<f32>, read_write> = var undef @location(1)
 }
 
 %foo = @fragment func():void {
@@ -1886,7 +1775,7 @@ $B1: {  # root
 
     auto* expect = R"(
 $B1: {  # root
-  %color:ptr<private, vec4<f32>, read_write> = var
+  %color:ptr<private, vec4<f32>, read_write> = var undef
 }
 
 %foo_inner = func():void {
@@ -1914,11 +1803,8 @@ $B1: {  # root
 
 TEST_F(SpirvReader_ShaderIOTest, Output_LoadVectorElementAndStoreVectorElement) {
     auto* color = b.Var("color", ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 1u;
-        color->SetAttributes(std::move(attributes));
-    }
+    color->SetLocation(1u);
+
     mod.root_block->Append(color);
 
     auto* ep = b.Function("foo", ty.void_(), core::ir::Function::PipelineStage::kFragment);
@@ -1932,7 +1818,7 @@ TEST_F(SpirvReader_ShaderIOTest, Output_LoadVectorElementAndStoreVectorElement) 
 
     auto* src = R"(
 $B1: {  # root
-  %color:ptr<__out, vec4<f32>, read_write> = var @location(1)
+  %color:ptr<__out, vec4<f32>, read_write> = var undef @location(1)
 }
 
 %foo = @fragment func():void {
@@ -1949,7 +1835,7 @@ $B1: {  # root
 
     auto* expect = R"(
 $B1: {  # root
-  %color:ptr<private, vec4<f32>, read_write> = var
+  %color:ptr<private, vec4<f32>, read_write> = var undef
 }
 
 %foo_inner = func():void {
@@ -1977,30 +1863,18 @@ $B1: {  # root
 
 TEST_F(SpirvReader_ShaderIOTest, Inputs_And_Outputs) {
     auto* position = b.Var("position", ty.ptr(core::AddressSpace::kIn, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kPosition;
-        attributes.invariant = true;
-        position->SetAttributes(std::move(attributes));
-    }
+    position->SetBuiltin(core::BuiltinValue::kPosition);
+    position->SetInvariant(true);
+
     auto* color_in = b.Var("color_in", ty.ptr(core::AddressSpace::kIn, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 0;
-        color_in->SetAttributes(std::move(attributes));
-    }
+    color_in->SetLocation(0);
+
     auto* color_out_1 = b.Var("color_out_1", ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 1;
-        color_out_1->SetAttributes(std::move(attributes));
-    }
+    color_out_1->SetLocation(1);
+
     auto* color_out_2 = b.Var("color_out_2", ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>()));
-    {
-        core::IOAttributes attributes;
-        attributes.location = 2;
-        color_out_2->SetAttributes(std::move(attributes));
-    }
+    color_out_2->SetLocation(2);
+
     mod.root_block->Append(position);
     mod.root_block->Append(color_in);
     mod.root_block->Append(color_out_1);
@@ -2017,10 +1891,10 @@ TEST_F(SpirvReader_ShaderIOTest, Inputs_And_Outputs) {
 
     auto* src = R"(
 $B1: {  # root
-  %position:ptr<__in, vec4<f32>, read> = var @invariant @builtin(position)
-  %color_in:ptr<__in, vec4<f32>, read> = var @location(0)
-  %color_out_1:ptr<__out, vec4<f32>, read_write> = var @location(1)
-  %color_out_2:ptr<__out, vec4<f32>, read_write> = var @location(2)
+  %position:ptr<__in, vec4<f32>, read> = var undef @invariant @builtin(position)
+  %color_in:ptr<__in, vec4<f32>, read> = var undef @location(0)
+  %color_out_1:ptr<__out, vec4<f32>, read_write> = var undef @location(1)
+  %color_out_2:ptr<__out, vec4<f32>, read_write> = var undef @location(2)
 }
 
 %foo = @fragment func():void {
@@ -2042,8 +1916,8 @@ tint_symbol = struct @align(16) {
 }
 
 $B1: {  # root
-  %color_out_1:ptr<private, vec4<f32>, read_write> = var
-  %color_out_2:ptr<private, vec4<f32>, read_write> = var
+  %color_out_1:ptr<private, vec4<f32>, read_write> = var undef
+  %color_out_2:ptr<private, vec4<f32>, read_write> = var undef
 }
 
 %foo_inner = func(%position:vec4<f32>, %color_in:vec4<f32>):void {
@@ -2073,17 +1947,11 @@ $B1: {  # root
 TEST_F(SpirvReader_ShaderIOTest, SampleMask) {
     auto* arr = ty.array<u32, 1>();
     auto* mask_in = b.Var("mask_in", ty.ptr(core::AddressSpace::kIn, arr));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kSampleMask;
-        mask_in->SetAttributes(std::move(attributes));
-    }
+    mask_in->SetBuiltin(core::BuiltinValue::kSampleMask);
+
     auto* mask_out = b.Var("mask_out", ty.ptr(core::AddressSpace::kOut, arr));
-    {
-        core::IOAttributes attributes;
-        attributes.builtin = core::BuiltinValue::kSampleMask;
-        mask_out->SetAttributes(std::move(attributes));
-    }
+    mask_out->SetBuiltin(core::BuiltinValue::kSampleMask);
+
     mod.root_block->Append(mask_in);
     mod.root_block->Append(mask_out);
 
@@ -2097,8 +1965,8 @@ TEST_F(SpirvReader_ShaderIOTest, SampleMask) {
 
     auto* src = R"(
 $B1: {  # root
-  %mask_in:ptr<__in, array<u32, 1>, read> = var @builtin(sample_mask)
-  %mask_out:ptr<__out, array<u32, 1>, read_write> = var @builtin(sample_mask)
+  %mask_in:ptr<__in, array<u32, 1>, read> = var undef @builtin(sample_mask)
+  %mask_out:ptr<__out, array<u32, 1>, read_write> = var undef @builtin(sample_mask)
 }
 
 %foo = @fragment func():void {
@@ -2116,7 +1984,7 @@ $B1: {  # root
 
     auto* expect = R"(
 $B1: {  # root
-  %mask_out:ptr<private, array<u32, 1>, read_write> = var
+  %mask_out:ptr<private, array<u32, 1>, read_write> = var undef
 }
 
 %foo_inner = func(%mask_in:array<u32, 1>):void {
@@ -2144,5 +2012,266 @@ $B1: {  # root
     EXPECT_EQ(expect, str());
 }
 
+TEST_F(SpirvReader_ShaderIOTest, PointSize) {
+    auto* builtin_str =
+        ty.Struct(mod.symbols.New("Builtins"), Vector{
+                                                   core::type::Manager::StructMemberDesc{
+                                                       mod.symbols.New("position"),
+                                                       ty.vec4<f32>(),
+                                                       BuiltinAttrs(core::BuiltinValue::kPosition),
+                                                   },
+                                                   core::type::Manager::StructMemberDesc{
+                                                       mod.symbols.New("point_size"),
+                                                       ty.f32(),
+                                                       BuiltinAttrs(core::BuiltinValue::kPointSize),
+                                                   },
+                                               });
+    auto* builtins = b.Var("builtins", ty.ptr(core::AddressSpace::kOut, builtin_str));
+    mod.root_block->Append(builtins);
+
+    auto* ep = b.Function("foo", ty.void_(), core::ir::Function::PipelineStage::kVertex);
+    b.Append(ep->Block(), [&] {  //
+        auto* ptr = ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>());
+        b.Store(b.Access(ptr, builtins, 0_u), b.Splat<vec4<f32>>(1_f));
+        b.Store(b.Access(ty.ptr(core::AddressSpace::kOut, ty.f32()), builtins, 1_u), 1_f);
+        b.Return(ep);
+    });
+
+    auto* src = R"(
+Builtins = struct @align(16) {
+  position:vec4<f32> @offset(0), @builtin(position)
+  point_size:f32 @offset(16), @builtin(__point_size)
+}
+
+$B1: {  # root
+  %builtins:ptr<__out, Builtins, read_write> = var undef
+}
+
+%foo = @vertex func():void {
+  $B2: {
+    %3:ptr<__out, vec4<f32>, read_write> = access %builtins, 0u
+    store %3, vec4<f32>(1.0f)
+    %4:ptr<__out, f32, read_write> = access %builtins, 1u
+    store %4, 1.0f
+    ret
+  }
+}
+)";
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+Builtins = struct @align(16) {
+  position:vec4<f32> @offset(0)
+  point_size:f32 @offset(16)
+}
+
+$B1: {  # root
+  %builtins:ptr<private, Builtins, read_write> = var undef
+}
+
+%foo_inner = func():void {
+  $B2: {
+    %3:ptr<private, vec4<f32>, read_write> = access %builtins, 0u
+    store %3, vec4<f32>(1.0f)
+    %4:ptr<private, f32, read_write> = access %builtins, 1u
+    store %4, 1.0f
+    ret
+  }
+}
+%foo = @vertex func():vec4<f32> [@position] {
+  $B3: {
+    %6:void = call %foo_inner
+    %7:ptr<private, vec4<f32>, read_write> = access %builtins, 0u
+    %8:vec4<f32> = load %7
+    ret %8
+  }
+}
+)";
+
+    Run(ShaderIO);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(SpirvReader_ShaderIOTest, Outputs_Struct_UnusedOutputs) {
+    auto* builtin_str = ty.Struct(mod.symbols.New("Builtins"),
+                                  Vector{
+                                      core::type::Manager::StructMemberDesc{
+                                          mod.symbols.New("position"),
+                                          ty.vec4<f32>(),
+                                          BuiltinAttrs(core::BuiltinValue::kPosition),
+                                      },
+                                      core::type::Manager::StructMemberDesc{
+                                          mod.symbols.New("clip_distance"),
+                                          ty.array<f32, 3>(),
+                                          BuiltinAttrs(core::BuiltinValue::kClipDistances),
+                                      },
+                                      core::type::Manager::StructMemberDesc{
+                                          mod.symbols.New("point_size"),
+                                          ty.f32(),
+                                          BuiltinAttrs(core::BuiltinValue::kPointSize),
+                                      },
+                                      core::type::Manager::StructMemberDesc{
+                                          mod.symbols.New("cull_distance"),
+                                          ty.array<f32, 3>(),
+                                          BuiltinAttrs(core::BuiltinValue::kCullDistance),
+                                      },
+                                  });
+    auto* builtins = b.Var("builtins", ty.ptr(core::AddressSpace::kOut, builtin_str));
+    mod.root_block->Append(builtins);
+
+    auto* ep = b.Function("foo", ty.void_(), core::ir::Function::PipelineStage::kVertex);
+    b.Append(ep->Block(), [&] {  //
+        auto* ptr = ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>());
+        b.Store(b.Access(ptr, builtins, 0_u), b.Splat<vec4<f32>>(1_f));
+        b.Return(ep);
+    });
+
+    auto* src = R"(
+Builtins = struct @align(16) {
+  position:vec4<f32> @offset(0), @builtin(position)
+  clip_distance:array<f32, 3> @offset(16), @builtin(clip_distances)
+  point_size:f32 @offset(28), @builtin(__point_size)
+  cull_distance:array<f32, 3> @offset(32), @builtin(__cull_distance)
+}
+
+$B1: {  # root
+  %builtins:ptr<__out, Builtins, read_write> = var undef
+}
+
+%foo = @vertex func():void {
+  $B2: {
+    %3:ptr<__out, vec4<f32>, read_write> = access %builtins, 0u
+    store %3, vec4<f32>(1.0f)
+    ret
+  }
+}
+)";
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+Builtins = struct @align(16) {
+  position:vec4<f32> @offset(0)
+  clip_distance:array<f32, 3> @offset(16)
+  point_size:f32 @offset(28)
+  cull_distance:array<f32, 3> @offset(32)
+}
+
+$B1: {  # root
+  %builtins:ptr<private, Builtins, read_write> = var undef
+}
+
+%foo_inner = func():void {
+  $B2: {
+    %3:ptr<private, vec4<f32>, read_write> = access %builtins, 0u
+    store %3, vec4<f32>(1.0f)
+    ret
+  }
+}
+%foo = @vertex func():vec4<f32> [@position] {
+  $B3: {
+    %5:void = call %foo_inner
+    %6:ptr<private, vec4<f32>, read_write> = access %builtins, 0u
+    %7:vec4<f32> = load %6
+    ret %7
+  }
+}
+)";
+
+    Run(ShaderIO);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(SpirvReader_ShaderIOTest, Outputs_Struct_MultipledUsed) {
+    auto* builtin_str = ty.Struct(mod.symbols.New("Builtins"),
+                                  Vector{
+                                      core::type::Manager::StructMemberDesc{
+                                          mod.symbols.New("position"),
+                                          ty.vec4<f32>(),
+                                          BuiltinAttrs(core::BuiltinValue::kPosition),
+                                      },
+                                      core::type::Manager::StructMemberDesc{
+                                          mod.symbols.New("clip_distance"),
+                                          ty.array<f32, 3>(),
+                                          BuiltinAttrs(core::BuiltinValue::kClipDistances),
+                                      },
+                                  });
+    auto* builtins = b.Var("builtins", ty.ptr(core::AddressSpace::kOut, builtin_str));
+    mod.root_block->Append(builtins);
+
+    auto* ep = b.Function("foo", ty.void_(), core::ir::Function::PipelineStage::kVertex);
+    b.Append(ep->Block(), [&] {  //
+        auto* ptr1 = ty.ptr(core::AddressSpace::kOut, ty.vec4<f32>());
+        b.Store(b.Access(ptr1, builtins, 0_u), b.Splat<vec4<f32>>(1_f));
+
+        auto* ptr2 = ty.ptr(core::AddressSpace::kOut, ty.array<f32, 3>());
+        b.Store(b.Access(ptr2, builtins, 1_u), b.Splat<array<f32, 3>>(1_f));
+        b.Return(ep);
+    });
+
+    auto* src = R"(
+Builtins = struct @align(16) {
+  position:vec4<f32> @offset(0), @builtin(position)
+  clip_distance:array<f32, 3> @offset(16), @builtin(clip_distances)
+}
+
+$B1: {  # root
+  %builtins:ptr<__out, Builtins, read_write> = var undef
+}
+
+%foo = @vertex func():void {
+  $B2: {
+    %3:ptr<__out, vec4<f32>, read_write> = access %builtins, 0u
+    store %3, vec4<f32>(1.0f)
+    %4:ptr<__out, array<f32, 3>, read_write> = access %builtins, 1u
+    store %4, array<f32, 3>(1.0f)
+    ret
+  }
+}
+)";
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+Builtins = struct @align(16) {
+  position:vec4<f32> @offset(0)
+  clip_distance:array<f32, 3> @offset(16)
+}
+
+tint_symbol = struct @align(16) {
+  position:vec4<f32> @offset(0), @builtin(position)
+  clip_distance:array<f32, 3> @offset(16), @builtin(clip_distances)
+}
+
+$B1: {  # root
+  %builtins:ptr<private, Builtins, read_write> = var undef
+}
+
+%foo_inner = func():void {
+  $B2: {
+    %3:ptr<private, vec4<f32>, read_write> = access %builtins, 0u
+    store %3, vec4<f32>(1.0f)
+    %4:ptr<private, array<f32, 3>, read_write> = access %builtins, 1u
+    store %4, array<f32, 3>(1.0f)
+    ret
+  }
+}
+%foo = @vertex func():tint_symbol {
+  $B3: {
+    %6:void = call %foo_inner
+    %7:ptr<private, vec4<f32>, read_write> = access %builtins, 0u
+    %8:vec4<f32> = load %7
+    %9:ptr<private, array<f32, 3>, read_write> = access %builtins, 1u
+    %10:array<f32, 3> = load %9
+    %11:tint_symbol = construct %8, %10
+    ret %11
+  }
+}
+)";
+
+    Run(ShaderIO);
+
+    EXPECT_EQ(expect, str());
+}
 }  // namespace
 }  // namespace tint::spirv::reader::lower

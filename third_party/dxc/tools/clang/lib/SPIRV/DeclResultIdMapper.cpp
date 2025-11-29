@@ -392,10 +392,16 @@ bool isBooleanStageIOVar(const NamedDecl *decl, QualType type,
   // [[vk::builtin(...)]] makes the decl a built-in stage variable.
   // IsFrontFace (if used as PSIn) is the only known boolean built-in stage
   // variable.
-  const bool isBooleanBuiltin =
-      (decl->getAttr<VKBuiltInAttr>() != nullptr) ||
-      (semanticKind == hlsl::Semantic::Kind::IsFrontFace &&
-       sigPointKind == hlsl::SigPoint::Kind::PSIn);
+  bool isBooleanBuiltin = false;
+
+  if ((decl->getAttr<VKBuiltInAttr>() != nullptr))
+    isBooleanBuiltin = true;
+  else if (semanticKind == hlsl::Semantic::Kind::IsFrontFace &&
+           sigPointKind == hlsl::SigPoint::Kind::PSIn) {
+    isBooleanBuiltin = true;
+  } else if (semanticKind == hlsl::Semantic::Kind::CullPrimitive) {
+    isBooleanBuiltin = true;
+  }
 
   // TODO: support boolean matrix stage I/O variable if needed.
   QualType elemType = {};
@@ -854,7 +860,7 @@ bool DeclResultIdMapper::createStageOutputVar(const DeclaratorDecl *decl,
         QualType arrayType = astContext.getConstantArrayType(
             type, llvm::APInt(32, arraySize), clang::ArrayType::Normal, 0);
 
-        stageVarInstructions[cast<DeclaratorDecl>(decl)] =
+        msOutIndicesBuiltin =
             getBuiltinVar(builtinID, arrayType, decl->getLocation());
       } else {
         // For NV_mesh_shader, the built type is PrimitiveIndicesNV
@@ -865,7 +871,7 @@ bool DeclResultIdMapper::createStageOutputVar(const DeclaratorDecl *decl,
             astContext.UnsignedIntTy, llvm::APInt(32, arraySize),
             clang::ArrayType::Normal, 0);
 
-        stageVarInstructions[cast<DeclaratorDecl>(decl)] =
+        msOutIndicesBuiltin =
             getBuiltinVar(builtinID, arrayType, decl->getLocation());
       }
 
@@ -1816,24 +1822,24 @@ void DeclResultIdMapper::createCounterVar(
   }
 
   const SpirvType *counterType = spvContext.getACSBufferCounterType();
+  llvm::Optional<uint32_t> noArrayStride;
   QualType declType = decl->getType();
   if (declType->isArrayType()) {
     // Vulkan does not support multi-dimentional arrays of resource, so we
     // assume the array is a single dimensional array.
     assert(!declType->getArrayElementTypeNoTypeQual()->isArrayType());
-    uint32_t arrayStride = 4;
+
     if (const auto *constArrayType =
             astContext.getAsConstantArrayType(declType)) {
       counterType = spvContext.getArrayType(
-          counterType, constArrayType->getSize().getZExtValue(), arrayStride);
+          counterType, constArrayType->getSize().getZExtValue(), noArrayStride);
     } else {
       assert(declType->isIncompleteArrayType());
-      counterType = spvContext.getRuntimeArrayType(counterType, arrayStride);
+      counterType = spvContext.getRuntimeArrayType(counterType, noArrayStride);
     }
   } else if (isResourceDescriptorHeap(decl->getType()) ||
              isSamplerDescriptorHeap(decl->getType())) {
-    counterType =
-        spvContext.getRuntimeArrayType(counterType, /* arrayStride= */ 4);
+    counterType = spvContext.getRuntimeArrayType(counterType, noArrayStride);
   }
 
   // {RW|Append|Consume}StructuredBuffer are all in Uniform storage class.
@@ -3516,7 +3522,8 @@ SpirvVariable *DeclResultIdMapper::createSpirvInterfaceVariable(
       // Decorate with PerPrimitiveNV for per-primitive out variables.
       spvBuilder.decoratePerPrimitiveNV(varInstr,
                                         varInstr->getSourceLocation());
-    } else {
+    } else if (stageVar.getSemanticInfo().getKind() !=
+               hlsl::Semantic::Kind::DomainLocation) {
       spvBuilder.decoratePatch(varInstr, varInstr->getSourceLocation());
     }
   }
