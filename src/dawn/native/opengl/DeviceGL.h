@@ -93,7 +93,7 @@ class Device final : public DeviceBase {
                                            uint64_t size) override;
 
     MaybeError CopyFromStagingToTextureImpl(const BufferBase* source,
-                                            const TextureDataLayout& src,
+                                            const TexelCopyBufferLayout& src,
                                             const TextureCopy& dst,
                                             const Extent3D& copySizePixels) override;
 
@@ -106,6 +106,9 @@ class Device final : public DeviceBase {
     bool ShouldApplyIndexBufferOffsetToFirstIndex() const override;
 
     const AHBFunctions* GetOrLoadAHBFunctions();
+
+    const Buffer* GetInternalTextureBuiltinsUniformBuffer() const;
+    const Buffer* GetInternalArrayLengthUniformBuffer() const;
 
   private:
     Device(AdapterBase* adapter,
@@ -130,7 +133,7 @@ class Device final : public DeviceBase {
         const UnpackedPtr<ShaderModuleDescriptor>& descriptor,
         const std::vector<tint::wgsl::Extension>& internalExtensions,
         ShaderModuleParseResult* parseResult,
-        OwnedCompilationMessages* compilationMessages) override;
+        std::unique_ptr<OwnedCompilationMessages>* compilationMessages) override;
     ResultOrError<Ref<SwapChainBase>> CreateSwapChainImpl(
         Surface* surface,
         SwapChainBase* previousSwapChain,
@@ -146,8 +149,15 @@ class Device final : public DeviceBase {
         const UnpackedPtr<RenderPipelineDescriptor>& descriptor) override;
     ResultOrError<Ref<SharedTextureMemoryBase>> ImportSharedTextureMemoryImpl(
         const SharedTextureMemoryDescriptor* descriptor) override;
+    ResultOrError<Ref<SharedFenceBase>> ImportSharedFenceImpl(
+        const SharedFenceDescriptor* descriptor) override;
+    ResultOrError<Ref<TextureBase>> CreateTextureWrappingEGLImageImpl(
+        const ExternalImageDescriptor* descriptor,
+        ::EGLImage image);
+    ResultOrError<Ref<TextureBase>> CreateTextureWrappingGLTextureImpl(
+        const ExternalImageDescriptor* descriptor,
+        GLuint texture);
 
-    GLenum GetBGRAInternalFormat(const OpenGLFunctions& gl) const;
     void DestroyImpl() override;
 
     const OpenGLFunctions mGL;
@@ -155,6 +165,13 @@ class Device final : public DeviceBase {
     GLFormatTable mFormatTable;
     std::unique_ptr<ContextEGL> mContext;
     int mMaxTextureMaxAnisotropy = 0;
+
+    // Maintain an internal uniform buffer to store extra information needed by shader emulation for
+    // certain texture builtins.
+    Ref<Buffer> mTextureBuiltinsBuffer;
+
+    // Maintain an internal uniform buffer to store extra array length information if needed.
+    Ref<Buffer> mArrayLengthBuffer;
 
 #if DAWN_PLATFORM_IS(ANDROID)
     std::unique_ptr<AHBFunctions> mAHBFunctions;

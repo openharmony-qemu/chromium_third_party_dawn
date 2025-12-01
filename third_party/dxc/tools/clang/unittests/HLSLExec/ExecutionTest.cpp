@@ -819,6 +819,15 @@ public:
 
         return false;
       }
+
+      if (GetModuleHandleW(L"d3d10warp.dll") != NULL) {
+        WCHAR szFullModuleFilePath[MAX_PATH] = L"";
+        GetModuleFileNameW(GetModuleHandleW(L"d3d10warp.dll"),
+                           szFullModuleFilePath, sizeof(szFullModuleFilePath));
+        WEX::Logging::Log::Comment(WEX::Common::String().Format(
+            L"WARP driver loaded from: %S", szFullModuleFilePath));
+      }
+
     } else {
       CComPtr<IDXGIAdapter1> hardwareAdapter;
       WEX::Common::String AdapterValue;
@@ -5623,7 +5632,7 @@ void ExecutionTest::RunBasicShaderModelTest(CComPtr<ID3D12Device> pDevice,
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "BinaryFPOp",
-      // this callbacked is called when the test is creating the resource to run
+      // this callback is called when the test is creating the resource to run
       // the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         UNREFERENCED_PARAMETER(Name);
@@ -6872,22 +6881,6 @@ ToleranceType ToleranceStringToEnum(LPCWSTR toleranceType) {
 }
 
 static bool CompareOutputWithExpectedValueFloat(
-    float output, float ref, ToleranceType type, double tolerance,
-    hlsl::DXIL::Float32DenormMode mode = hlsl::DXIL::Float32DenormMode::Any) {
-  if (type == ToleranceType::RELATIVE_EPSILON) {
-    return CompareFloatRelativeEpsilon(output, ref, (int)tolerance, mode);
-  } else if (type == ToleranceType::EPSILON) {
-    return CompareFloatEpsilon(output, ref, (float)tolerance, mode);
-  } else if (type == ToleranceType::ULP) {
-    return CompareFloatULP(output, ref, (int)tolerance, mode);
-  } else {
-    LogErrorFmt(L"Failed to read comparison type %S", type);
-  }
-
-  return false;
-}
-
-static bool CompareOutputWithExpectedValueFloat(
     float output, float ref, LPCWSTR type, double tolerance,
     hlsl::DXIL::Float32DenormMode mode = hlsl::DXIL::Float32DenormMode::Any) {
   if (_wcsicmp(type, L"Relative") == 0) {
@@ -6911,21 +6904,6 @@ static bool VerifyOutputWithExpectedValueFloat(
 }
 
 static bool CompareOutputWithExpectedValueHalf(uint16_t output, uint16_t ref,
-                                               ToleranceType type,
-                                               double tolerance) {
-  if (type == ToleranceType::RELATIVE_EPSILON) {
-    return CompareHalfRelativeEpsilon(output, ref, (int)tolerance);
-  } else if (type == ToleranceType::EPSILON) {
-    return CompareHalfEpsilon(output, ref, (float)tolerance);
-  } else if (type == ToleranceType::ULP) {
-    return CompareHalfULP(output, ref, (float)tolerance);
-  } else {
-    LogErrorFmt(L"Failed to read comparison type %S", type);
-    return false;
-  }
-}
-
-static bool CompareOutputWithExpectedValueHalf(uint16_t output, uint16_t ref,
                                                LPCWSTR type, double tolerance) {
   if (_wcsicmp(type, L"Relative") == 0) {
     return CompareHalfRelativeEpsilon(output, ref, (int)tolerance);
@@ -6943,29 +6921,6 @@ static bool VerifyOutputWithExpectedValueHalf(uint16_t output, uint16_t ref,
                                               LPCWSTR type, double tolerance) {
   return VERIFY_IS_TRUE(
       CompareOutputWithExpectedValueHalf(output, ref, type, tolerance));
-}
-
-template <typename T>
-static bool CompareOutputWithExpectedValue(T output, T ref,
-                                           ToleranceType toleranceType,
-                                           double tolerance) {
-  if (std::is_same<T, DirectX::PackedVector::HALF>::value) { // uint16 treated
-                                                             // as half
-    return CompareOutputWithExpectedValueHalf((uint16_t)output, (uint16_t)ref,
-                                              toleranceType, tolerance);
-  } else if (std::is_integral<T>::value &&
-             std::is_signed<T>::value) { // signed ints
-    return CompareOutputWithExpectedValueInt((int)output, (int)ref,
-                                             (int)tolerance);
-  } else if (std::is_integral<T>::value) { // unsigned ints
-    return CompareOutputWithExpectedValueUInt((uint32_t)output, (uint32_t)ref,
-                                              (uint32_t)tolerance);
-  } else if (std::is_floating_point<T>::value) { // floating point
-    return CompareOutputWithExpectedValueFloat((float)output, (float)ref,
-                                               toleranceType, tolerance);
-  }
-
-  DXASSERT_NOMSG("Invalid Parameter Type");
 }
 
 template <typename T>
@@ -7044,7 +6999,7 @@ TEST_F(ExecutionTest, UnaryFloatOpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "UnaryFPOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "SUnaryFPOp"));
@@ -7112,7 +7067,7 @@ TEST_F(ExecutionTest, BinaryFloatOpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "BinaryFPOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "SBinaryFPOp"));
@@ -7202,7 +7157,7 @@ TEST_F(ExecutionTest, TertiaryFloatOpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "TertiaryFPOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "STertiaryFPOp"));
@@ -7279,7 +7234,7 @@ TEST_F(ExecutionTest, UnaryHalfOpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "UnaryFPOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "SUnaryFPOp"));
@@ -7359,7 +7314,7 @@ TEST_F(ExecutionTest, BinaryHalfOpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "BinaryFPOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "SBinaryFPOp"));
@@ -7469,7 +7424,7 @@ TEST_F(ExecutionTest, TertiaryHalfOpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "TertiaryFPOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "STertiaryFPOp"));
@@ -7539,7 +7494,7 @@ TEST_F(ExecutionTest, UnaryIntOpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "UnaryIntOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "SUnaryIntOp"));
@@ -7599,7 +7554,7 @@ TEST_F(ExecutionTest, UnaryUintOpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "UnaryUintOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "SUnaryUintOp"));
@@ -7664,7 +7619,7 @@ TEST_F(ExecutionTest, BinaryIntOpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "BinaryIntOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "SBinaryIntOp"));
@@ -7752,7 +7707,7 @@ TEST_F(ExecutionTest, TertiaryIntOpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "TertiaryIntOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "STertiaryIntOp"));
@@ -7822,7 +7777,7 @@ TEST_F(ExecutionTest, BinaryUintOpTest) {
   int numExpected = Validation_Expected2->size() == 0 ? 1 : 2;
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "BinaryUintOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "SBinaryUintOp"));
@@ -7914,7 +7869,7 @@ TEST_F(ExecutionTest, TertiaryUintOpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "TertiaryUintOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "STertiaryUintOp"));
@@ -7993,7 +7948,7 @@ TEST_F(ExecutionTest, UnaryInt16OpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "UnaryIntOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "SUnaryIntOp"));
@@ -8061,7 +8016,7 @@ TEST_F(ExecutionTest, UnaryUint16OpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "UnaryUintOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "SUnaryUintOp"));
@@ -8136,7 +8091,7 @@ TEST_F(ExecutionTest, BinaryInt16OpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "BinaryIntOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "SBinaryIntOp"));
@@ -8232,7 +8187,7 @@ TEST_F(ExecutionTest, TertiaryInt16OpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "TertiaryIntOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "STertiaryIntOp"));
@@ -8309,7 +8264,7 @@ TEST_F(ExecutionTest, BinaryUint16OpTest) {
   int numExpected = Validation_Expected2->size() == 0 ? 1 : 2;
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "BinaryUintOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "SBinaryUintOp"));
@@ -8408,7 +8363,7 @@ TEST_F(ExecutionTest, TertiaryUint16OpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "TertiaryUintOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "STertiaryUintOp"));
@@ -8993,7 +8948,7 @@ TEST_F(ExecutionTest, DotTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "DotOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "SDotOp"));
@@ -9285,7 +9240,7 @@ TEST_F(ExecutionTest, Msad4Test) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "Msad4",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "SMsad4"));
@@ -9387,7 +9342,7 @@ TEST_F(ExecutionTest, DenormBinaryFloatOpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "BinaryFPOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "SBinaryFPOp"));
@@ -9500,7 +9455,7 @@ TEST_F(ExecutionTest, DenormTertiaryFloatOpTest) {
 
   std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTest(
       pDevice, m_support, pStream, "TertiaryFPOp",
-      // this callbacked is called when the test
+      // this callback is called when the test
       // is creating the resource to run the test
       [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
         VERIFY_IS_TRUE(0 == _stricmp(Name, "STertiaryFPOp"));
@@ -9928,7 +9883,7 @@ void ExecutionTest::WaveIntrinsicsActivePrefixTest(
          ++maskIndex) {
       std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTestAfterParse(
           pDevice, m_support, "WaveIntrinsicsOp",
-          // this callbacked is called when the test
+          // this callback is called when the test
           // is creating the resource to run the test
           [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
             VERIFY_IS_TRUE(0 == _stricmp(Name, "SWaveIntrinsicsOp"));
@@ -12654,7 +12609,7 @@ TEST_F(ExecutionTest, HelperLaneTest) {
 
     std::shared_ptr<ShaderOpTestResult> test = RunShaderOpTestAfterParse(
         pDevice, m_support, "HelperLaneTestNoWave",
-        // this callbacked is called when the test is creating the resource to
+        // this callback is called when the test is creating the resource to
         // run the test
         [&](LPCSTR Name, std::vector<BYTE> &Data, st::ShaderOp *pShaderOp) {
           VERIFY_IS_TRUE(0 == _stricmp(Name, "UAVBuffer0"));

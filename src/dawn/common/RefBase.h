@@ -28,6 +28,7 @@
 #ifndef SRC_DAWN_COMMON_REFBASE_H_
 #define SRC_DAWN_COMMON_REFBASE_H_
 
+#include <cstddef>
 #include <type_traits>
 #include <utility>
 
@@ -123,8 +124,7 @@ class RefBase {
     bool operator==(const T& other) const { return mValue == other; }
     bool operator!=(const T& other) const { return mValue != other; }
 
-    bool operator==(const RefBase<T, Traits>& other) const { return mValue == other.mValue; }
-    bool operator!=(const RefBase<T, Traits>& other) const { return mValue != other.mValue; }
+    bool operator==(const RefBase<T, Traits>& other) const = default;
 
     const T operator->() const { return mValue; }
     T operator->() { return mValue; }

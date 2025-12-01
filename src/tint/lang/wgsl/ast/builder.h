@@ -37,6 +37,7 @@
 #include "src/tint/lang/core/interpolation_sampling.h"
 #include "src/tint/lang/core/interpolation_type.h"
 #include "src/tint/lang/core/number.h"
+#include "src/tint/lang/core/subgroup_matrix_kind.h"
 #include "src/tint/lang/core/texel_format.h"
 #include "src/tint/lang/core/type/sampler_kind.h"
 #include "src/tint/lang/core/type/texture_dimension.h"
@@ -101,7 +102,7 @@
 #include "src/tint/lang/wgsl/ast/workgroup_attribute.h"
 #include "src/tint/lang/wgsl/builtin_fn.h"
 #include "src/tint/lang/wgsl/extension.h"
-#include "src/tint/utils/id/generation_id.h"
+#include "src/tint/utils/generation_id.h"
 #include "src/tint/utils/memory/block_allocator.h"
 #include "src/tint/utils/symbol/symbol_table.h"
 #include "src/tint/utils/text/string.h"
@@ -152,44 +153,44 @@ class Builder {
     /// perfectly-forward the first argument.
     template <typename... TYPES>
     using DisableIfSource =
-        traits::EnableIf<!IsSource<traits::Decay<traits::NthTypeOf<0, TYPES..., void>>>>;
+        std::enable_if_t<!IsSource<std::decay_t<traits::NthTypeOf<0, TYPES..., void>>>>;
 
     /// A helper used to disable overloads if the first type in `TYPES` is a scalar type. Used to
     /// avoid ambiguities in overloads that take a scalar as the first parameter and those that
     /// perfectly-forward the first argument.
     template <typename... TYPES>
     using DisableIfScalar =
-        traits::EnableIf<!IsScalar<traits::Decay<traits::NthTypeOf<0, TYPES..., void>>>>;
+        std::enable_if_t<!IsScalar<std::decay_t<traits::NthTypeOf<0, TYPES..., void>>>>;
 
     /// A helper used to enable overloads if the first type in `TYPES` is a scalar type. Used to
     /// avoid ambiguities in overloads that take a scalar as the first parameter and those that
     /// perfectly-forward the first argument.
     template <typename... TYPES>
     using EnableIfScalar =
-        traits::EnableIf<IsScalar<traits::Decay<traits::NthTypeOf<0, TYPES..., void>>>>;
+        std::enable_if_t<IsScalar<std::decay_t<traits::NthTypeOf<0, TYPES..., void>>>>;
 
     /// A helper used to disable overloads if the first type in `TYPES` is a Vector or
     /// VectorRef.
     template <typename... TYPES>
     using DisableIfVectorLike =
-        traits::EnableIf<!IsVectorLike<traits::Decay<traits::NthTypeOf<0, TYPES..., void>>>>;
+        std::enable_if_t<!IsVectorLike<std::decay_t<traits::NthTypeOf<0, TYPES..., void>>>>;
 
     /// A helper used to enable overloads if the first type in `TYPES` is identifier-like.
     template <typename... TYPES>
     using EnableIfIdentifierLike =
-        traits::EnableIf<IsIdentifierLike<traits::Decay<traits::NthTypeOf<0, TYPES..., void>>>>;
+        std::enable_if_t<IsIdentifierLike<std::decay_t<traits::NthTypeOf<0, TYPES..., void>>>>;
 
     /// A helper used to disable overloads if the first type in `TYPES` is Infer or an abstract
     /// numeric.
     template <typename... TYPES>
     using DisableIfInferOrAbstract =
-        traits::EnableIf<!IsInferOrAbstract<traits::Decay<traits::NthTypeOf<0, TYPES..., void>>>>;
+        std::enable_if_t<!IsInferOrAbstract<std::decay_t<traits::NthTypeOf<0, TYPES..., void>>>>;
 
     /// A helper used to enable overloads if the first type in `TYPES` is Infer or an abstract
     /// numeric.
     template <typename... TYPES>
     using EnableIfInferOrAbstract =
-        traits::EnableIf<IsInferOrAbstract<traits::Decay<traits::NthTypeOf<0, TYPES..., void>>>>;
+        std::enable_if_t<IsInferOrAbstract<std::decay_t<traits::NthTypeOf<0, TYPES..., void>>>>;
 
     /// VarOptions is a helper for accepting an arbitrary number of order independent options for
     /// constructing an ast::Var.
@@ -379,7 +380,8 @@ class Builder {
     /// @param args the arguments to pass to the constructor
     /// @returns the node pointer
     template <typename T, typename... ARGS>
-    traits::EnableIfIsType<T, ast::Node>* create(const Source& source, ARGS&&... args) {
+        requires(traits::IsTypeOrDerived<T, ast::Node>)
+    T* create(const Source& source, ARGS&&... args) {
         AssertNotMoved();
         return ast_nodes_.Create<T>(id_, AllocateNodeID(), source, std::forward<ARGS>(args)...);
     }
@@ -391,7 +393,8 @@ class Builder {
     /// destructed.
     /// @returns the node pointer
     template <typename T>
-    traits::EnableIfIsType<T, ast::Node>* create() {
+        requires(traits::IsTypeOrDerived<T, ast::Node>)
+    T* create() {
         AssertNotMoved();
         return ast_nodes_.Create<T>(id_, AllocateNodeID(), source_);
     }
@@ -405,7 +408,7 @@ class Builder {
     /// @param args the remaining arguments to pass to the constructor
     /// @returns the node pointer
     template <typename T, typename ARG0, typename... ARGS>
-    traits::EnableIf</* T is ast::Node and ARG0 is not Source */
+    std::enable_if_t</* T is ast::Node and ARG0 is not Source */
                      traits::IsTypeOrDerived<T, ast::Node> &&
                          !traits::IsTypeOrDerived<ARG0, Source>,
                      T>*
@@ -660,7 +663,7 @@ class Builder {
         /// @return a matrix of @p type
         ast::Type mat(const Source& source, ast::Type type, uint32_t columns, uint32_t rows) const {
             if (DAWN_LIKELY(columns >= 2 && columns <= 4 && rows >= 2 && rows <= 4)) {
-                static constexpr const char* names[] = {
+                static constexpr std::array<const char*, 9> names = {
                     "mat2x2", "mat2x3", "mat2x4",  //
                     "mat3x2", "mat3x3", "mat3x4",  //
                     "mat4x2", "mat4x3", "mat4x4",  //
@@ -1297,6 +1300,29 @@ class Builder {
             return (*this)(source, "texture_external");
         }
 
+        /// @param kind the subgroup matrix kind
+        /// @param el the subgroup matrix element type
+        /// @param cols the column count
+        /// @param rows the row count
+        /// @returns the subgroup matrix
+        ast::Type subgroup_matrix(core::SubgroupMatrixKind kind,
+                                  ast::Type el,
+                                  uint32_t cols,
+                                  uint32_t rows) const {
+            auto c = core::AInt(cols);
+            auto r = core::AInt(rows);
+            switch (kind) {
+                case core::SubgroupMatrixKind::kLeft:
+                    return (*this)("subgroup_matrix_left", el, c, r);
+                case core::SubgroupMatrixKind::kRight:
+                    return (*this)("subgroup_matrix_right", el, c, r);
+                case core::SubgroupMatrixKind::kResult:
+                    return (*this)("subgroup_matrix_result", el, c, r);
+                case core::SubgroupMatrixKind::kUndefined:
+                    TINT_UNREACHABLE();
+            }
+        }
+
         /// @param type the type
         /// @return an ast::Type of the type declaration.
         ast::Type Of(const ast::TypeDecl* type) const { return (*this)(type->name->symbol); }
@@ -1383,7 +1409,8 @@ class Builder {
 
     /// @param expr the expression
     /// @return expr (passthrough)
-    template <typename T, typename = traits::EnableIfIsType<T, ast::Expression>>
+    template <typename T>
+        requires(traits::IsTypeOrDerived<T, ast::Expression>)
     const T* Expr(const T* expr) {
         return expr;
     }
@@ -3508,7 +3535,7 @@ class Builder {
     /// @param args a mix of ast::Expression, ast::Statement, ast::Variables.
     /// @returns the function
     template <typename... ARGS,
-              typename = traits::EnableIf<(CanWrapInStatement<ARGS>::value && ...)>>
+              typename = std::enable_if_t<(CanWrapInStatement<ARGS>::value && ...)>>
     const ast::Function* WrapInFunction(ARGS&&... args) {
         Vector stmts{
             WrapInStatement(std::forward<ARGS>(args))...,

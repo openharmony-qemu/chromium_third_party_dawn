@@ -29,6 +29,7 @@
 #define SRC_DAWN_NATIVE_VULKAN_DEVICEVK_H_
 
 #include <memory>
+#include <mutex>
 #include <queue>
 #include <string>
 #include <utility>
@@ -39,7 +40,7 @@
 #include "dawn/native/Commands.h"
 #include "dawn/native/Device.h"
 #include "dawn/native/dawn_platform.h"
-#include "dawn/native/vulkan/CommandRecordingContext.h"
+#include "dawn/native/vulkan/CommandRecordingContextVk.h"
 #include "dawn/native/vulkan/DescriptorSetAllocator.h"
 #include "dawn/native/vulkan/Forward.h"
 #include "dawn/native/vulkan/VulkanFunctions.h"
@@ -104,7 +105,7 @@ class Device final : public DeviceBase {
                                            uint64_t destinationOffset,
                                            uint64_t size) override;
     MaybeError CopyFromStagingToTextureImpl(const BufferBase* source,
-                                            const TextureDataLayout& src,
+                                            const TexelCopyBufferLayout& src,
                                             const TextureCopy& dst,
                                             const Extent3D& copySizePixels) override;
 
@@ -117,13 +118,22 @@ class Device final : public DeviceBase {
 
     float GetTimestampPeriodInNS() const override;
 
+    AllocatorMemoryInfo GetAllocatorMemoryInfo() const override;
+
     void SetLabelImpl() override;
+    bool ReduceMemoryUsageImpl() override;
     void PerformIdleTasksImpl() override;
 
     void OnDebugMessage(std::string message);
 
     // Used to associate this device with validation layer messages.
     const char* GetDebugPrefix() { return mDebugPrefix.c_str(); }
+
+    bool CanAddStorageUsageToBufferWithoutSideEffects(wgpu::BufferUsage storageUsage,
+                                                      wgpu::BufferUsage originalUsage,
+                                                      size_t bufferSize) const override;
+
+    QuerySetBase* GetEmptyPassQuerySet();
 
   private:
     Device(AdapterBase* adapter,
@@ -146,7 +156,7 @@ class Device final : public DeviceBase {
         const UnpackedPtr<ShaderModuleDescriptor>& descriptor,
         const std::vector<tint::wgsl::Extension>& internalExtensions,
         ShaderModuleParseResult* parseResult,
-        OwnedCompilationMessages* compilationMessages) override;
+        std::unique_ptr<OwnedCompilationMessages>* compilationMessages) override;
     ResultOrError<Ref<SwapChainBase>> CreateSwapChainImpl(
         Surface* surface,
         SwapChainBase* previousSwapChain,
@@ -187,7 +197,8 @@ class Device final : public DeviceBase {
     VkDevice mVkDevice = VK_NULL_HANDLE;
     uint32_t mMainQueueFamily = 0;
 
-    SerialQueue<ExecutionSerial, Ref<DescriptorSetAllocator>>
+    // Entries can be appended without holding the device mutex.
+    MutexProtected<SerialQueue<ExecutionSerial, Ref<DescriptorSetAllocator>>>
         mDescriptorAllocatorsPendingDeallocation;
     std::unique_ptr<MutexProtected<FencedDeleter>> mDeleter;
     std::unique_ptr<MutexProtected<ResourceMemoryAllocator>> mResourceMemoryAllocator;
@@ -200,7 +211,12 @@ class Device final : public DeviceBase {
     const std::string mDebugPrefix;
     std::vector<std::string> mDebugMessages;
 
+    std::once_flag mMonolithicPipelineCacheFlag;
     Ref<PipelineCache> mMonolithicPipelineCache;
+
+    Ref<QuerySetBase> mEmptyPassQuerySet;
+
+    bool mSupportsMappableStorageBuffer = false;
 
     MaybeError ImportExternalImage(const ExternalImageDescriptorVk* descriptor,
                                    ExternalMemoryHandle memoryHandle,
