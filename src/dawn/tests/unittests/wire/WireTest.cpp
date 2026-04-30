@@ -36,6 +36,7 @@
 
 using testing::_;
 using testing::AnyNumber;
+using testing::AtLeast;
 using testing::AtMost;
 using testing::Exactly;
 using testing::Invoke;
@@ -49,9 +50,20 @@ using testing::WithArg;
 
 namespace dawn {
 
-WireTest::WireTest() {}
+WireTest::WireTest() {
+    // Set up default expectation for Device.Destroy to ensure we can track that every device on the
+    // server has Destroy called.
+    ON_CALL(api, DeviceDestroy).WillByDefault([this](WGPUDevice device) {
+        mDeviceDestroyed[device] = true;
+    });
+}
 
-WireTest::~WireTest() {}
+WireTest::~WireTest() {
+    // Verify that all devices had Destroy called on them.
+    for (auto& [_, destroyed] : mDeviceDestroyed) {
+        EXPECT_TRUE(destroyed);
+    }
+}
 
 wire::client::MemoryTransferService* WireTest::GetClientMemoryTransferService() {
     return nullptr;
@@ -64,7 +76,6 @@ wire::server::MemoryTransferService* WireTest::GetServerMemoryTransferService() 
 void WireTest::SetUp() {
     DawnProcTable mockProcs;
     api.GetProcTable(&mockProcs);
-    SetupIgnoredCallExpectations();
 
     mS2cBuf = std::make_unique<utils::TerribleCommandBuffer>();
     mC2sBuf = std::make_unique<utils::TerribleCommandBuffer>(mWireServer.get());
@@ -132,7 +143,7 @@ void WireTest::SetUp() {
     EXPECT_NE(adapter, nullptr);
 
     // Create the device for testing.
-    apiDevice = api.GetNewDevice();
+    apiDevice = GetNewDevice();
     wgpu::DeviceDescriptor deviceDesc = {};
     deviceDesc.deviceLostCallbackInfo = {nullptr, wgpu::CallbackMode::AllowSpontaneous,
                                          deviceLostCallback.Callback(),
@@ -185,9 +196,6 @@ void WireTest::SetUp() {
     apiQueue = api.GetNewQueue();
     EXPECT_CALL(api, DeviceGetQueue(apiDevice)).WillOnce(Return(apiQueue));
     FlushClient();
-
-    cDevice = device.Get();
-    cQueue = queue.Get();
 }
 
 void WireTest::TearDown() {
@@ -199,38 +207,20 @@ void WireTest::TearDown() {
 
     // Derived classes should call the base TearDown() first. The client must
     // be reset before any mocks are deleted.
-    // Incomplete client callbacks will be called on deletion, so the mocks
-    // cannot be null.
-    api.IgnoreAllReleaseCalls();
-    mS2cBuf->SetHandler(nullptr);
-    mWireClient = nullptr;
-
-    if (mWireServer && apiDevice) {
-        // These are called on server destruction to clear the callbacks. They must not be
-        // called after the server is destroyed.
-        EXPECT_CALL(api, OnDeviceSetLoggingCallback(apiDevice, nullptr, nullptr)).Times(Exactly(1));
-    }
-    mC2sBuf->SetHandler(nullptr);
-    mWireServer = nullptr;
+    DeleteClient();
+    DeleteServer();
 }
 
-// This should be called if |apiDevice| no longer exists on the wire.
-// This signals that expectations in |TearDown| shouldn't be added.
-void WireTest::DefaultApiDeviceWasReleased() {
-    apiDevice = nullptr;
-}
-
-// This should be called if |apiAdapter| no longer exists on the wire.
-// This signals that expectations in |TearDown| shouldn't be added.
-void WireTest::DefaultApiAdapterWasReleased() {
-    apiAdapter = nullptr;
+WGPUDevice WireTest::GetNewDevice() {
+    auto device = api.GetNewDevice();
+    mDeviceDestroyed[device] = false;
+    return device;
 }
 
 void WireTest::FlushClient(bool success) {
     ASSERT_EQ(mC2sBuf->Flush(), success);
 
     Mock::VerifyAndClearExpectations(&api);
-    SetupIgnoredCallExpectations();
 }
 
 void WireTest::FlushServer(bool success) {
@@ -246,16 +236,6 @@ wire::WireClient* WireTest::GetWireClient() {
 }
 
 void WireTest::DeleteServer() {
-    EXPECT_CALL(api, QueueRelease(apiQueue)).Times(1);
-    EXPECT_CALL(api, DeviceRelease(apiDevice)).Times(1);
-    EXPECT_CALL(api, AdapterRelease(apiAdapter)).Times(1);
-    EXPECT_CALL(api, InstanceRelease(apiInstance)).Times(1);
-
-    if (mWireServer) {
-        // These are called on server destruction to clear the callbacks. They must not be
-        // called after the server is destroyed.
-        EXPECT_CALL(api, OnDeviceSetLoggingCallback(apiDevice, nullptr, nullptr)).Times(Exactly(1));
-    }
     mC2sBuf->SetHandler(nullptr);
     mWireServer = nullptr;
 }
@@ -263,11 +243,6 @@ void WireTest::DeleteServer() {
 void WireTest::DeleteClient() {
     mS2cBuf->SetHandler(nullptr);
     mWireClient = nullptr;
-}
-
-void WireTest::SetupIgnoredCallExpectations() {
-    EXPECT_CALL(api, InstanceProcessEvents(_)).Times(AnyNumber());
-    EXPECT_CALL(api, DeviceTick(_)).Times(AnyNumber());
 }
 
 }  // namespace dawn

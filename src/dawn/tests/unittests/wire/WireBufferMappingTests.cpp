@@ -311,11 +311,9 @@ TEST_P(WireBufferMappingTests, DeviceReleasedTooEarly) {
     TestEarlyMapCancelled(
         [&]() { device = nullptr; },
         [&]() {
-            EXPECT_CALL(api, OnDeviceSetLoggingCallback(apiDevice, nullptr, nullptr)).Times(1);
             EXPECT_CALL(api, DeviceRelease(apiDevice));
         },
         WGPUBufferMapAsyncStatus_DestroyedBeforeCallback, false);
-    DefaultApiDeviceWasReleased();
 }
 
 // Check that if device is released early client-side, we disregard server-side validation errors.
@@ -323,11 +321,9 @@ TEST_P(WireBufferMappingTests, DeviceReleasedTooEarlyServerSideError) {
     TestEarlyMapErrorCancelled(
         [&]() { device = nullptr; },
         [&]() {
-            EXPECT_CALL(api, OnDeviceSetLoggingCallback(apiDevice, nullptr, nullptr)).Times(1);
             EXPECT_CALL(api, DeviceRelease(apiDevice));
         },
         WGPUBufferMapAsyncStatus_DestroyedBeforeCallback, false);
-    DefaultApiDeviceWasReleased();
 }
 
 // Check the map callback is called with "DestroyedBeforeCallback" when the map request would have
