@@ -239,7 +239,6 @@ class Server : public ServerBase {
     }
 
     void SetForwardingDeviceCallbacks(Known<WGPUDevice> device);
-    void ClearDeviceCallbacks(WGPUDevice device);
 
     // Error callbacks
     void OnUncapturedError(ObjectHandle device, WGPUErrorType type, WGPUStringView message);

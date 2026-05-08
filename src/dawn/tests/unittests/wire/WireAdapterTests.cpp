@@ -168,7 +168,7 @@ TEST_P(WireAdapterTests, RequestDeviceSuccess) {
     AdapterRequestDevice(adapter, &desc, this);
 
     // Expect the server to receive the message. Then, mock a fake reply.
-    WGPUDevice apiDevice = api.GetNewDevice();
+    WGPUDevice apiDevice = GetNewDevice();
     // The backend device should not be known by the wire server.
     EXPECT_FALSE(GetWireServer()->IsDeviceKnown(apiDevice));
 
@@ -237,7 +237,6 @@ TEST_P(WireAdapterTests, RequestDeviceSuccess) {
 
     device = nullptr;
     // Cleared when the device is destroyed.
-    EXPECT_CALL(api, OnDeviceSetLoggingCallback(apiDevice, nullptr, nullptr)).Times(1);
     EXPECT_CALL(api, DeviceRelease(apiDevice));
 
     // Server has not recevied the release yet, so the device should be known.
@@ -262,7 +261,7 @@ TEST_P(WireAdapterTests, RequestFeatureUnsupportedByWire) {
     // Expect the server to receive the message. Then, mock a fake reply.
     // The reply contains features that the device implementation supports, but the
     // wire does not.
-    WGPUDevice apiDevice = api.GetNewDevice();
+    WGPUDevice apiDevice = GetNewDevice();
     EXPECT_CALL(api, OnAdapterRequestDevice(apiAdapter, NotNull(), _))
         .WillOnce(InvokeWithoutArgs([&] {
             EXPECT_CALL(api, DeviceEnumerateFeatures(apiDevice, nullptr))
@@ -337,7 +336,7 @@ TEST_P(WireAdapterTests, RequestDeviceAdapterDestroyedBeforeCallback) {
     };
 
     // Mock a reply from the server.
-    WGPUDevice apiDevice = api.GetNewDevice();
+    WGPUDevice apiDevice = GetNewDevice();
     EXPECT_CALL(api, OnAdapterRequestDevice(apiAdapter, NotNull(), _))
         .WillOnce(InvokeWithoutArgs([&] {
             // Set on device creation to forward callbacks to the client.
@@ -375,12 +374,6 @@ TEST_P(WireAdapterTests, RequestDeviceAdapterDestroyedBeforeCallback) {
                 Invoke([&](WGPUDevice cDevice) { device = wgpu::Device::Acquire(cDevice); })));
         FlushCallbacks();
     });
-
-    device = nullptr;
-    // Cleared when the device is destroyed.
-    EXPECT_CALL(api, OnDeviceSetLoggingCallback(apiDevice, nullptr, nullptr)).Times(1);
-    EXPECT_CALL(api, DeviceRelease(apiDevice));
-    FlushClient();
 }
 
 // Test that RequestDevice receives unknown status if the wire is disconnected

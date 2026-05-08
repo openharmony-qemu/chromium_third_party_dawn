@@ -30,6 +30,7 @@
 
 #include <memory>
 
+#include "absl/container/flat_hash_map.h"
 #include "dawn/common/Log.h"
 #include "dawn/mock_webgpu.h"
 #include "dawn/tests/MockCallback.h"
@@ -147,10 +148,12 @@ class WireTest : public testing::Test {
     void FlushClient(bool success = true);
     void FlushServer(bool success = true);
 
-    void DefaultApiDeviceWasReleased();
-    void DefaultApiAdapterWasReleased();
+    WGPUDevice GetNewDevice();
 
-    testing::StrictMock<MockProcTable> api;
+    // We use a NiceMock instead of a StrictMock here since tests should ensure expected APIs are
+    // called. Using a StrictMock would require all APIs to be explicitly specified which may result
+    // in testing too much implementation dependent behavior, leading to cluttered and wordy tests.
+    testing::NiceMock<MockProcTable> api;
 
     testing::MockCallback<WGPUDeviceLostCallbackNew> deviceLostCallback;
     testing::MockCallback<WGPUErrorCallback> uncapturedErrorCallback;
@@ -164,9 +167,6 @@ class WireTest : public testing::Test {
     wgpu::Queue queue;
     WGPUQueue apiQueue;
 
-    WGPUDevice cDevice;
-    WGPUQueue cQueue;
-
     dawn::wire::WireServer* GetWireServer();
     dawn::wire::WireClient* GetWireClient();
 
@@ -174,10 +174,12 @@ class WireTest : public testing::Test {
     void DeleteClient();
 
   private:
-    void SetupIgnoredCallExpectations();
-
     virtual dawn::wire::client::MemoryTransferService* GetClientMemoryTransferService();
     virtual dawn::wire::server::MemoryTransferService* GetServerMemoryTransferService();
+
+    // Devices created on the server MUST call Device.Destroy at least once. This map is used to
+    // ensure that this invariant holds true for any devices returned.
+    absl::flat_hash_map<WGPUDevice, bool> mDeviceDestroyed;
 
     std::unique_ptr<dawn::wire::WireServer> mWireServer;
     std::unique_ptr<dawn::wire::WireClient> mWireClient;
