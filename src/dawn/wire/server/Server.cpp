@@ -59,10 +59,10 @@ Server::Server(const DawnProcTable& procs,
 }
 
 Server::~Server() {
-    // Destroy all the devices to un-set the error and lost callbacks since we cannot forward
-    // them after the server has been destroyed.
+    // Un-set the error and lost callbacks since we cannot forward them
+    // after the server has been destroyed.
     for (WGPUDevice device : GetAllDeviceHandles()) {
-        mProcs.deviceDestroy(device);
+        ClearDeviceCallbacks(device);
     }
     DestroyAllObjects();
 }
@@ -169,13 +169,19 @@ void Server::Flush() {
     }
 }
 
+namespace {
+static constexpr WGPULoggingCallbackInfo kEmptyLoggingCallbackInfo = {nullptr, nullptr, nullptr,
+                                                                      nullptr};
+}  // namespace
+
 void Server::SetForwardingDeviceCallbacks(Known<WGPUDevice> device) {
     // Note: these callbacks are manually inlined here since they do not acquire and
     // free their userdata. Also unlike other callbacks, these are cleared and unset when
     // the server is destroyed, so we don't need to check if the server is still alive
     // inside them.
-    // Also, the device is special-cased in Server::DoUnregisterObject to call Destroy.
-    // This ensures that callbacks will not fire after |deviceObject| is freed.
+    // Also, the device is special-cased in Server::DoUnregisterObject to call
+    // ClearDeviceCallbacks. This ensures that callbacks will not fire after |deviceObject|
+    // is freed.
 
     // Set callback to post warning and other information to client.
     mProcs.deviceSetLoggingCallback(
@@ -186,6 +192,11 @@ void Server::SetForwardingDeviceCallbacks(Known<WGPUDevice> device) {
                              info->server->Flush();
                          },
                          device->info.get(), nullptr});
+}
+
+void Server::ClearDeviceCallbacks(WGPUDevice device) {
+    // Un-set the logging callback since we cannot forward them after the server has been destroyed.
+    mProcs.deviceSetLoggingCallback(device, kEmptyLoggingCallbackInfo);
 }
 
 }  // namespace dawn::wire::server
