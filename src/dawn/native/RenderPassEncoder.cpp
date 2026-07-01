@@ -364,22 +364,26 @@ void RenderPassEncoder::APIExecuteBundles(uint32_t count, RenderBundleBase* cons
                 }
             }
 
+            // Always reset state, even when no render bundles are supplied.
             mCommandBufferState = CommandBufferStateTracker{};
 
-            ExecuteBundlesCmd* cmd =
-                allocator->Allocate<ExecuteBundlesCmd>(Command::ExecuteBundles);
-            cmd->count = count;
+            if (count) {
+                ExecuteBundlesCmd* cmd =
+                    allocator->Allocate<ExecuteBundlesCmd>(Command::ExecuteBundles);
+                cmd->count = count;
 
-            Ref<RenderBundleBase>* bundles = allocator->AllocateData<Ref<RenderBundleBase>>(count);
-            for (uint32_t i = 0; i < count; ++i) {
-                bundles[i] = renderBundles[i];
+                Ref<RenderBundleBase>* bundles =
+                    allocator->AllocateData<Ref<RenderBundleBase>>(count);
+                for (uint32_t i = 0; i < count; ++i) {
+                    bundles[i] = renderBundles[i];
 
-                mUsageTracker.MergeResourceUsages(bundles[i]->GetResourceUsage());
-                if (IsValidationEnabled()) {
-                    mIndirectDrawMetadata.AddBundle(renderBundles[i]);
+                    mUsageTracker.MergeResourceUsages(bundles[i]->GetResourceUsage());
+                    if (IsValidationEnabled()) {
+                        mIndirectDrawMetadata.AddBundle(renderBundles[i]);
+                    }
+
+                    mDrawCount += bundles[i]->GetDrawCount();
                 }
-
-                mDrawCount += bundles[i]->GetDrawCount();
             }
 
             return {};
