@@ -48,6 +48,20 @@ Blob Blob::UnsafeCreateWithDeleter(uint8_t* data, size_t size, std::function<voi
     return Blob(data, size, deleter);
 }
 
+// static
+Blob Blob::Create(Blob&& original, size_t offset, size_t extent) {
+    Blob result;
+    if (original.mData) {
+        size_t effective_extent = (extent == 0) ? (original.mSize - offset) : extent;
+        uint8_t* new_data = original.mData.get() + offset;
+        result = Blob(new_data, effective_extent, std::move(original.mDeleter));
+    }
+    original.mData = nullptr;
+    original.mSize = 0;
+    original.mDeleter = nullptr;
+    return result;
+}
+
 Blob::Blob() : mData(nullptr), mSize(0), mDeleter({}) {}
 
 Blob::Blob(uint8_t* data, size_t size, std::function<void()> deleter)
