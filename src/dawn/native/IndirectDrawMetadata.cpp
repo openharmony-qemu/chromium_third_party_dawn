@@ -160,11 +160,6 @@ IndirectDrawMetadata::GetIndirectMultiDraws() const {
 }
 
 void IndirectDrawMetadata::AddBundle(RenderBundleBase* bundle) {
-    auto [_, inserted] = mAddedBundles.insert(bundle);
-    if (!inserted) {
-        return;
-    }
-
     for (const auto& [config, validationInfo] :
          bundle->GetIndirectDrawMetadata().mIndexedIndirectBufferValidationInfo) {
         auto it = mIndexedIndirectBufferValidationInfo.lower_bound(config);
