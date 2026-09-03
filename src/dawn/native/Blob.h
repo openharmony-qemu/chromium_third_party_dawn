@@ -47,6 +47,10 @@ class Blob {
     // Make sure the creation and deleter handles the data ownership and lifetime correctly.
     static Blob UnsafeCreateWithDeleter(uint8_t* data, size_t size, std::function<void()> deleter);
 
+    // Takes ownership of the original blob, creating a new one with subspan of the original using
+    // `offset` and optionally `extent`.
+    static Blob Create(Blob&& original, size_t offset, size_t extent = 0);
+
     Blob();
     ~Blob();
 

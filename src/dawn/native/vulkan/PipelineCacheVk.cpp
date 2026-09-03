@@ -102,10 +102,18 @@ MaybeError PipelineCache::SerializeToBlobImpl(Blob* blob) {
         // store it to the blob cache and don't call vkGetPipelineCacheData() since it will return
         // corrupted data in future calls.
         mSkipSerialize = true;
+        *blob = {};
         return {};
     }
 
     DAWN_TRY(CheckVkSuccess(result, "GetPipelineCacheData"));
+
+    if (bufferSize < blob->Size()) {
+        // vkGetPipelineCacheData() returned less data than expected. Shrink the blob so
+        // uninitialized data isn't stored in cache.
+        *blob = Blob::Create(std::move(*blob), 0, bufferSize);
+    }
+
     mStoredDataSize = bufferSize;
 
     return {};
