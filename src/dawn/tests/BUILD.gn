@@ -104,7 +104,7 @@ if (!dawn_use_built_dxc && build_with_chromium && is_win) {
   # end-to-end test in Chromium.
   copy("copy_dxc_binary") {
     sources = [
-      "$windows_sdk_path/bin/$windows_sdk_version/$target_cpu/dxcompiler.dll",
+      "$windows_sdk_path/Redist/D3D/$target_cpu/dxcompiler.dll",
     ]
 
     outputs = [ "$root_out_dir/{{source_file_part}}" ]
